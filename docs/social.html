@@ -1,0 +1,77 @@
+<!doctype html>
+<!-- Source for docs/social.png (1280x640 GitHub social preview).
+     Render: open this file in Chrome, `cli.mjs emulate <match> 1280 640`, `cli.mjs shot <match> docs/social.png` -->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1280px; height: 640px; overflow: hidden; }
+  body {
+    background: #0d1117;
+    color: #e6edf3;
+    font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    display: flex; flex-direction: column;
+  }
+  .banner {
+    background: #a855f7; color: #fff;
+    font-weight: 700; font-size: 20px;
+    text-align: center; padding: 10px;
+    letter-spacing: 0.02em;
+  }
+  main {
+    flex: 1;
+    display: flex; flex-direction: column; justify-content: center;
+    padding: 0 90px;
+  }
+  h1 {
+    font-size: 84px; font-weight: 800; letter-spacing: -0.02em;
+    font-family: ui-monospace, "SF Mono", Menlo, Monaco, monospace;
+  }
+  h1 .dot { color: #a855f7; }
+  .pitch {
+    margin-top: 18px;
+    font-size: 34px; font-weight: 600; color: #e6edf3;
+  }
+  .sub {
+    margin-top: 12px;
+    font-size: 24px; color: #7d8590;
+  }
+  .term {
+    margin-top: 40px;
+    background: #161b22; border: 1px solid #30363d; border-radius: 10px;
+    padding: 22px 28px;
+    font-family: ui-monospace, "SF Mono", Menlo, Monaco, monospace;
+    font-size: 22px; line-height: 1.65;
+    width: 780px;
+  }
+  .term .p { color: #3fb950; }           /* prompt */
+  .term .c { color: #e6edf3; }           /* command */
+  .term .o { color: #7d8590; }           /* output */
+  .term .r { color: #a855f7; font-weight: 700; }  /* ref */
+  footer {
+    padding: 0 90px 44px;
+    display: flex; justify-content: space-between; align-items: baseline; gap: 40px;
+    font-size: 20px; color: #7d8590; white-space: nowrap;
+  }
+  footer .url { font-family: ui-monospace, "SF Mono", Menlo, Monaco, monospace; color: #a855f7; }
+</style>
+</head>
+<body>
+  <div class="banner">🟣 AI AGENT IS DRIVING THIS TAB</div>
+  <main>
+    <h1>chrome-bridge<span class="dot">.</span></h1>
+    <div class="pitch">Let any AI agent drive your <b>real</b> Chrome.</div>
+    <div class="sub">Logged-in tabs &middot; zero npm dependencies &middot; no relaunch, no MCP server</div>
+    <div class="term">
+      <div><span class="p">$</span> <span class="c">node cli.mjs snap localhost:8082</span></div>
+      <div class="o">&nbsp;&nbsp;link "Deploy" <span class="r">@e4</span> https://localhost:8082/deploy</div>
+      <div><span class="p">$</span> <span class="c">node cli.mjs click localhost:8082 <span class="r">@e4</span></span></div>
+    </div>
+  </main>
+  <footer>
+    <span>a11y snapshots with element refs &middot; CDP screenshots &middot; network capture</span>
+    <span class="url">github.com/siropkin/chrome-bridge</span>
+  </footer>
+</body>
+</html>
