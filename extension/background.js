@@ -168,15 +168,83 @@ async function clearEmulation(tabId) {
   emulatedTabs.delete(tabId);
 }
 
+// --- Network capture (CDP) ---------------------------------------------------
+// Opt-in debug mode: attaches the debugger (infobar shows) for `duration` ms,
+// returns one compact line per request. Bodies stay out — replay with eval.
+const netCollectors = new Map(); // tabId -> Map(requestId -> entry)
+
+chrome.debugger.onEvent.addListener((src, method, params) => {
+  const c = netCollectors.get(src.tabId);
+  if (!c) return;
+  if (method === 'Network.requestWillBeSent') {
+    c.set(params.requestId, { t: Date.now(), method: params.request.method, url: params.request.url });
+  } else if (method === 'Network.responseReceived') {
+    const r = c.get(params.requestId);
+    if (r) r.status = params.response.status;
+  } else if (method === 'Network.loadingFinished') {
+    const r = c.get(params.requestId);
+    if (r) { r.ms = Date.now() - r.t; r.size = params.encodedDataLength; }
+  } else if (method === 'Network.loadingFailed') {
+    const r = c.get(params.requestId);
+    if (r) { r.ms = Date.now() - r.t; r.error = params.errorText; }
+  }
+});
+
+async function captureNetwork(tabId, duration, filter) {
+  let attachedByUs = true;
+  try {
+    await chrome.debugger.attach({ tabId }, '1.3');
+  } catch (e) {
+    if (!/already attached/i.test(String(e))) throw e;
+    attachedByUs = false; // emulate/shot is holding it — don't detach.
+  }
+  const c = new Map();
+  netCollectors.set(tabId, c);
+  try {
+    await chrome.debugger.sendCommand({ tabId }, 'Network.enable', {
+      maxTotalBufferSize: 10_000_000,
+      maxResourceBufferSize: 5_000_000,
+    });
+    await new Promise((r) => setTimeout(r, Math.min(duration || 4000, 30000)));
+    await chrome.debugger.sendCommand({ tabId }, 'Network.disable').catch(() => {});
+  } finally {
+    netCollectors.delete(tabId);
+    if (attachedByUs) await chrome.debugger.detach({ tabId }).catch(() => {});
+  }
+  const lines = [];
+  for (const r of c.values()) {
+    if (filter && !r.url.includes(filter)) continue;
+    let u;
+    try {
+      const p = new URL(r.url);
+      u = p.pathname + p.search;
+    } catch {
+      u = r.url;
+    }
+    if (u.length > 100) u = u.slice(0, 97) + '…';
+    const status = r.error ? 'ERR:' + r.error : r.status || '…';
+    const kb = r.size !== undefined ? ' ' + (r.size > 1024 ? Math.round(r.size / 1024) + 'kB' : r.size + 'B') : '';
+    const ms = r.ms !== undefined ? ' ' + r.ms + 'ms' : '';
+    lines.push(`${r.method} ${status} ${u}${kb}${ms}`);
+    if (lines.length >= 100) { lines.push('… truncated at 100 requests — use --filter'); break; }
+  }
+  return lines.join('\n') || '(no requests captured — is the page idle? trigger the action, then run net again)';
+}
+
 // --- Page-side scripts ------------------------------------------------------
 // These run through runEval (ISOLATED world, MAIN fallback, CDP last resort).
 // Refs from snap live in `window.__bridgeRefs` of the world snap ran in;
 // click/fill run through the same pipeline so they resolve in the same world.
 
-const SNAP_SRC = `(() => {
+const SNAP_SRC = (scope, diff) => `(() => {
   const MAX = 300;
-  const refs = (window.__bridgeRefs = {});
-  let n = 0, truncated = false;
+  // Refs persist across snaps within one navigation: an element keeps its @eN
+  // while its role+name are unchanged (playwright-mcp style), so a re-snap
+  // after a DOM change doesn't renumber the page the agent already read.
+  const refs = (window.__bridgeRefs = window.__bridgeRefs || {});
+  for (const k in refs) if (!refs[k].isConnected) delete refs[k];
+  let n = (window.__bridgeRefN = window.__bridgeRefN || 0);
+  let truncated = false;
   const lines = [];
   const ROLE_BY_TAG = { A:'link', BUTTON:'button', SELECT:'combobox', TEXTAREA:'textbox', SUMMARY:'button',
     H1:'heading', H2:'heading', H3:'heading', H4:'heading', H5:'heading', H6:'heading',
@@ -201,7 +269,9 @@ const SNAP_SRC = `(() => {
     }
     if (role === 'img') return el.alt || '';
     if (el.tagName === 'INPUT') return el.placeholder || el.name || '';
-    return (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 60);
+    const text = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+    if (text) return text.slice(0, 60);
+    return (el.getAttribute('title') || '').trim().slice(0, 60);
   }
   function stateOf(el, role) {
     const s = [];
@@ -223,17 +293,44 @@ const SNAP_SRC = `(() => {
     const role = roleOf(el);
     let childDepth = depth;
     if (role && hasBox(el)) {
-      const ref = 'e' + ++n;
-      refs[ref] = el;
       const name = nameOf(el, role);
+      const key = role + ' ' + name;
+      let ref = el.__bridgeRef;
+      if (ref && (refs[ref] !== el || el.__bridgeRefKey !== key)) ref = null; // name/role changed → mint fresh
+      if (!ref) {
+        ref = 'e' + ++n;
+        window.__bridgeRefN = n;
+        el.__bridgeRef = ref;
+        el.__bridgeRefKey = key;
+      }
+      refs[ref] = el;
       lines.push('  '.repeat(Math.min(depth, 10)) + role + (name ? ' ' + JSON.stringify(name) : '') + ' @' + ref + stateOf(el, role));
       childDepth = depth + 1;
     }
     for (const c of el.children) walk(c, childDepth);
     if (el.shadowRoot) for (const c of el.shadowRoot.children) walk(c, childDepth);
+    if (el.tagName === 'IFRAME') {
+      try { if (el.contentDocument?.body) walk(el.contentDocument.body, childDepth); } catch {} // cross-origin
+    }
   }
-  walk(document.body, 0);
-  return lines.join('\\n') + (truncated ? '\\n… truncated at ' + MAX + ' nodes' : '');
+  const scopeSel = ${JSON.stringify(scope || null)};
+  const root = scopeSel ? document.querySelector(scopeSel) : document.body;
+  if (!root) throw new Error('scope not found: ' + scopeSel);
+  walk(root, 0);
+  if (truncated) lines.push('… truncated at ' + MAX + ' nodes' + (scopeSel ? '' : ' — scope with: snap <match> <css>'));
+  // --diff: lines added/changed/removed since the last snap at THIS scope.
+  const store = (window.__bridgeSnapLines = window.__bridgeSnapLines || {});
+  const prev = store[scopeSel || ''] || null;
+  const cur = {};
+  for (const l of lines) { const m = l.match(/@(e\\d+)/); if (m) cur[m[1]] = l; }
+  store[scopeSel || ''] = cur;
+  if (${diff ? 'true' : 'false'} && prev) {
+    const out = [];
+    for (const ref in cur) if (prev[ref] !== cur[ref]) out.push((prev[ref] ? '~' : '+') + ' ' + cur[ref].trim());
+    for (const ref in prev) if (!cur[ref]) out.push('- @' + ref);
+    return out.length ? out.join('\\n') : '(no changes since last snap)';
+  }
+  return lines.join('\\n');
 })()`;
 
 const clickSrc = (target) => `(() => {
@@ -242,7 +339,16 @@ const clickSrc = (target) => `(() => {
   if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
   el.scrollIntoView({ block: 'center', inline: 'center' });
   const r = el.getBoundingClientRect();
-  const o = { bubbles: true, cancelable: true, composed: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, button: 0 };
+  const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+  // Coverage preflight: fail loudly when an overlay intercepts the click point
+  // instead of dispatching a click that silently lands on the wrong element.
+  const top = document.elementFromPoint(cx, cy);
+  if (top && top !== el && !el.contains(top) && !top.contains(el)) {
+    const cls = typeof top.className === 'string' && top.className.trim() ? '.' + top.className.trim().split(/\\s+/).slice(0, 2).join('.') : '';
+    const txt = (top.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 40);
+    throw new Error('click covered by <' + top.tagName.toLowerCase() + cls + '>' + (txt ? ' "' + txt + '"' : '') + ' — close the overlay or click that element first');
+  }
+  const o = { bubbles: true, cancelable: true, composed: true, clientX: cx, clientY: cy, button: 0 };
   el.dispatchEvent(new PointerEvent('pointerover', o));
   el.dispatchEvent(new PointerEvent('pointerdown', o));
   el.dispatchEvent(new MouseEvent('mousedown', o));
@@ -273,6 +379,62 @@ const fillSrc = (target, value) => `(() => {
     el.dispatchEvent(new Event('change', { bubbles: true }));
   }
   return 'filled ' + sel;
+})()`;
+
+// Per-char typing: real keydown/input/keyup per character, so autocomplete and
+// keystroke-driven UIs react (fill sets the value in one shot and they don't).
+const typeSrc = (target, text) => `(async () => {
+  const sel = ${JSON.stringify(target)}, text = ${JSON.stringify(text)};
+  const el = sel.startsWith('@') ? window.__bridgeRefs?.[sel.slice(1)] : document.querySelector(sel);
+  if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
+  el.scrollIntoView({ block: 'center' });
+  el.focus?.();
+  for (const ch of text) {
+    const o = { bubbles: true, cancelable: true, composed: true, key: ch, code: /[a-z]/i.test(ch) ? 'Key' + ch.toUpperCase() : 'Digit' + ch };
+    el.dispatchEvent(new KeyboardEvent('keydown', o));
+    if (el.isContentEditable) {
+      document.execCommand('insertText', false, ch); // deprecated, still the only CE path that fires beforeinput correctly
+    } else {
+      const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, el.value + ch);
+      el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ch }));
+    }
+    el.dispatchEvent(new KeyboardEvent('keyup', o));
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+  return 'typed ' + text.length + ' chars into ' + sel;
+})()`;
+
+// Key press on the focused element (or a target). Synthetic keys are untrusted:
+// they reach JS listeners but don't trigger browser defaults (form submit).
+const pressSrc = (key, target) => `(() => {
+  const sel = ${JSON.stringify(target || '')}, key = ${JSON.stringify(key)};
+  let el = document.activeElement || document.body;
+  if (sel) {
+    el = sel.startsWith('@') ? window.__bridgeRefs?.[sel.slice(1)] : document.querySelector(sel);
+    if (!el) throw new Error('element not found: ' + sel);
+    el.focus?.();
+  }
+  const code = key.length === 1 ? (/[a-z]/i.test(key) ? 'Key' + key.toUpperCase() : 'Digit' + key) : key;
+  const o = { bubbles: true, cancelable: true, composed: true, key, code };
+  el.dispatchEvent(new KeyboardEvent('keydown', o));
+  el.dispatchEvent(new KeyboardEvent('keypress', o));
+  el.dispatchEvent(new KeyboardEvent('keyup', o));
+  return 'pressed ' + key + ' on <' + el.tagName.toLowerCase() + '>';
+})()`;
+
+const hoverSrc = (target) => `(() => {
+  const sel = ${JSON.stringify(target)};
+  const el = sel.startsWith('@') ? window.__bridgeRefs?.[sel.slice(1)] : document.querySelector(sel);
+  if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
+  el.scrollIntoView({ block: 'center', inline: 'center' });
+  const r = el.getBoundingClientRect();
+  const o = { bubbles: true, cancelable: true, composed: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+  el.dispatchEvent(new PointerEvent('pointerover', o));
+  el.dispatchEvent(new MouseEvent('mouseover', o));
+  el.dispatchEvent(new MouseEvent('mouseenter', { ...o, bubbles: false }));
+  return 'hovered ' + sel;
 })()`;
 
 const waitSrc = ({ selector, text, timeout }) => `(async () => {
@@ -434,7 +596,7 @@ async function handle(msg) {
 
   if (msg.type === 'snap') {
     const tab = await findTab(msg.urlMatch);
-    return await runEval(tab.id, SNAP_SRC);
+    return await runEval(tab.id, SNAP_SRC(msg.scope, msg.diff));
   }
 
   if (msg.type === 'click') {
@@ -445,6 +607,26 @@ async function handle(msg) {
   if (msg.type === 'fill') {
     const tab = await findTab(msg.urlMatch);
     return await runEval(tab.id, fillSrc(msg.target, msg.value));
+  }
+
+  if (msg.type === 'type') {
+    const tab = await findTab(msg.urlMatch);
+    return await runEval(tab.id, typeSrc(msg.target, msg.value));
+  }
+
+  if (msg.type === 'press') {
+    const tab = await findTab(msg.urlMatch);
+    return await runEval(tab.id, pressSrc(msg.key, msg.target));
+  }
+
+  if (msg.type === 'hover') {
+    const tab = await findTab(msg.urlMatch);
+    return await runEval(tab.id, hoverSrc(msg.target));
+  }
+
+  if (msg.type === 'net') {
+    const tab = await findTab(msg.urlMatch);
+    return await captureNetwork(tab.id, msg.duration, msg.filter);
   }
 
   if (msg.type === 'wait') {
@@ -499,7 +681,13 @@ async function handle(msg) {
       }
       const params = { format };
       if (format === 'jpeg') params.quality = msg.quality ?? 80;
-      if (msg.crop) {
+      if (msg.full) {
+        // Full page: render beyond the viewport, clip to the CSS content size.
+        const m = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.getLayoutMetrics');
+        const c = m.cssContentSize;
+        params.captureBeyondViewport = true;
+        params.clip = { x: 0, y: 0, width: Math.ceil(c.width), height: Math.min(Math.ceil(c.height), 16384), scale: msg.scale || 1 };
+      } else if (msg.crop) {
         params.clip = {
           x: msg.crop[0],
           y: msg.crop[1],

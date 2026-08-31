@@ -58,12 +58,14 @@ That's the whole integration. [AGENTS.md](AGENTS.md) is a self-contained operati
 |---|---|
 | `tabs` | List tabs (id, url, title, driven flag) |
 | `open <url>` · `nav <match> <url>` · `close <match>` | Tab lifecycle |
-| `snap <match>` | Accessibility-tree snapshot with `@eN` refs — **cheap; use it before screenshots** |
-| `click <match> <@ref\|css>` | Click (scrolls into view, full pointer/mouse event sequence) |
+| `snap <match> [css] [--diff]` | Accessibility-tree snapshot with `@eN` refs — **cheap; use it before screenshots**. Scope to a subtree, or diff against the last snap |
+| `click <match> <@ref\|css>` | Click (scrolls into view, full pointer/mouse event sequence, overlay-coverage check) |
 | `fill <match> <@ref\|css> <value>` | Set input value — React-safe (native setter + input/change events) |
+| `type <match> <@ref\|css> <text>` · `press <match> <key>` · `hover <match> <@ref\|css>` | Per-char typing (autocomplete UIs), key presses, hover |
 | `wait <match> [css\|--text t] [--timeout ms]` | Wait for element or visible text |
 | `eval <match> <js\|-> [--world main]` | Run JS in the page; `-` reads from stdin |
-| `shot <match> <out> [--scale N] [--format jpeg] [--quality N] [--crop x,y,w,h]` | Screenshot via CDP |
+| `shot <match> <out> [--scale N] [--format jpeg] [--quality N] [--crop x,y,w,h] [--full]` | Screenshot via CDP (`--full` = whole page height) |
+| `net <match> [--dur ms] [--filter s]` | Capture network traffic via CDP — one compact line per request |
 | `measure <match> <css>` | Bounding rect + computed styles as JSON — layout truth without pixels |
 | `console <match> [--clear]` | Page console + uncaught errors (hook installs on first call) |
 | `grid <match>` | Toggle an 8px alignment grid overlay |
@@ -71,7 +73,7 @@ That's the whole integration. [AGENTS.md](AGENTS.md) is a self-contained operati
 | `resize <match> <w> <h>` | Resize the window |
 | `mark <match>` · `release <match>` | Add/remove the purple driven-tab banner + tab group |
 
-`<match>` is a substring of the tab URL; the most recently active matching tab wins. Refs expire on navigation — re-`snap`.
+`<match>` is a substring of the tab URL; the most recently active matching tab wins. Refs survive re-`snap`s (an element keeps its `@eN` while its role+name are unchanged) and expire on navigation — re-`snap` after `nav`.
 
 ## Desktop & mobile device emulation
 
@@ -88,9 +90,10 @@ node cli.mjs unemulate srdkn.com                # back to normal
 ## Token-efficient agent workflow
 
 1. **`snap` first** — a text tree costs ~10× fewer tokens than a screenshot and usually answers the question.
-2. Act by ref: `click @e4`, `fill @e2 "…"`.
-3. `shot` only when pixels matter, and then cheap: `--scale 0.5 --format jpeg`, or `--crop` to the component.
-4. For layout questions ("is this centered?") trust `measure` numbers, not eyeballs.
+2. Keep it small: `snap <match> "dialog"` scopes to a subtree; after an action, `snap --diff` returns only what changed (refs stay stable across snaps).
+3. Act by ref: `click @e4`, `fill @e2 "…"`, `type @e2 "query"` for autocomplete UIs.
+4. `shot` only when pixels matter, and then cheap: `--scale 0.5 --format jpeg`, or `--crop` to the component.
+5. For layout questions ("is this centered?") trust `measure` numbers, not eyeballs.
 
 ## Design reviews
 
@@ -104,7 +107,7 @@ node cli.mjs unemulate srdkn.com                # back to normal
 
 ## Security
 
-The server binds `127.0.0.1` only, but **any local process can then drive your authenticated browser**. Load the extension while you're testing; unload it at `chrome://extensions` when you're done.
+The server binds `127.0.0.1` only and rejects browser-origin requests, so a web page you visit can't drive the bridge — but **any local process still can**. Load the extension while you're testing; unload it at `chrome://extensions` when you're done.
 
 ## License
 

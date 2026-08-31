@@ -120,6 +120,7 @@ try {
     if (msg.type === 'eval') return respond({ echo: msg.code.length });
     if (msg.type === 'big') return respond('x'.repeat(3 * 1024 * 1024)); // 3 MB — exercises 64-bit frames
     if (msg.type === 'shot') return respond('data:image/png;base64,' + Buffer.from('fakepng').toString('base64'));
+    if (['snap', 'press', 'type', 'hover', 'net'].includes(msg.type)) return respond(msg); // echo for flag-parsing checks
     return respond(null);
   });
   await new Promise((r) => setTimeout(r, 100));
@@ -136,7 +137,26 @@ try {
   const shotPath = '/tmp/chrome-bridge-selftest.png';
   const shot = await cli('shot', 'example.com', shotPath);
   assert(shot.status === 0 && fs.readFileSync(shotPath).toString() === 'fakepng', 'cli shot writes file');
+
+  // --full is boolean: it must not swallow the next flag's value
+  const shotFull = await cli('shot', 'example.com', shotPath, '--full', '--scale', '2');
+  assert(shotFull.status === 0 && fs.readFileSync(shotPath).toString() === 'fakepng', 'cli shot --full parses as boolean flag', shotFull.stderr);
   fs.unlinkSync(shotPath);
+
+  const snap = await cli('snap', 'example.com', '#app', '--diff');
+  assert(snap.status === 0 && snap.stdout.includes('"diff":true') && snap.stdout.includes('"scope":"#app"'), 'cli snap scope+diff flags', snap.stdout + snap.stderr);
+
+  const press = await cli('press', 'example.com', 'Enter', '@e3');
+  assert(press.status === 0 && press.stdout.includes('"key":"Enter"') && press.stdout.includes('"target":"@e3"'), 'cli press passes key+target', press.stdout + press.stderr);
+
+  const typ = await cli('type', 'example.com', '@e2', 'hello', 'world');
+  assert(typ.status === 0 && typ.stdout.includes('"value":"hello world"'), 'cli type joins text args', typ.stdout + typ.stderr);
+
+  const hov = await cli('hover', 'example.com', '@e1');
+  assert(hov.status === 0 && hov.stdout.includes('"target":"@e1"'), 'cli hover passes target', hov.stdout + hov.stderr);
+
+  const netc = await cli('net', 'example.com', '--dur', '500', '--filter', '/api');
+  assert(netc.status === 0 && netc.stdout.includes('"duration":500') && netc.stdout.includes('"filter":"/api"'), 'cli net flags', netc.stdout + netc.stderr);
 
   // large frame extension→server (3 MB result)
   const bigRes = await fetch(`http://127.0.0.1:${PORT}/cmd`, {

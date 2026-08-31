@@ -45,12 +45,17 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
   open <url>                        open + mark a new tab
   nav <match> <url>                 navigate matching tab
   close <match>                     close matching tab
-  snap <match>                      a11y-tree snapshot with @eN refs (cheap — use before shot)
-  click <match> <@ref|css>          click an element
+  snap <match> [css] [--diff]       a11y-tree snapshot with @eN refs (cheap — use before shot);
+                                    [css] scopes to a subtree, --diff shows only changes since last snap
+  click <match> <@ref|css>          click an element (fails loudly if an overlay covers it)
   fill <match> <@ref|css> <value>   set input value (React-safe)
+  type <match> <@ref|css> <text>    per-char typing — triggers autocomplete/keystroke UIs
+  press <match> <key> [@ref|css]    key press (Enter/Tab/Escape/…) on focused or given element
+  hover <match> <@ref|css>          hover an element (opens hover menus)
   wait <match> [css|--text t] [--timeout ms]
   eval <match> <js|-> [--world main|isolated]     '-' reads JS from stdin
-  shot <match> <out> [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h]
+  shot <match> <out> [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full]
+  net <match> [--dur ms] [--filter s]   capture network for N ms (CDP, one line per request)
   measure <match> <css>             rect + computed styles as JSON
   console <match> [--clear]         page console + errors (hook installs on first call)
   grid <match>                      toggle 8px alignment grid
@@ -61,7 +66,7 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
   health                            server + extension status
 
 <match> is a substring of the tab URL; the most recently active match wins.
-Refs (@eN) come from snap and expire on navigation — re-snap after nav.`;
+Refs (@eN) come from snap; they survive re-snaps but expire on navigation.`;
 
 const [, , cmdName, ...args] = process.argv;
 
@@ -104,10 +109,13 @@ switch (cmdName) {
     print(await cmd({ type: cmdName, urlMatch: args[0] }));
     break;
 
-  case 'snap':
-    if (!args[0]) fail('usage: snap <match>');
-    print(await cmd({ type: 'snap', urlMatch: args[0] }));
+  case 'snap': {
+    if (!args[0]) fail('usage: snap <match> [css] [--diff]');
+    const diff = args.includes('--diff');
+    const scope = args.slice(1).find((a) => a !== '--diff') || null;
+    print(await cmd({ type: 'snap', urlMatch: args[0], scope, diff }));
     break;
+  }
 
   case 'click':
     if (!args[0] || !args[1]) fail('usage: click <match> <@ref|css>');
@@ -118,6 +126,35 @@ switch (cmdName) {
     if (!args[0] || !args[1] || args[2] === undefined) fail('usage: fill <match> <@ref|css> <value>');
     print(await cmd({ type: 'fill', urlMatch: args[0], target: args[1], value: args.slice(2).join(' ') }));
     break;
+
+  case 'type':
+    if (!args[0] || !args[1] || args[2] === undefined) fail('usage: type <match> <@ref|css> <text>');
+    print(await cmd({ type: 'type', urlMatch: args[0], target: args[1], value: args.slice(2).join(' ') }));
+    break;
+
+  case 'press':
+    if (!args[0] || !args[1]) fail('usage: press <match> <key> [@ref|css]');
+    print(await cmd({ type: 'press', urlMatch: args[0], key: args[1], target: args[2] || null }));
+    break;
+
+  case 'hover':
+    if (!args[0] || !args[1]) fail('usage: hover <match> <@ref|css>');
+    print(await cmd({ type: 'hover', urlMatch: args[0], target: args[1] }));
+    break;
+
+  case 'net': {
+    const [match, ...rest] = args;
+    let duration = null;
+    let filter = null;
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === '--dur') duration = Number(rest[++i]);
+      else if (rest[i] === '--filter') filter = rest[++i];
+      else fail(`unknown flag ${rest[i]}`);
+    }
+    if (!match) fail('usage: net <match> [--dur ms] [--filter s]');
+    print(await cmd({ type: 'net', urlMatch: match, duration, filter }));
+    break;
+  }
 
   case 'wait': {
     const [match, ...rest] = args;
@@ -152,11 +189,12 @@ switch (cmdName) {
 
   case 'shot': {
     const [match, out, ...rest] = args;
-    if (!match || !out) fail('usage: shot <match> <out> [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h]');
+    if (!match || !out) fail('usage: shot <match> <out> [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full]');
     const msg = { type: 'shot', urlMatch: match };
-    for (let i = 0; i < rest.length; i += 2) {
+    for (let i = 0; i < rest.length; i++) {
       const k = rest[i];
-      const v = rest[i + 1];
+      if (k === '--full') { msg.full = true; continue; }
+      const v = rest[++i];
       if (k === '--scale') msg.scale = Number(v);
       else if (k === '--format') msg.format = v;
       else if (k === '--quality') msg.quality = Number(v);
