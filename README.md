@@ -17,13 +17,14 @@ node cli.mjs shot localhost:8082 out.png --scale 0.5 --format jpeg
 A `snap` looks like this — the whole page as a compact text tree with refs you act on:
 
 ```
-banner "Hi! I'm Ivan 👋" @e1
-  heading "Hi! I'm Ivan 👋" @e2
-main "And this is my journey around the world: …" @e3
-  button "Moscow, Russia. From Apr 2014 to May 2020 (6 years 1 month)" @e14
-  button "St. Petersburg, Russia. From May 2020 to Mar 2022 …" @e15
-contentinfo "My digital coordinates: LinkedIn GitHub Email" @e19
-  link "GitHub" @e24 https://github.com/siropkin
+table "Hacker News new | past | comments | ask | show | jobs | submit" @e1
+  link "Hacker News" @e5 https://news.ycombinator.com/news
+  link "new" @e6 https://news.ycombinator.com/newest
+  link "submit" @e12 https://news.ycombinator.com/submit
+  link "login" @e13 https://news.ycombinator.com/login?goto=news
+table "1. Playa Phone (playaphone.com) 122 points by cutoff 1 hour…" @e14
+  link "Playa Phone" @e16 https://playaphone.com/
+  link "41 comments" @e21 https://news.ycombinator.com/item?id=49510514
 ```
 
 ## Why not Playwright (or playwright-mcp)?
