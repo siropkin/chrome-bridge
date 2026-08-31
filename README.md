@@ -2,6 +2,8 @@
 
 **English** | [中文](README.zh-CN.md)
 
+[![MIT license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Node ≥ 18](https://img.shields.io/badge/node-%E2%89%A5%2018-339933)](https://nodejs.org) [![zero dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](package.json)
+
 Let **any AI agent** drive your **real** Chrome — the tabs you already have open, with your logged-in sessions, SSO, and cookies. No fresh browser profile, no `--remote-debugging-port` restart, no MCP server, zero npm dependencies.
 
 ![chrome-bridge driving a tab — purple banner marks it](docs/banner.png)
@@ -32,6 +34,10 @@ table "1. Playa Phone (playaphone.com) 122 points by cutoff 1 hour…" @e14
 ## Why not Playwright (or playwright-mcp)?
 
 Playwright drives a browser it launched — or one restarted with a debug port — so you lose your live, authenticated session. chrome-bridge drives the Chrome you're already looking at. It borrows Playwright's two best ideas (accessibility-tree snapshots with element refs, ref-based actions) and skips the 40 MB dependency and the fresh profile.
+
+## Why not an MCP browser bridge?
+
+MCP bridges (mcp-chrome, BrowserMCP, playwriter) also drive your real browser — but they need an MCP-capable client and a configured, long-running MCP server. chrome-bridge is a plain CLI and one HTTP endpoint: any agent that can run a shell command can use it, nothing to install or configure — and the same commands work from a script, a cron job, or your own terminal.
 
 ## Install
 
