@@ -1,0 +1,15 @@
+{
+  "name": "chrome-bridge",
+  "version": "1.0.0",
+  "description": "Let AI agents drive your real Chrome browser — logged-in tabs, no relaunch, zero dependencies",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node test/selftest.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": ["chrome", "ai-agent", "browser-automation", "testing", "mcp-alternative"],
+  "license": "MIT"
+}

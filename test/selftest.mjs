@@ -1,0 +1,168 @@
+// Self-test: starts the server on a test port, connects a fake extension over
+// WebSocket, and exercises the CLI end-to-end. Run: node test/selftest.mjs
+import { spawn } from 'node:child_process';
+import net from 'node:net';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+
+const PORT = 9871;
+const ROOT = new URL('..', import.meta.url).pathname;
+const env = { ...process.env, BRIDGE_PORT: String(PORT) };
+
+let passed = 0;
+let server;
+function assert(cond, name, detail) {
+  if (!cond) {
+    console.error(`FAIL ${name}${detail ? `\n${detail}` : ''}`);
+    server?.kill();
+    process.exit(1);
+  }
+  passed++;
+  console.log(`ok   ${name}`);
+}
+
+// --- tiny WS client (client frames must be masked) ---------------------------
+function wsClient(port) {
+  return new Promise((resolve, reject) => {
+    const key = crypto.randomBytes(16).toString('base64');
+    const socket = net.connect(port, '127.0.0.1');
+    let handshaken = false;
+    let buf = Buffer.alloc(0);
+    const handlers = [];
+    const send = (obj) => {
+      const payload = Buffer.from(JSON.stringify(obj));
+      const mask = crypto.randomBytes(4);
+      let head;
+      if (payload.length < 126) {
+        head = Buffer.from([0x81, 0x80 | payload.length]);
+      } else if (payload.length < 65536) {
+        head = Buffer.alloc(4);
+        head[0] = 0x81;
+        head[1] = 0x80 | 126;
+        head.writeUInt16BE(payload.length, 2);
+      } else {
+        head = Buffer.alloc(10);
+        head[0] = 0x81;
+        head[1] = 0x80 | 127;
+        head.writeBigUInt64BE(BigInt(payload.length), 2);
+      }
+      const masked = Buffer.from(payload);
+      for (let i = 0; i < masked.length; i++) masked[i] ^= mask[i & 3];
+      socket.write(Buffer.concat([head, mask, masked]));
+    };
+    socket.on('connect', () => {
+      socket.write(
+        `GET /ws HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`
+      );
+    });
+    socket.on('data', (chunk) => {
+      buf = Buffer.concat([buf, chunk]);
+      if (!handshaken) {
+        const idx = buf.indexOf('\r\n\r\n');
+        if (idx < 0) return;
+        if (!buf.subarray(0, idx).toString().includes('101')) return reject(new Error('handshake failed'));
+        handshaken = true;
+        buf = buf.subarray(idx + 4);
+        resolve({ send, onMessage: (fn) => handlers.push(fn), socket });
+      }
+      while (buf.length >= 2) {
+        const op = buf[0] & 0x0f;
+        let len = buf[1] & 0x7f;
+        let off = 2;
+        if (len === 126) {
+          if (buf.length < 4) return;
+          len = buf.readUInt16BE(2);
+          off = 4;
+        } else if (len === 127) {
+          if (buf.length < 10) return;
+          len = Number(buf.readBigUInt64BE(2));
+          off = 10;
+        }
+        if (buf.length < off + len) return;
+        const payload = buf.subarray(off, off + len).toString();
+        buf = buf.subarray(off + len);
+        if (op === 0x1) for (const fn of handlers) fn(JSON.parse(payload));
+      }
+    });
+    socket.on('error', reject);
+  });
+}
+
+// NOTE: must be async — a spawnSync here would freeze this process's event
+// loop, and the fake extension (same process) could never answer.
+function cli(...args) {
+  return new Promise((resolve) => {
+    const p = spawn('node', [`${ROOT}/cli.mjs`, ...args], { env });
+    let stdout = '';
+    let stderr = '';
+    p.stdout.on('data', (c) => (stdout += c));
+    p.stderr.on('data', (c) => (stderr += c));
+    p.on('close', (status) => resolve({ status, stdout, stderr }));
+  });
+}
+
+// --- run ---------------------------------------------------------------------
+server = spawn('node', [`${ROOT}/server.mjs`], { env, stdio: 'pipe' });
+await new Promise((r) => server.stdout.once('data', r));
+
+try {
+  // health before extension connects
+  let h = await cli('health');
+  assert(h.status === 0 && JSON.parse(h.stdout).extension === false, 'health: extension false before connect');
+
+  // connect fake extension
+  const ext = await wsClient(PORT);
+  ext.onMessage((msg) => {
+    const respond = (result) => ext.send({ id: msg.id, ok: true, result });
+    if (msg.type === 'ping') return respond('pong');
+    if (msg.type === 'tabs')
+      return respond([{ id: 1, url: 'https://example.com/', title: 'Example', active: true, driven: false }]);
+    if (msg.type === 'eval') return respond({ echo: msg.code.length });
+    if (msg.type === 'big') return respond('x'.repeat(3 * 1024 * 1024)); // 3 MB — exercises 64-bit frames
+    if (msg.type === 'shot') return respond('data:image/png;base64,' + Buffer.from('fakepng').toString('base64'));
+    return respond(null);
+  });
+  await new Promise((r) => setTimeout(r, 100));
+
+  h = await cli('health');
+  assert(JSON.parse(h.stdout).extension === true, 'health: extension true after connect');
+
+  const tabs = await cli('tabs');
+  assert(tabs.status === 0 && tabs.stdout.includes('example.com'), 'cli tabs', `status=${tabs.status}\nstdout=${tabs.stdout}\nstderr=${tabs.stderr}`);
+
+  const ev = await cli('eval', 'example.com', 'document.title');
+  assert(ev.status === 0 && ev.stdout.includes('"echo"'), 'cli eval round-trip');
+
+  const shotPath = '/tmp/chrome-bridge-selftest.png';
+  const shot = await cli('shot', 'example.com', shotPath);
+  assert(shot.status === 0 && fs.readFileSync(shotPath).toString() === 'fakepng', 'cli shot writes file');
+  fs.unlinkSync(shotPath);
+
+  // large frame extension→server (3 MB result)
+  const bigRes = await fetch(`http://127.0.0.1:${PORT}/cmd`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ type: 'big' }),
+  });
+  const big = await bigRes.json();
+  assert(big.ok && big.result.length === 3 * 1024 * 1024, 'server: 3MB frame round-trip');
+
+  // unknown command surfaces the extension's error
+  const bad = await (await fetch(`http://127.0.0.1:${PORT}/cmd`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ type: 'nope' }),
+  })).json();
+  assert(bad.ok === false || bad.result === null, 'server: unknown type handled');
+
+  // extension disconnect → health flips
+  ext.socket.destroy();
+  await new Promise((r) => setTimeout(r, 500));
+  h = await cli('health');
+  assert(JSON.parse(h.stdout).extension === false, 'health: extension false after disconnect', h.stdout + h.stderr);
+
+  console.log(`\n${passed} checks passed`);
+} finally {
+  server.kill();
+}
+process.exit(0);

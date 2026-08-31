@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "Chrome Bridge",
+  "version": "1.0.0",
+  "description": "Lets a local agent drive this browser via the chrome-bridge server (127.0.0.1 only). Load while testing; unload when done.",
+  "permissions": ["tabs", "tabGroups", "scripting", "alarms", "debugger"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" }
+}
