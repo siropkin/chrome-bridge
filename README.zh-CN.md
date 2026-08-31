@@ -15,7 +15,7 @@ node server.mjs &                        # 启动桥接服务(Node ≥ 18,零依
 node cli.mjs snap localhost:8082         # 紧凑的无障碍树快照,带元素引用
 node cli.mjs click localhost:8082 @e4    # 按引用点击
 node cli.mjs fill localhost:8082 @e2 "hello@example.com"
-node cli.mjs shot localhost:8082 out.png --scale 0.5 --format jpeg
+node cli.mjs shot localhost:8082 out.png --max 800 --format jpeg
 ```
 
 `snap` 的输出长这样——整个页面变成一棵紧凑的文本树,你可以直接操作其中的引用:
@@ -53,7 +53,7 @@ git clone https://github.com/siropkin/chrome-bridge && cd chrome-bridge && ./ins
 
 验证:`node cli.mjs health` → `{"ok":true,"extension":true}`
 
-被桥接驱动的标签页会在右下角显示一个小 🟣 标签(点击可隐藏,下次导航前不再显示)并加入 🟣 标签页分组,你随时知道哪些页面正在被自动化;`release`(或 `close`)即可归还。
+被桥接驱动的标签页会显示一圈紫色细边框和右下角的小 🟣 标签(点击可隐藏,下次导航前不再显示)并加入 🟣 标签页分组,你随时知道哪些页面正在被自动化;`release`(或 `close`)即可归还。
 
 ## 接入 AI 智能体——只需一行
 

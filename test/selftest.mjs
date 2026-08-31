@@ -112,6 +112,7 @@ try {
 
   // connect fake extension
   const ext = await wsClient(PORT);
+  let lastShot = null;
   ext.onMessage((msg) => {
     const respond = (result) => ext.send({ id: msg.id, ok: true, result });
     if (msg.type === 'ping') return respond('pong');
@@ -119,7 +120,7 @@ try {
       return respond([{ id: 1, url: 'https://example.com/', title: 'Example', active: true, driven: false }]);
     if (msg.type === 'eval') return respond({ echo: msg.code.length });
     if (msg.type === 'big') return respond('x'.repeat(3 * 1024 * 1024)); // 3 MB — exercises 64-bit frames
-    if (msg.type === 'shot') return respond('data:image/png;base64,' + Buffer.from('fakepng').toString('base64'));
+    if (msg.type === 'shot') { lastShot = msg; return respond('data:image/png;base64,' + Buffer.from('fakepng').toString('base64')); }
     if (['snap', 'press', 'type', 'hover', 'net'].includes(msg.type)) return respond(msg); // echo for flag-parsing checks
     return respond(null);
   });
@@ -147,8 +148,11 @@ try {
   assert(snap.status === 0 && snap.stdout.includes('"diff":true') && snap.stdout.includes('"scope":"#app"') && snap.stdout.includes('"href":true'), 'cli snap scope+diff+href flags', snap.stdout + snap.stderr);
 
   const shotMax = await cli('shot', 'example.com', shotPath, '--max', '800');
-  assert(shotMax.status === 0, 'cli shot --max parses', shotMax.stderr);
+  assert(shotMax.status === 0 && lastShot?.max === 800, 'cli shot --max parses and reaches the extension', shotMax.stderr + JSON.stringify(lastShot));
   fs.unlinkSync(shotPath);
+
+  const shotBad = await cli('shot', 'example.com', shotPath, '--max', '--full');
+  assert(shotBad.status !== 0 && shotBad.stderr.includes('--max needs a value'), 'cli shot rejects flag-as-value', shotBad.stdout + shotBad.stderr);
 
   const press = await cli('press', 'example.com', 'Enter', '@e3');
   assert(press.status === 0 && press.stdout.includes('"key":"Enter"') && press.stdout.includes('"target":"@e3"'), 'cli press passes key+target', press.stdout + press.stderr);

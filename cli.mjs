@@ -12,6 +12,16 @@ const fail = (msg) => {
 };
 const print = (v) => console.log(typeof v === 'string' ? v : JSON.stringify(v));
 
+// Image dimensions from the buffer header (PNG IHDR / JPEG SOF) — agents map
+// shot pixels back to CSS px, and --max rescales server-side, so print them.
+const imgDims = (b) => {
+  if (b.length > 24 && b.readUInt32BE(0) === 0x89504e47) return `${b.readUInt32BE(16)}x${b.readUInt32BE(20)}`;
+  for (let i = 2; i + 9 < b.length && b[i] === 0xff; i += 2 + b.readUInt16BE(i + 2))
+    if (b[i + 1] >= 0xc0 && b[i + 1] <= 0xcf && b[i + 1] !== 0xc4 && b[i + 1] !== 0xc8 && b[i + 1] !== 0xcc)
+      return `${b.readUInt16BE(i + 7)}x${b.readUInt16BE(i + 5)}`;
+  return null;
+};
+
 async function cmd(msg) {
   let res;
   try {
@@ -37,7 +47,7 @@ async function stdin() {
 // Page-side helpers (eval-based).
 const measureSrc = (sel) =>
   `JSON.stringify([...document.querySelectorAll(${JSON.stringify(sel)})].map(e=>{const r=e.getBoundingClientRect();const c=getComputedStyle(e);return{text:(e.textContent||'').trim().slice(0,30),x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height),display:c.display,alignItems:c.alignItems,justifyContent:c.justifyContent,textAlign:c.textAlign,gap:c.gap,padding:c.padding,radius:c.borderRadius,bg:c.backgroundColor,color:c.color,font:c.fontSize+'/'+c.fontWeight}}))`;
-const GRID_SRC = `(()=>{const g=document.getElementById('bridge-grid');if(g){g.remove();return 'grid off'}const d=document.createElement('div');d.id='bridge-grid';d.style.cssText='position:fixed;inset:0;z-index:2147483646;pointer-events:none;background-image:repeating-linear-gradient(0deg,rgba(255,0,0,.25) 0 1px,transparent 1px 8px),repeating-linear-gradient(90deg,rgba(255,0,0,.25) 0 1px,transparent 1px 8px)';document.body.appendChild(d);return 'grid on'})()`;
+const GRID_SRC = `(()=>{const g=document.getElementById('bridge-grid');if(g){g.remove();return 'grid off'}const d=document.createElement('div');d.id='bridge-grid';d.style.cssText='position:fixed;inset:0;z-index:2147483647;pointer-events:none;background-image:repeating-linear-gradient(0deg,rgba(255,0,0,.25) 0 1px,transparent 1px 8px),repeating-linear-gradient(90deg,rgba(255,0,0,.25) 0 1px,transparent 1px 8px)';document.body.appendChild(d);return 'grid on'})()`;
 
 const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
 
@@ -115,7 +125,7 @@ switch (cmdName) {
     if (!args[0]) fail('usage: snap <match> [css] [--diff] [--href]');
     const diff = args.includes('--diff');
     const href = args.includes('--href');
-    const scope = args.slice(1).find((a) => a !== '--diff' && a !== '--href') || null;
+    const scope = args.slice(1).find((a) => !a.startsWith('--')) || null;
     print(await cmd({ type: 'snap', urlMatch: args[0], scope, diff, href }));
     break;
   }
@@ -198,6 +208,7 @@ switch (cmdName) {
       const k = rest[i];
       if (k === '--full') { msg.full = true; continue; }
       const v = rest[++i];
+      if (v === undefined || v.startsWith('--')) fail(`flag ${k} needs a value`);
       if (k === '--max') msg.max = Number(v);
       else if (k === '--scale') msg.scale = Number(v);
       else if (k === '--format') msg.format = v;
@@ -205,11 +216,13 @@ switch (cmdName) {
       else if (k === '--crop') msg.crop = v.split(',').map(Number);
       else fail(`unknown flag ${k}`);
     }
+    if (msg.full && msg.crop) fail('--full and --crop are mutually exclusive');
     const dataUrl = await cmd(msg);
     const b64 = dataUrl.includes(',') ? dataUrl.split(',', 2)[1] : dataUrl;
     const buf = Buffer.from(b64, 'base64');
     fs.writeFileSync(out, buf);
-    console.log(`saved ${out} (${Math.round(buf.length / 1024)} KB)`);
+    const d = imgDims(buf);
+    console.log(`saved ${out} (${Math.round(buf.length / 1024)} KB${d ? `, ${d}` : ''})`);
     break;
   }
 

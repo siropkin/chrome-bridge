@@ -332,10 +332,13 @@ const SNAP_SRC = (scope, diff, href) => `(() => {
   if (truncated) lines.push('… truncated at ' + MAX + ' nodes' + (scopeSel ? '' : ' — scope with: snap <match> <css>'));
   // --diff: lines added/changed/removed since the last snap at THIS scope.
   const store = (window.__bridgeSnapLines = window.__bridgeSnapLines || {});
-  const prev = store[scopeSel || ''] || null;
+  // Key by scope AND href mode: lines embed hrefs only in --href snaps, so a
+  // shared key would report every link as changed when the flag is toggled.
+  const skey = (scopeSel || '') + (${href ? 'true' : 'false'} ? '|href' : '');
+  const prev = store[skey] || null;
   const cur = {};
   for (const l of lines) { const m = l.match(/@(e\\d+)/); if (m) cur[m[1]] = l; }
-  store[scopeSel || ''] = cur;
+  store[skey] = cur;
   if (${diff ? 'true' : 'false'} && prev) {
     const out = [];
     for (const ref in cur) if (prev[ref] !== cur[ref]) out.push((prev[ref] ? '~' : '+') + ' ' + cur[ref].trim());
@@ -355,7 +358,7 @@ const clickSrc = (target) => `(() => {
   // Coverage preflight: fail loudly when an overlay intercepts the click point
   // instead of dispatching a click that silently lands on the wrong element.
   const top = document.elementFromPoint(cx, cy);
-  if (top && top !== el && !el.contains(top) && !top.contains(el)) {
+  if (top && top !== el && !el.contains(top) && !top.contains(el) && !top.closest('#bridge-banner')) {
     const cls = typeof top.className === 'string' && top.className.trim() ? '.' + top.className.trim().split(/\\s+/).slice(0, 2).join('.') : '';
     const txt = (top.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 40);
     throw new Error('click covered by <' + top.tagName.toLowerCase() + cls + '>' + (txt ? ' "' + txt + '"' : '') + ' — close the overlay or click that element first');
@@ -705,24 +708,39 @@ async function handle(msg) {
       // Downscale to a long edge of `max` px (0 = native). Claude resizes
       // anything past ~1568px on read anyway, so a native-res capture of a big
       // window buys file size, never detail — smaller capture, same answer.
-      const max = msg.max === 0 ? Infinity : msg.max || 1280;
-      const cap = (w, h) => Math.min(msg.scale || 1, max / Math.max(w, h));
+      const maxN = Number(msg.max);
+      const max = msg.max == null || Number.isNaN(maxN) ? 1280 : maxN === 0 ? Infinity : Math.abs(maxN);
+      // Captures render at devicePixelRatio, so budget max/dpr CSS px to keep
+      // the OUTPUT long edge <= max (visualViewport is in device px).
+      let dpr = 1;
+      const dprFrom = (m) => {
+        const d = m.visualViewport?.clientWidth, c = m.cssVisualViewport?.clientWidth;
+        if (d && c) dpr = d / c;
+      };
+      const cap = (w, h) => Math.min(msg.scale || 1, max / (Math.max(w, h) * dpr));
       if (msg.full) {
         // Full page: render beyond the viewport, clip to the CSS content size.
         const m = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.getLayoutMetrics');
         const c = m.cssContentSize;
+        dprFrom(m);
         params.captureBeyondViewport = true;
-        params.clip = { x: 0, y: 0, width: Math.ceil(c.width), height: Math.min(Math.ceil(c.height), 16384), scale: msg.scale || 1 };
+        const w = Math.ceil(c.width), h = Math.min(Math.ceil(c.height), 16384);
+        params.clip = { x: 0, y: 0, width: w, height: h, scale: cap(w, h) };
       } else if (msg.crop) {
+        // --crop x,y are viewport-relative (measure output); clip is page-absolute.
+        const m = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.getLayoutMetrics');
+        const v = m.cssVisualViewport;
+        dprFrom(m);
         params.captureBeyondViewport = true;
-        params.clip = { x: msg.crop[0], y: msg.crop[1], width: msg.crop[2], height: msg.crop[3], scale: cap(msg.crop[2], msg.crop[3]) };
+        params.clip = { x: msg.crop[0] + v.pageX, y: msg.crop[1] + v.pageY, width: msg.crop[2], height: msg.crop[3], scale: cap(msg.crop[2], msg.crop[3]) };
       } else {
         // Viewport: cssVisualViewport fields are pageX/pageY/clientWidth/
         // clientHeight (no x/y/width/height — that's what broke --scale).
         const m = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.getLayoutMetrics');
         const v = m.cssVisualViewport;
+        dprFrom(m);
         const s = cap(v.clientWidth, v.clientHeight);
-        if (s < 1) {
+        if (s !== 1) {
           params.captureBeyondViewport = true;
           params.clip = { x: v.pageX, y: v.pageY, width: v.clientWidth, height: v.clientHeight, scale: s };
         }
@@ -731,8 +749,9 @@ async function handle(msg) {
       return `data:image/${format};base64,${res.data}`;
     } catch (e) {
       // debugger unavailable (chrome:// pages etc.) — fall back to captureVisibleTab
-      console.warn('[bridge] cdp shot failed, falling back (flags ignored):', e);
-      return await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+      // (viewport only, native res — crop/max/scale can't be honored there)
+      console.warn('[bridge] cdp shot failed, falling back (crop/max/scale ignored):', e);
+      return await chrome.tabs.captureVisibleTab(tab.windowId, { format, ...(format === 'jpeg' ? { quality: msg.quality ?? 80 } : {}) });
     } finally {
       if (attachedByUs) {
         await chrome.debugger.detach({ tabId: tab.id }).catch(() => {});

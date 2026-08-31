@@ -15,7 +15,7 @@ node server.mjs &                        # start the bridge (Node ≥ 18, no dep
 node cli.mjs snap localhost:8082         # compact a11y snapshot with element refs
 node cli.mjs click localhost:8082 @e4    # click by ref
 node cli.mjs fill localhost:8082 @e2 "hello@example.com"
-node cli.mjs shot localhost:8082 out.png --scale 0.5 --format jpeg
+node cli.mjs shot localhost:8082 out.png --max 800 --format jpeg
 ```
 
 A `snap` looks like this — the whole page as a compact text tree with refs you act on:
@@ -53,7 +53,7 @@ git clone https://github.com/siropkin/chrome-bridge && cd chrome-bridge && ./ins
 
 Verify: `node cli.mjs health` → `{"ok":true,"extension":true}`
 
-Tabs the bridge drives get a small 🟣 tag in the bottom-right corner (click it to hide it until the next navigation) and join a 🟣 tab group so you always know what's being automated; `release` (or `close`) gives them back.
+Tabs the bridge drives get a thin purple viewport frame and a small 🟣 tag in the bottom-right corner (click it to hide it until the next navigation) and join a 🟣 tab group so you always know what's being automated; `release` (or `close`) gives them back.
 
 ## Use from an AI agent — one line
 
@@ -118,7 +118,7 @@ node cli.mjs unemulate news.ycombinator.com                # back to normal
 1. **`snap` first** — a text tree costs ~10× fewer tokens than a screenshot and usually answers the question.
 2. Keep it small: `snap <match> "dialog"` scopes to a subtree; after an action, `snap --diff` returns only what changed (refs stay stable across snaps).
 3. Act by ref: `click @e4`, `fill @e2 "…"`, `type @e2 "query"` for autocomplete UIs.
-4. `shot` only when pixels matter, and then cheap: `--scale 0.5 --format jpeg`, or `--crop` to the component.
+4. `shot` only when pixels matter, and then cheap: `--max 800 --format jpeg`, or `--crop` to the component.
 5. For layout questions ("is this centered?") trust `measure` numbers, not eyeballs.
 
 ## Design reviews
