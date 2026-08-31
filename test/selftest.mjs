@@ -143,8 +143,12 @@ try {
   assert(shotFull.status === 0 && fs.readFileSync(shotPath).toString() === 'fakepng', 'cli shot --full parses as boolean flag', shotFull.stderr);
   fs.unlinkSync(shotPath);
 
-  const snap = await cli('snap', 'example.com', '#app', '--diff');
-  assert(snap.status === 0 && snap.stdout.includes('"diff":true') && snap.stdout.includes('"scope":"#app"'), 'cli snap scope+diff flags', snap.stdout + snap.stderr);
+  const snap = await cli('snap', 'example.com', '#app', '--diff', '--href');
+  assert(snap.status === 0 && snap.stdout.includes('"diff":true') && snap.stdout.includes('"scope":"#app"') && snap.stdout.includes('"href":true'), 'cli snap scope+diff+href flags', snap.stdout + snap.stderr);
+
+  const shotMax = await cli('shot', 'example.com', shotPath, '--max', '800');
+  assert(shotMax.status === 0, 'cli shot --max parses', shotMax.stderr);
+  fs.unlinkSync(shotPath);
 
   const press = await cli('press', 'example.com', 'Enter', '@e3');
   assert(press.status === 0 && press.stdout.includes('"key":"Enter"') && press.stdout.includes('"target":"@e3"'), 'cli press passes key+target', press.stdout + press.stderr);

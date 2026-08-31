@@ -6,7 +6,7 @@
 
 让**任何 AI 智能体**驱动你**真实的** Chrome 浏览器——你已经打开的标签页、已登录的会话、SSO 和 Cookie。无需新的浏览器配置文件,无需 `--remote-debugging-port` 重启,无需 MCP 服务器,零 npm 依赖。
 
-![chrome-bridge 正在驱动标签页——紫色横幅为标记](docs/banner.png)
+![chrome-bridge 正在驱动标签页——右下角 🟣 标签为标记](docs/banner.png)
 
 一个小小的 Chrome 解压扩展通过 WebSocket 连接到本地 Node 服务器;任何能执行 shell 命令的工具都能驱动浏览器:
 
@@ -22,14 +22,16 @@ node cli.mjs shot localhost:8082 out.png --scale 0.5 --format jpeg
 
 ```
 table "Hacker News new | past | comments | ask | show | jobs | submit" @e1
-  link "Hacker News" @e5 https://news.ycombinator.com/news
-  link "new" @e6 https://news.ycombinator.com/newest
-  link "submit" @e12 https://news.ycombinator.com/submit
-  link "login" @e13 https://news.ycombinator.com/login?goto=news
+  link "Hacker News" @e5
+  link "new" @e6
+  link "submit" @e12
+  link "login" @e13
 table "1. Playa Phone (playaphone.com) 122 points by cutoff 1 hour…" @e14
-  link "Playa Phone" @e16 https://playaphone.com/
-  link "41 comments" @e21 https://news.ycombinator.com/item?id=49510514
+  link "Playa Phone" @e16
+  link "41 comments" @e21
 ```
+
+默认不输出链接 URL(它们曾占快照 token 的约 60%——你点击的是 `@eN` 引用,而不是 URL);无名称的链接仍保留 URL,`snap --href` 可恢复全部。
 
 ## 为什么不用 Playwright(或 playwright-mcp)?
 
@@ -51,7 +53,7 @@ git clone https://github.com/siropkin/chrome-bridge && cd chrome-bridge && ./ins
 
 验证:`node cli.mjs health` → `{"ok":true,"extension":true}`
 
-被桥接驱动的标签页会显示紫色横幅并加入 🟣 标签页分组,你随时知道哪些页面正在被自动化;`release`(或 `close`)即可归还。
+被桥接驱动的标签页会在右下角显示一个小 🟣 标签(点击可隐藏,下次导航前不再显示)并加入 🟣 标签页分组,你随时知道哪些页面正在被自动化;`release`(或 `close`)即可归还。
 
 ## 接入 AI 智能体——只需一行
 
@@ -82,20 +84,20 @@ HTTP API 只有一个端点:`POST /cmd`,Body 如 `{"type": "snap", "urlMatch": "
 |---|---|
 | `tabs` | 列出标签页(id、url、标题、是否被驱动) |
 | `open <url>` · `nav <match> <url>` · `close <match>` | 标签页生命周期 |
-| `snap <match> [css] [--diff]` | 无障碍树快照,带 `@eN` 引用——**便宜,优先于截图使用**。可限定子树,或与上一次快照对比 |
+| `snap <match> [css] [--diff] [--href]` | 无障碍树快照,带 `@eN` 引用——**便宜,优先于截图使用**。可限定子树、与上一次快照对比,或用 `--href` 输出全部链接 URL |
 | `click <match> <@ref\|css>` | 点击(自动滚动到可见位置,完整 pointer/mouse 事件序列,遮挡检测) |
 | `fill <match> <@ref\|css> <value>` | 设置输入框的值——React 安全(原生 setter + input/change 事件) |
 | `type <match> <@ref\|css> <text>` · `press <match> <key>` · `hover <match> <@ref\|css>` | 逐字符输入(自动补全 UI)、按键、悬停 |
 | `wait <match> [css\|--text t] [--timeout ms]` | 等待元素或可见文本出现 |
 | `eval <match> <js\|-> [--world main]` | 在页面中执行 JS;`-` 从 stdin 读取 |
-| `shot <match> <out> [--scale N] [--format jpeg] [--quality N] [--crop x,y,w,h] [--full]` | CDP 截图(`--full` = 整页高度) |
+| `shot <match> <out> [--max px] [--scale N] [--format jpeg] [--quality N] [--crop x,y,w,h] [--full]` | CDP 截图。长边默认限制为 `--max` 1280px(`0` = 原始分辨率)——模型读取大图时本来就会缩小,原图只增加文件体积不增加细节。`--full` = 整页高度 |
 | `net <match> [--dur ms] [--filter s]` | CDP 网络抓包——每个请求一行紧凑输出 |
 | `measure <match> <css>` | 元素位置 + 计算样式,JSON 输出——不看像素也能知道布局真相 |
 | `console <match> [--clear]` | 页面 console + 未捕获错误(首次调用时安装钩子) |
 | `grid <match>` | 开关 8px 对齐网格覆盖层 |
 | `emulate <match> <w> <h> [mobile]` · `unemulate <match>` | 桌面 / 移动设备视图切换——CDP 模拟,无需调整窗口大小 |
 | `resize <match> <w> <h>` | 调整窗口大小 |
-| `mark <match>` · `release <match>` | 添加 / 移除紫色驱动标记横幅 + 标签页分组 |
+| `mark <match>` · `release <match>` | 添加 / 移除驱动标记(右下角 🟣 标签)+ 标签页分组 |
 
 `<match>` 是标签页 URL 的子串;匹配多个时取最近活动的那个。引用在重复 `snap` 之间保持稳定(只要 role+name 不变,元素就保持它的 `@eN`),但导航后失效——`nav` 之后请重新 `snap`。
 
@@ -116,7 +118,7 @@ node cli.mjs unemulate news.ycombinator.com                # 恢复正常
 1. **先 `snap`**——文本树的 token 开销约为截图的 1/10,而且通常已经能回答问题。
 2. 保持小巧:`snap <match> "dialog"` 限定子树;操作之后用 `snap --diff` 只返回变化的部分(引用跨快照保持稳定)。
 3. 按引用操作:`click @e4`、`fill @e2 "…"`、自动补全 UI 用 `type @e2 "query"`。
-4. 只有需要像素时才 `shot`,且尽量便宜:`--scale 0.5 --format jpeg`,或 `--crop` 到组件区域。
+4. 只有需要像素时才 `shot`,且尽量便宜:`--max 800 --format jpeg`,或 `--crop` 到组件区域。
 5. 布局问题("这个居中了吗?")相信 `measure` 的数字,而不是肉眼。
 
 ## 设计走查

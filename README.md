@@ -6,7 +6,7 @@
 
 Let **any AI agent** drive your **real** Chrome — the tabs you already have open, with your logged-in sessions, SSO, and cookies. No fresh browser profile, no `--remote-debugging-port` restart, no MCP server, zero npm dependencies.
 
-![chrome-bridge driving a tab — purple banner marks it](docs/banner.png)
+![chrome-bridge driving a tab — 🟣 corner tag marks it](docs/banner.png)
 
 A tiny unpacked Chrome extension connects over WebSocket to a local Node server; anything that can run a shell command can drive the browser:
 
@@ -22,14 +22,16 @@ A `snap` looks like this — the whole page as a compact text tree with refs you
 
 ```
 table "Hacker News new | past | comments | ask | show | jobs | submit" @e1
-  link "Hacker News" @e5 https://news.ycombinator.com/news
-  link "new" @e6 https://news.ycombinator.com/newest
-  link "submit" @e12 https://news.ycombinator.com/submit
-  link "login" @e13 https://news.ycombinator.com/login?goto=news
+  link "Hacker News" @e5
+  link "new" @e6
+  link "submit" @e12
+  link "login" @e13
 table "1. Playa Phone (playaphone.com) 122 points by cutoff 1 hour…" @e14
-  link "Playa Phone" @e16 https://playaphone.com/
-  link "41 comments" @e21 https://news.ycombinator.com/item?id=49510514
+  link "Playa Phone" @e16
+  link "41 comments" @e21
 ```
+
+Link URLs are omitted by default (they were ~60% of snapshot tokens — the `@eN` ref is what you click); nameless links keep theirs, and `snap --href` brings them all back.
 
 ## Why not Playwright (or playwright-mcp)?
 
@@ -51,7 +53,7 @@ git clone https://github.com/siropkin/chrome-bridge && cd chrome-bridge && ./ins
 
 Verify: `node cli.mjs health` → `{"ok":true,"extension":true}`
 
-Tabs the bridge drives get a purple banner and join a 🟣 tab group so you always know what's being automated; `release` (or `close`) gives them back.
+Tabs the bridge drives get a small 🟣 tag in the bottom-right corner (click it to hide it until the next navigation) and join a 🟣 tab group so you always know what's being automated; `release` (or `close`) gives them back.
 
 ## Use from an AI agent — one line
 
@@ -82,20 +84,20 @@ The HTTP API is one endpoint: `POST /cmd` with `{"type": "snap", "urlMatch": "�
 |---|---|
 | `tabs` | List tabs (id, url, title, driven flag) |
 | `open <url>` · `nav <match> <url>` · `close <match>` | Tab lifecycle |
-| `snap <match> [css] [--diff]` | Accessibility-tree snapshot with `@eN` refs — **cheap; use it before screenshots**. Scope to a subtree, or diff against the last snap |
+| `snap <match> [css] [--diff] [--href]` | Accessibility-tree snapshot with `@eN` refs — **cheap; use it before screenshots**. Scope to a subtree, diff against the last snap, or include all link URLs with `--href` |
 | `click <match> <@ref\|css>` | Click (scrolls into view, full pointer/mouse event sequence, overlay-coverage check) |
 | `fill <match> <@ref\|css> <value>` | Set input value — React-safe (native setter + input/change events) |
 | `type <match> <@ref\|css> <text>` · `press <match> <key>` · `hover <match> <@ref\|css>` | Per-char typing (autocomplete UIs), key presses, hover |
 | `wait <match> [css\|--text t] [--timeout ms]` | Wait for element or visible text |
 | `eval <match> <js\|-> [--world main]` | Run JS in the page; `-` reads from stdin |
-| `shot <match> <out> [--scale N] [--format jpeg] [--quality N] [--crop x,y,w,h] [--full]` | Screenshot via CDP (`--full` = whole page height) |
+| `shot <match> <out> [--max px] [--scale N] [--format jpeg] [--quality N] [--crop x,y,w,h] [--full]` | Screenshot via CDP. Long edge capped at `--max` px (default 1280, `0` = native res) — models downscale big images on read anyway, so native res buys file size, not detail. `--full` = whole page height |
 | `net <match> [--dur ms] [--filter s]` | Capture network traffic via CDP — one compact line per request |
 | `measure <match> <css>` | Bounding rect + computed styles as JSON — layout truth without pixels |
 | `console <match> [--clear]` | Page console + uncaught errors (hook installs on first call) |
 | `grid <match>` | Toggle an 8px alignment grid overlay |
 | `emulate <match> <w> <h> [mobile]` · `unemulate <match>` | Switch between desktop and mobile device views — CDP emulation, no window resize |
 | `resize <match> <w> <h>` | Resize the window |
-| `mark <match>` · `release <match>` | Add/remove the purple driven-tab banner + tab group |
+| `mark <match>` · `release <match>` | Add/remove the driven-tab corner tag + 🟣 tab group |
 
 `<match>` is a substring of the tab URL; the most recently active matching tab wins. Refs survive re-`snap`s (an element keeps its `@eN` while its role+name are unchanged) and expire on navigation — re-`snap` after `nav`.
 

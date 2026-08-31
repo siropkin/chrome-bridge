@@ -51,9 +51,16 @@ function injectBanner() {
   }
   const d = document.createElement('div');
   d.id = 'bridge-banner';
-  d.style.cssText =
-    'position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#a855f7;color:#fff;font:bold 13px sans-serif;padding:4px 10px;text-align:center;pointer-events:none';
-  d.textContent = '🟣 AI AGENT IS DRIVING THIS TAB (chrome-bridge)';
+  // Thin viewport frame (pointer-events: none, covers nothing) + a small
+  // clickable corner pill — unmistakable without hiding page content.
+  d.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;border:3px solid rgba(168,85,247,.75);border-radius:2px';
+  const pill = document.createElement('div');
+  pill.style.cssText =
+    'position:fixed;bottom:8px;right:8px;background:#a855f7;color:#fff;font:12px sans-serif;padding:3px 10px;border-radius:11px;pointer-events:auto;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.4)';
+  pill.textContent = '🟣 bridge ✕';
+  pill.title = 'An AI agent is driving this tab (chrome-bridge) — click to hide until next navigation';
+  pill.onclick = () => d.remove();
+  d.appendChild(pill);
   (document.body || document.documentElement).appendChild(d);
 }
 
@@ -236,7 +243,7 @@ async function captureNetwork(tabId, duration, filter) {
 // Refs from snap live in `window.__bridgeRefs` of the world snap ran in;
 // click/fill run through the same pipeline so they resolve in the same world.
 
-const SNAP_SRC = (scope, diff) => `(() => {
+const SNAP_SRC = (scope, diff, href) => `(() => {
   const MAX = 300;
   // Refs persist across snaps within one navigation: an element keeps its @eN
   // while its role+name are unchanged (playwright-mcp style), so a re-snap
@@ -273,7 +280,7 @@ const SNAP_SRC = (scope, diff) => `(() => {
     if (text) return text.slice(0, 60);
     return (el.getAttribute('title') || '').trim().slice(0, 60);
   }
-  function stateOf(el, role) {
+  function stateOf(el, role, name) {
     const s = [];
     if (el.disabled || el.getAttribute('aria-disabled') === 'true') s.push('disabled');
     if (el.checked || el.getAttribute('aria-checked') === 'true') s.push('checked');
@@ -284,7 +291,12 @@ const SNAP_SRC = (scope, diff) => `(() => {
       const v = el.value ?? el.getAttribute('aria-valuenow');
       if (v !== undefined && v !== null && v !== '') s.push('value=' + JSON.stringify(String(v).slice(0, 40)));
     }
-    if (role === 'link' && el.href) s.push(el.href.length > 60 ? el.href.slice(0, 57) + '…' : el.href);
+    // hrefs are the biggest token sink in snap (~60% on link-heavy pages) and
+    // almost never needed — the @eN ref is what you click. Keep them only for
+    // nameless links (else they'd be unidentifiable) or when --href is passed.
+    if (role === 'link' && el.href && (${href ? 'true' : 'false'} || !name)) {
+      s.push(el.href.length > 60 ? el.href.slice(0, 57) + '…' : el.href);
+    }
     return s.length ? ' ' + s.join(' ') : '';
   }
   function walk(el, depth) {
@@ -304,7 +316,7 @@ const SNAP_SRC = (scope, diff) => `(() => {
         el.__bridgeRefKey = key;
       }
       refs[ref] = el;
-      lines.push('  '.repeat(Math.min(depth, 10)) + role + (name ? ' ' + JSON.stringify(name) : '') + ' @' + ref + stateOf(el, role));
+      lines.push('  '.repeat(Math.min(depth, 10)) + role + (name ? ' ' + JSON.stringify(name) : '') + ' @' + ref + stateOf(el, role, name));
       childDepth = depth + 1;
     }
     for (const c of el.children) walk(c, childDepth);
@@ -560,10 +572,10 @@ async function handle(msg) {
     const tabs = await chrome.tabs.query({});
     return tabs.map((t) => ({
       id: t.id,
-      url: t.url,
-      title: t.title,
-      active: t.active,
-      driven: drivenTabs.has(t.id),
+      url: t.url, // whole — agents pick their <match> substring from this
+      title: (t.title || '').slice(0, 80),
+      ...(t.active ? { active: true } : {}),
+      ...(drivenTabs.has(t.id) ? { driven: true } : {}),
     }));
   }
 
@@ -605,7 +617,7 @@ async function handle(msg) {
 
   if (msg.type === 'snap') {
     const tab = await findTab(msg.urlMatch);
-    return await runEval(tab.id, SNAP_SRC(msg.scope, msg.diff));
+    return await runEval(tab.id, SNAP_SRC(msg.scope, msg.diff, msg.href));
   }
 
   if (msg.type === 'click') {
@@ -690,6 +702,11 @@ async function handle(msg) {
       }
       const params = { format };
       if (format === 'jpeg') params.quality = msg.quality ?? 80;
+      // Downscale to a long edge of `max` px (0 = native). Claude resizes
+      // anything past ~1568px on read anyway, so a native-res capture of a big
+      // window buys file size, never detail — smaller capture, same answer.
+      const max = msg.max === 0 ? Infinity : msg.max || 1280;
+      const cap = (w, h) => Math.min(msg.scale || 1, max / Math.max(w, h));
       if (msg.full) {
         // Full page: render beyond the viewport, clip to the CSS content size.
         const m = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.getLayoutMetrics');
@@ -697,22 +714,24 @@ async function handle(msg) {
         params.captureBeyondViewport = true;
         params.clip = { x: 0, y: 0, width: Math.ceil(c.width), height: Math.min(Math.ceil(c.height), 16384), scale: msg.scale || 1 };
       } else if (msg.crop) {
-        params.clip = {
-          x: msg.crop[0],
-          y: msg.crop[1],
-          width: msg.crop[2],
-          height: msg.crop[3],
-          scale: msg.scale || 1,
-        };
-      } else if (msg.scale && msg.scale !== 1) {
+        params.captureBeyondViewport = true;
+        params.clip = { x: msg.crop[0], y: msg.crop[1], width: msg.crop[2], height: msg.crop[3], scale: cap(msg.crop[2], msg.crop[3]) };
+      } else {
+        // Viewport: cssVisualViewport fields are pageX/pageY/clientWidth/
+        // clientHeight (no x/y/width/height — that's what broke --scale).
         const m = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.getLayoutMetrics');
         const v = m.cssVisualViewport;
-        params.clip = { x: v.x, y: v.y, width: v.width, height: v.height, scale: msg.scale };
+        const s = cap(v.clientWidth, v.clientHeight);
+        if (s < 1) {
+          params.captureBeyondViewport = true;
+          params.clip = { x: v.pageX, y: v.pageY, width: v.clientWidth, height: v.clientHeight, scale: s };
+        }
       }
       const res = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.captureScreenshot', params);
       return `data:image/${format};base64,${res.data}`;
     } catch (e) {
       // debugger unavailable (chrome:// pages etc.) — fall back to captureVisibleTab
+      console.warn('[bridge] cdp shot failed, falling back (flags ignored):', e);
       return await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
     } finally {
       if (attachedByUs) {

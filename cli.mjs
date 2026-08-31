@@ -45,8 +45,9 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
   open <url>                        open + mark a new tab
   nav <match> <url>                 navigate matching tab
   close <match>                     close matching tab
-  snap <match> [css] [--diff]       a11y-tree snapshot with @eN refs (cheap — use before shot);
-                                    [css] scopes to a subtree, --diff shows only changes since last snap
+  snap <match> [css] [--diff] [--href]   a11y-tree snapshot with @eN refs (cheap — use before shot);
+                                    [css] scopes to a subtree, --diff shows only changes since last snap,
+                                    --href includes all link URLs (default: only nameless links)
   click <match> <@ref|css>          click an element (fails loudly if an overlay covers it)
   fill <match> <@ref|css> <value>   set input value (React-safe)
   type <match> <@ref|css> <text>    per-char typing — triggers autocomplete/keystroke UIs
@@ -54,7 +55,8 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
   hover <match> <@ref|css>          hover an element (opens hover menus)
   wait <match> [css|--text t] [--timeout ms]
   eval <match> <js|-> [--world main|isolated]     '-' reads JS from stdin
-  shot <match> <out> [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full]
+  shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full]
+                                    --max caps the long edge (default 1280, 0 = native res)
   net <match> [--dur ms] [--filter s]   capture network for N ms (CDP, one line per request)
   measure <match> <css>             rect + computed styles as JSON
   console <match> [--clear]         page console + errors (hook installs on first call)
@@ -110,10 +112,11 @@ switch (cmdName) {
     break;
 
   case 'snap': {
-    if (!args[0]) fail('usage: snap <match> [css] [--diff]');
+    if (!args[0]) fail('usage: snap <match> [css] [--diff] [--href]');
     const diff = args.includes('--diff');
-    const scope = args.slice(1).find((a) => a !== '--diff') || null;
-    print(await cmd({ type: 'snap', urlMatch: args[0], scope, diff }));
+    const href = args.includes('--href');
+    const scope = args.slice(1).find((a) => a !== '--diff' && a !== '--href') || null;
+    print(await cmd({ type: 'snap', urlMatch: args[0], scope, diff, href }));
     break;
   }
 
@@ -189,13 +192,14 @@ switch (cmdName) {
 
   case 'shot': {
     const [match, out, ...rest] = args;
-    if (!match || !out) fail('usage: shot <match> <out> [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full]');
+    if (!match || !out) fail('usage: shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full]');
     const msg = { type: 'shot', urlMatch: match };
     for (let i = 0; i < rest.length; i++) {
       const k = rest[i];
       if (k === '--full') { msg.full = true; continue; }
       const v = rest[++i];
-      if (k === '--scale') msg.scale = Number(v);
+      if (k === '--max') msg.max = Number(v);
+      else if (k === '--scale') msg.scale = Number(v);
       else if (k === '--format') msg.format = v;
       else if (k === '--quality') msg.quality = Number(v);
       else if (k === '--crop') msg.crop = v.split(',').map(Number);

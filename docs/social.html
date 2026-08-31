@@ -1,6 +1,7 @@
 <!doctype html>
 <!-- Source for docs/social.png (1280x640 GitHub social preview).
-     Render: open this file in Chrome, `cli.mjs emulate <match> 1280 640`, `cli.mjs shot <match> docs/social.png` -->
+     Render: open this file in Chrome, `cli.mjs release <match>` (hides the real marker — the page mocks it),
+     `cli.mjs emulate <match> 1280 640`, `cli.mjs shot <match> docs/social.png --max 0` -->
 <html>
 <head>
 <meta charset="utf-8">
@@ -14,10 +15,10 @@
     display: flex; flex-direction: column;
   }
   .banner {
+    position: absolute; bottom: 72px; right: 24px;
     background: #a855f7; color: #fff;
-    font-weight: 700; font-size: 20px;
-    text-align: center; padding: 10px;
-    letter-spacing: 0.02em;
+    font-size: 18px; padding: 4px 14px; border-radius: 12px;
+    opacity: 0.9;
   }
   main {
     flex: 1;
@@ -58,14 +59,14 @@
 </style>
 </head>
 <body>
-  <div class="banner">🟣 AI AGENT IS DRIVING THIS TAB</div>
+  <div class="banner">🟣 bridge ✕</div>
   <main>
     <h1>chrome-bridge<span class="dot">.</span></h1>
     <div class="pitch">Let any AI agent drive your <b>real</b> Chrome.</div>
     <div class="sub">Logged-in tabs &middot; zero npm dependencies &middot; no relaunch, no MCP server</div>
     <div class="term">
       <div><span class="p">$</span> <span class="c">node cli.mjs snap localhost:8082</span></div>
-      <div class="o">&nbsp;&nbsp;link "Deploy" <span class="r">@e4</span> https://localhost:8082/deploy</div>
+      <div class="o">&nbsp;&nbsp;link "Deploy" <span class="r">@e4</span></div>
       <div><span class="p">$</span> <span class="c">node cli.mjs click localhost:8082 <span class="r">@e4</span></span></div>
     </div>
   </main>
