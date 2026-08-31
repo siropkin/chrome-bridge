@@ -37,7 +37,7 @@ Playwright drives a browser it launched — or one restarted with a debug port �
 
 ## Why not an MCP browser bridge?
 
-MCP bridges (mcp-chrome, BrowserMCP, playwriter) also drive your real browser — but they need an MCP-capable client and a configured, long-running MCP server. chrome-bridge is a plain CLI and one HTTP endpoint: any agent that can run a shell command can use it, nothing to install or configure — and the same commands work from a script, a cron job, or your own terminal.
+MCP bridges (mcp-chrome, BrowserMCP, playwriter) also drive your real browser — but they need an MCP-capable client and a configured, long-running MCP server. (playwright-mcp, above, is an MCP bridge too — it just also loses your live session.) chrome-bridge is a plain CLI and one HTTP endpoint (`POST /cmd`): any agent that can run a shell command can use it — nothing for the agent to install or configure — and the same commands work from a script, a cron job, or your own terminal.
 
 ## Install
 

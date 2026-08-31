@@ -2,7 +2,7 @@
 
 [English](README.md) | **中文**
 
-[![MIT license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Node ≥ 18](https://img.shields.io/badge/node-%E2%89%A5%2018-339933)](https://nodejs.org) [![zero dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](package.json)
+[![MIT 许可证](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Node ≥ 18](https://img.shields.io/badge/node-%E2%89%A5%2018-339933)](https://nodejs.org) [![零依赖](https://img.shields.io/badge/dependencies-0-brightgreen)](package.json)
 
 让**任何 AI 智能体**驱动你**真实的** Chrome 浏览器——你已经打开的标签页、已登录的会话、SSO 和 Cookie。无需新的浏览器配置文件,无需 `--remote-debugging-port` 重启,无需 MCP 服务器,零 npm 依赖。
 
@@ -37,7 +37,7 @@ Playwright 驱动的是它自己启动的浏览器——或者需要用调试端
 
 ## 为什么不选 MCP 浏览器桥?
 
-MCP 桥接工具(mcp-chrome、BrowserMCP、playwriter)同样可以驱动你真实的浏览器——但它们要求客户端支持 MCP,还需要配置一个长期运行的 MCP 服务器。chrome-bridge 只是一个普通的 CLI 和一个 HTTP 端点:任何能执行 shell 命令的智能体都能直接使用,无需安装、无需配置——同样的命令也可以用在脚本、cron 任务或你自己的终端里。
+MCP 桥接工具(mcp-chrome、BrowserMCP、playwriter)同样可以驱动你真实的浏览器——但它们要求客户端支持 MCP,还需要配置一个长期运行的 MCP 服务器。(上文提到的 playwright-mcp 也是一种 MCP 桥——只是它还会丢失你的登录会话。)chrome-bridge 只是一个普通的 CLI 和一个 HTTP 端点(`POST /cmd`):任何能执行 shell 命令的智能体都能直接使用——智能体侧无需安装、无需配置——同样的命令也可以用在脚本、cron 任务或你自己的终端里。
 
 ## 安装
 
