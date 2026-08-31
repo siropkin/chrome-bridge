@@ -385,11 +385,18 @@ const fillSrc = (target, value) => `(() => {
 // keystroke-driven UIs react (fill sets the value in one shot and they don't).
 const typeSrc = (target, text) => `(async () => {
   const sel = ${JSON.stringify(target)}, text = ${JSON.stringify(text)};
-  const el = sel.startsWith('@') ? window.__bridgeRefs?.[sel.slice(1)] : document.querySelector(sel);
+  let el = sel.startsWith('@') ? window.__bridgeRefs?.[sel.slice(1)] : document.querySelector(sel);
   if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
   el.scrollIntoView({ block: 'center' });
   el.focus?.();
   for (const ch of text) {
+    if (!el.isConnected) {
+      // Frameworks sometimes swap the input for a fresh element mid-typing
+      // (Wikipedia Codex does this on first keystroke) — follow the focus.
+      const a = document.activeElement;
+      if ((a && /^(INPUT|TEXTAREA)$/.test(a.tagName)) || a?.isContentEditable) el = a;
+      else throw new Error('element detached mid-typing and focus is not on a text field — re-snap and retry');
+    }
     const o = { bubbles: true, cancelable: true, composed: true, key: ch, code: /[a-z]/i.test(ch) ? 'Key' + ch.toUpperCase() : 'Digit' + ch };
     el.dispatchEvent(new KeyboardEvent('keydown', o));
     if (el.isContentEditable) {
@@ -403,7 +410,9 @@ const typeSrc = (target, text) => `(async () => {
     await new Promise((r) => setTimeout(r, 25));
   }
   el.dispatchEvent(new Event('change', { bubbles: true }));
-  return 'typed ' + text.length + ' chars into ' + sel;
+  const got = el.isContentEditable ? el.innerText : el.value;
+  const warn = got !== undefined && !String(got).endsWith(text) ? ' — WARNING readback is ' + JSON.stringify(String(got).slice(0, 40)) + ' (framework rewrote the value; consider fill)' : '';
+  return 'typed ' + text.length + ' chars into ' + sel + warn;
 })()`;
 
 // Key press on the focused element (or a target). Synthetic keys are untrusted:
