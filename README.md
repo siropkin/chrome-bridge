@@ -1,6 +1,8 @@
 # chrome-bridge
 
-Let an AI agent drive your **real** Chrome — the tabs you already have open, with your logged-in sessions, SSO, and cookies. No fresh browser profile, no `--remote-debugging-port` restart, no MCP server, zero npm dependencies.
+**English** | [中文](README.zh-CN.md)
+
+Let **any AI agent** drive your **real** Chrome — the tabs you already have open, with your logged-in sessions, SSO, and cookies. No fresh browser profile, no `--remote-debugging-port` restart, no MCP server, zero npm dependencies.
 
 ![chrome-bridge driving a tab — purple banner marks it](docs/banner.png)
 
@@ -53,6 +55,21 @@ Paste this into your agent's instructions (`CLAUDE.md`, `.cursorrules`, `AGENTS.
 
 That's the whole integration. [AGENTS.md](AGENTS.md) is a self-contained operating manual — commands, recipes (React-safe form filling, API mocking, network timing), and gotchas — written for any agent that can run shell commands. Agents with web access can read it straight from GitHub: `https://raw.githubusercontent.com/siropkin/chrome-bridge/master/AGENTS.md`.
 
+## Works with any AI agent — not just Claude
+
+The bridge is a plain local CLI + HTTP endpoint, so it's harness-agnostic by design:
+
+| Agent / harness | Where the one-liner goes |
+|---|---|
+| Claude Code | `CLAUDE.md` |
+| Kimi CLI (Moonshot) | `AGENTS.md` or system prompt |
+| Qwen Code (Alibaba) | `AGENTS.md` |
+| GLM / DeepSeek / other coding agents | `AGENTS.md` or system prompt |
+| Cursor | `.cursor/rules` |
+| Your own agent loop | call `cli.mjs`, or skip it and POST JSON straight to `http://127.0.0.1:9333/cmd` |
+
+The HTTP API is one endpoint: `POST /cmd` with `{"type": "snap", "urlMatch": "…"}` — any language, any framework, any model.
+
 ## Commands
 
 | Command | What it does |
@@ -81,9 +98,9 @@ That's the whole integration. [AGENTS.md](AGENTS.md) is a self-contained operati
 Switch any tab between desktop and mobile device views without resizing your window — same mechanism as the DevTools device toolbar (CDP metrics + touch + mobile UA):
 
 ```bash
-node cli.mjs emulate srdkn.com 390 844 mobile   # iPhone-sized view, touch + mobile UA
-node cli.mjs emulate srdkn.com 1440 900         # desktop-sized view
-node cli.mjs unemulate srdkn.com                # back to normal
+node cli.mjs emulate news.ycombinator.com 390 844 mobile   # iPhone-sized view, touch + mobile UA
+node cli.mjs emulate news.ycombinator.com 1440 900         # desktop-sized view
+node cli.mjs unemulate news.ycombinator.com                # back to normal
 ```
 
 ![mobile emulation of a driven tab](docs/mobile.png)
