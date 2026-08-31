@@ -34,19 +34,23 @@ Playwright drives a browser it launched — or one restarted with a debug port �
 
 Two parts: an **unpacked Chrome extension** (MV3) and a **local Node server**. Nothing to npm install.
 
-1. `git clone https://github.com/siropkin/chrome-bridge && cd chrome-bridge`
-2. Chrome → `chrome://extensions` → enable **Developer mode** (top right) → **Load unpacked** → select the `extension/` folder
-3. `node server.mjs` — leave it running (`nohup node server.mjs > server.log 2>&1 &` to background it)
+```bash
+git clone https://github.com/siropkin/chrome-bridge && cd chrome-bridge && ./install.sh
+```
+
+`install.sh` checks Node ≥ 18, starts the server, opens `chrome://extensions`, and prints the agent snippet below. The only manual step: **Load unpacked** → select the `extension/` folder (Chrome requires that click).
 
 Verify: `node cli.mjs health` → `{"ok":true,"extension":true}`
 
 Tabs the bridge drives get a purple banner and join a 🟣 tab group so you always know what's being automated; `release` (or `close`) gives them back.
 
-## Use from an AI agent
+## Use from an AI agent — one line
 
-Point the agent at [AGENTS.md](AGENTS.md) — a self-contained operating manual (commands, recipes, gotchas). One line in your `CLAUDE.md` / `.cursorrules` / agent instructions:
+Paste this into your agent's instructions (`CLAUDE.md`, `.cursorrules`, `AGENTS.md`, system prompt, …) — `install.sh` prints it with your real path filled in:
 
-> To drive my Chrome browser, read `<path>/chrome-bridge/AGENTS.md` and run `node <path>/chrome-bridge/cli.mjs …`.
+> To drive my Chrome browser (real logged-in tabs), read `<path>/chrome-bridge/AGENTS.md` and run ``node `<path>/chrome-bridge/cli.mjs <command>` ``. If the health check fails, tell me to start the bridge.
+
+That's the whole integration. [AGENTS.md](AGENTS.md) is a self-contained operating manual — commands, recipes (React-safe form filling, API mocking, network timing), and gotchas — written for any agent that can run shell commands. Agents with web access can read it straight from GitHub: `https://raw.githubusercontent.com/siropkin/chrome-bridge/master/AGENTS.md`.
 
 ## Commands
 
