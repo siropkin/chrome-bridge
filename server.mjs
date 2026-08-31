@@ -131,6 +131,14 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (req.method === 'POST' && req.url === '/cmd') {
+    // Drive-by protection: a browser page's fetch always carries Origin and
+    // Sec-Fetch-* headers; the CLI (Node fetch) and curl never do. Reject
+    // anything a malicious web page could have sent.
+    if (req.headers.origin || req.headers['sec-fetch-site']) {
+      res.writeHead(403);
+      res.end();
+      return;
+    }
     let body = '';
     req.on('data', (c) => (body += c));
     req.on('end', async () => {
@@ -151,7 +159,10 @@ const server = http.createServer((req, res) => {
 
 server.on('upgrade', (req, socket) => {
   const key = req.headers['sec-websocket-key'];
-  if (!key) {
+  // Only the extension (chrome-extension:// origin) or non-browser clients
+  // (no Origin header) may take the WS seat — never a web page.
+  const origin = req.headers.origin;
+  if (!key || (origin && !origin.startsWith('chrome-extension://'))) {
     socket.destroy();
     return;
   }

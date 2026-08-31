@@ -155,6 +155,29 @@ try {
   })).json();
   assert(bad.ok === false || bad.result === null, 'server: unknown type handled');
 
+  // drive-by protection: browser-origin requests are refused
+  const evil = await fetch(`http://127.0.0.1:${PORT}/cmd`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: 'https://evil.example', 'sec-fetch-site': 'cross-site' },
+    body: JSON.stringify({ type: 'ping' }),
+  });
+  assert(evil.status === 403, 'server: POST /cmd with browser Origin → 403');
+
+  const evilWs = await new Promise((resolve) => {
+    const s = net.connect(PORT, '127.0.0.1');
+    let buf = '';
+    s.on('data', (c) => (buf += c));
+    s.on('connect', () =>
+      s.write(
+        `GET /ws HTTP/1.1\r\nHost: 127.0.0.1:${PORT}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${crypto.randomBytes(16).toString('base64')}\r\nSec-WebSocket-Version: 13\r\nOrigin: https://evil.example\r\n\r\n`
+      )
+    );
+    s.on('close', () => resolve(true));
+    s.on('error', () => resolve(true));
+    setTimeout(() => { s.destroy(); resolve(false); }, 1000);
+  });
+  assert(evilWs, 'server: WS upgrade with browser Origin rejected');
+
   // extension disconnect → health flips
   ext.socket.destroy();
   await new Promise((r) => setTimeout(r, 500));
