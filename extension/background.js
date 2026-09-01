@@ -34,18 +34,17 @@ chrome.alarms.onAlarm.addListener(() => {
 });
 
 // --- Driven-tab marking -----------------------------------------------------
-// Tabs the bridge touches get a purple banner + title prefix in-page and a
+// Tabs the bridge touches get a purple frame + corner tag in-page and a
 // shared "🟣 Bridge" tab group, so the user can see at a glance what's being
 // driven. `release` undoes all of it.
 const drivenTabs = new Set();
 let drivenGroupId = null;
 
 // Runs in the page; must be self-contained.
+// No document.title prefix: pages rewrite their title constantly (unread
+// counts, SPA navs), so it never stays put — and it leaks into any page that
+// reads its own title. The tab group is the strip marker; it can't clobber it.
 function injectBanner() {
-  const PREFIX = '🟣 BRIDGE — ';
-  if (!document.title.startsWith(PREFIX)) {
-    document.title = PREFIX + document.title;
-  }
   if (document.getElementById('bridge-banner')) {
     return;
   }
@@ -65,10 +64,6 @@ function injectBanner() {
 }
 
 function removeBanner() {
-  const PREFIX = '🟣 BRIDGE — ';
-  if (document.title.startsWith(PREFIX)) {
-    document.title = document.title.slice(PREFIX.length);
-  }
   document.getElementById('bridge-banner')?.remove();
 }
 
