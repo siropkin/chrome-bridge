@@ -8,6 +8,27 @@ Let **any AI agent** drive your **real** Chrome — the tabs you already have op
 
 ![chrome-bridge driving a tab — 🟣 corner tag marks it](docs/banner.png)
 
+## Quick start
+
+```bash
+git clone https://github.com/siropkin/chrome-bridge && cd chrome-bridge && ./install.sh
+```
+
+Then load the extension: `chrome://extensions` → Developer mode → **Load unpacked** → select the `extension/` folder (Chrome requires that click — scripts can't).
+
+Verify it's up: `node cli.mjs health` → `{"ok":true,"extension":true}`
+
+Done. Tell your agent about it:
+
+- **Claude Code** — copy `.claude/skills/chrome-bridge/` into your project's `.claude/skills/` (or your `~/.claude/skills/`). It auto-loads on browser tasks and points at `AGENTS.md` for the full manual.
+- **Any other agent** (Cursor, Qwen, GLM, Baseten, raw curl) — paste this one line into your agent's instructions (`CLAUDE.md`, `.cursorrules`, `AGENTS.md`, system prompt, …):
+
+  > To drive my Chrome browser (real logged-in tabs), read `<path>/chrome-bridge/AGENTS.md` and run `node <path>/chrome-bridge/cli.mjs <command>`. If the health check fails, tell me to start the bridge.
+
+That's the whole integration. `AGENTS.md` is a self-contained operating manual — commands, recipes, gotchas — that any agent with file or web access can read. Agents with web access can read it straight from GitHub: `https://raw.githubusercontent.com/siropkin/chrome-bridge/master/AGENTS.md`.
+
+---
+
 A tiny unpacked Chrome extension connects over WebSocket to a local Node server; anything that can run a shell command can drive the browser:
 
 ```bash
@@ -41,27 +62,11 @@ Playwright drives a browser it launched — or one restarted with a debug port �
 
 MCP bridges (mcp-chrome, BrowserMCP, playwriter) also drive your real browser — but they need an MCP-capable client and a configured, long-running MCP server. (playwright-mcp, above, is an MCP bridge too — it just also loses your live session.) chrome-bridge is a plain CLI and one HTTP endpoint (`POST /cmd`): any agent that can run a shell command can use it — nothing for the agent to install or configure — and the same commands work from a script, a cron job, or your own terminal.
 
-## Install
+## Install detail
 
-Two parts: an **unpacked Chrome extension** (MV3) and a **local Node server**. Nothing to npm install.
-
-```bash
-git clone https://github.com/siropkin/chrome-bridge && cd chrome-bridge && ./install.sh
-```
-
-`install.sh` checks Node ≥ 18, starts the server, opens `chrome://extensions`, and prints the agent snippet below. The only manual step: **Load unpacked** → select the `extension/` folder (Chrome requires that click).
-
-Verify: `node cli.mjs health` → `{"ok":true,"extension":true}`
+`install.sh` checks Node ≥ 18, starts the server in the background (logs to `server.log`), opens `chrome://extensions`, and prints the agent one-liner with your real path filled in. If the server dies or the machine reboots, the agent's health check fails and it'll ask you to restart it: `node server.mjs`.
 
 Tabs the bridge drives get a thin purple viewport frame and a small 🟣 tag in the bottom-right corner (click it to hide it until the next navigation) and join a 🟣 tab group so you always know what's being automated; `release` (or `close`) gives them back.
-
-## Use from an AI agent — one line
-
-Paste this into your agent's instructions (`CLAUDE.md`, `.cursorrules`, `AGENTS.md`, system prompt, …) — `install.sh` prints it with your real path filled in:
-
-> To drive my Chrome browser (real logged-in tabs), read `<path>/chrome-bridge/AGENTS.md` and run ``node `<path>/chrome-bridge/cli.mjs <command>` ``. If the health check fails, tell me to start the bridge.
-
-That's the whole integration. [AGENTS.md](AGENTS.md) is a self-contained operating manual — commands, recipes (React-safe form filling, API mocking, network timing), and gotchas — written for any agent that can run shell commands. Agents with web access can read it straight from GitHub: `https://raw.githubusercontent.com/siropkin/chrome-bridge/master/AGENTS.md`.
 
 ## Works with any AI agent — not just Claude
 
