@@ -74,6 +74,13 @@ function removeBanner() {
 
 async function groupTab(tabId) {
   try {
+    if (drivenGroupId === null) {
+      // Service-worker restarts wipe drivenGroupId — recover the existing
+      // Bridge group in this window instead of spawning a duplicate.
+      const { windowId } = await chrome.tabs.get(tabId);
+      const groups = await chrome.tabGroups.query({ title: '🟣 Bridge', windowId });
+      drivenGroupId = groups[0]?.id ?? null;
+    }
     if (drivenGroupId !== null) {
       await chrome.tabs.group({ tabIds: tabId, groupId: drivenGroupId });
       return;
