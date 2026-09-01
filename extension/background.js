@@ -583,14 +583,14 @@ async function handle(msg) {
   }
 
   if (msg.type === 'open') {
-    const tab = await chrome.tabs.create({ url: msg.url, active: true });
+    const tab = await chrome.tabs.create({ url: msg.url, active: false });
     await markTab(tab.id);
     return { id: tab.id, url: tab.url };
   }
 
   if (msg.type === 'navigate') {
     const tab = await findTab(msg.urlMatch);
-    await chrome.tabs.update(tab.id, { url: msg.url, active: true });
+    await chrome.tabs.update(tab.id, { url: msg.url });
     await markTab(tab.id);
     return { id: tab.id };
   }
@@ -692,8 +692,8 @@ async function handle(msg) {
 
   if (msg.type === 'shot') {
     const tab = await findTab(msg.urlMatch);
-    await chrome.tabs.update(tab.id, { active: true });
-    await new Promise((r) => setTimeout(r, 400));
+    // No tab activation here: CDP captureScreenshot works on background tabs,
+    // and activating would steal the user's view. Only the fallback below needs it.
     const format = msg.format === 'jpeg' ? 'jpeg' : 'png';
     let attachedByUs = true;
     try {
@@ -751,6 +751,10 @@ async function handle(msg) {
       // debugger unavailable (chrome:// pages etc.) — fall back to captureVisibleTab
       // (viewport only, native res — crop/max/scale can't be honored there)
       console.warn('[bridge] cdp shot failed, falling back (crop/max/scale ignored):', e);
+      // captureVisibleTab grabs the window's ACTIVE tab — must activate first,
+      // otherwise we'd screenshot whatever the user is looking at.
+      await chrome.tabs.update(tab.id, { active: true });
+      await new Promise((r) => setTimeout(r, 400));
       return await chrome.tabs.captureVisibleTab(tab.windowId, { format, ...(format === 'jpeg' ? { quality: msg.quality ?? 80 } : {}) });
     } finally {
       if (attachedByUs) {
