@@ -431,7 +431,9 @@ const SNAP_SRC = (scope, diff, href) => `(() => {
   const skey = (scopeSel || '') + (${href ? 'true' : 'false'} ? '|href' : '');
   const prev = store[skey] || null;
   const cur = {};
-  for (const l of lines) { const m = l.match(/@(e\\d+)/); if (m) cur[m[1]] = l; }
+  // Star markers are display-only — strip them before storing, else a starred
+  // line from a full snap diffs as "changed" against its unstarred diff twin.
+  for (const l of lines) { const m = l.match(/@(e\\d+)/); if (m) cur[m[1]] = l.replace(/^(\\s*)\\* /, '$1'); }
   store[skey] = cur;
   if (${diff ? 'true' : 'false'} && prev) {
     const out = [];
@@ -797,10 +799,15 @@ async function handle(msg) {
   if (msg.type === 'open') {
     const tab = await chrome.tabs.create({ url: msg.url, active: false });
     msg._tabId = tab.id;
+    // Listener before the favicon/banner work: those are two executeScript
+    // round trips, and a fast page can hit 'complete' inside that window
+    // (observed with example.com) — the load event would be missed.
+    const complete = waitForLoad(tab.id);
     await setFavicon(tab.id, '⏳');
     await markTab(tab.id);
-    const complete = await waitForLoad(tab.id);
-    return { id: tab.id, url: tab.url, loaded: complete };
+    const loaded = await complete;
+    const { url } = await chrome.tabs.get(tab.id); // create returns url:"" while pending
+    return { id: tab.id, url, loaded };
   }
 
   if (msg.type === 'navigate') {
