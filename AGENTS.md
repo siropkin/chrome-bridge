@@ -21,7 +21,8 @@ node <repo>/cli.mjs <command> …
 2. `open <url>` / `nav <match> <url>` — auto-marks the tab (🟣 corner tag + tab group).
 3. **`snap <match>` — always snap before shooting.** The a11y tree with `@eN` refs is ~10× cheaper than a screenshot and usually answers the question. Big page? Scope it: `snap <match> "dialog"`. Re-checking after an action? `snap <match> --diff` prints only what changed. Looking for one thing? `snap <match> | grep -i save`. Link URLs are omitted except on nameless links (they were most of the bytes — you click refs, not URLs); add `--href` only if you truly need them.
 4. `click <match> @e3` / `fill <match> @e2 "value"` — refs **survive re-snaps** (an element keeps its @eN while its role+name are unchanged) but expire on navigation; re-snap after `nav`.
-5. `wait <match> --text "Saved"` after actions that trigger loads. Chain dependent steps in one `batch` — stdin, one command per line (`click` → `wait` → `snap --diff`) runs as one process and one shell call instead of three.
+5. **Act + observe in one call: `click <match> @e3 --diff`** — the action settles (waits for the DOM to go quiet, 3s cap), then the snap-diff (only what changed) rides along in the same result. No separate `wait` + `snap --diff` round trips. If there was no earlier snap, the full tree is returned instead — that's your baseline.
+6. `wait <match> --text "Saved"` only when you need something specific without acting. Chain other dependent steps in one `batch` — stdin, one command per line — one process and one shell call instead of several.
 
 6. `shot <match> out.png` only when you need pixels. The long edge is capped at 1280px by default (models downscale bigger images on read anyway) — `--max 0` for native res, `--max 800 --format jpeg` for a cheap glance. Read screenshots in a subagent to keep image tokens out of the main context.
 7. **Always `release <match>` (or `close <match>`) when done. Always `unemulate` after emulating.**
@@ -32,18 +33,21 @@ node <repo>/cli.mjs <command> …
 batch                             read commands from stdin, one per line ('#' = comment,
                                   quotes honored) — one process for N commands; stops on first error
 tabs                              list tabs (compact JSON)
-open <url>                        open + mark a new tab
-nav <match> <url>                 navigate matching tab
+open <url>                        open + mark a new tab (waits for load, 8s cap)
+nav <match> <url> [--diff]        navigate matching tab (waits for load, 8s cap)
 close <match>                     close matching tab
 snap <match> [css] [--diff] [--href]
                                   a11y tree with @eN refs; [css] scopes to a subtree,
                                   --diff prints only lines added/removed/changed since last snap,
-                                  --href includes all link URLs (default: only nameless links)
-click <match> <@ref|css>          click (fails loudly if an overlay covers the click point)
-fill <match> <@ref|css> <value>   set input value (React-safe)
-type <match> <@ref|css> <text>    per-char typing — triggers autocomplete/keystroke UIs
-press <match> <key> [@ref|css]    key press (Enter/Tab/Escape/…) on focused or given element
-hover <match> <@ref|css>          hover (opens hover menus)
+                                  --href includes all link URLs (default: only nameless links);
+                                  '* ' prefix marks elements new since the previous snap
+click <match> <@ref|css> [--diff]   click (fails loudly if an overlay covers the click point)
+fill <match> <@ref|css> <value> [--diff]   set input value (React-safe)
+type <match> <@ref|css> <text> [--diff]    per-char typing — triggers autocomplete/keystroke UIs
+press <match> <key> [@ref|css] [--diff]   key press (Enter/Tab/Escape/…) on focused or given element
+hover <match> <@ref|css> [--diff]   hover (opens hover menus)
+                                  [--diff] on an action: settle (100ms DOM quiet, 3s cap), then
+                                  append the snap-diff — act + observe in one call
 wait <match> [css|--text t] [--timeout ms]
 eval <match> <js|-> [--world main|isolated]     '-' reads JS from stdin
 shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full]

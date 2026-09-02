@@ -61,17 +61,20 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
   batch                             read commands from stdin, one per line ('#' = comment,
                                     quotes honored) — one process for N commands; stops on first error
   tabs                              list tabs (compact JSON)
-  open <url>                        open + mark a new tab
-  nav <match> <url>                 navigate matching tab
+  open <url>                        open + mark a new tab (waits for load, 8s cap)
+  nav <match> <url> [--diff]        navigate matching tab (waits for load, 8s cap)
   close <match>                     close matching tab
   snap <match> [css] [--diff] [--href]   a11y-tree snapshot with @eN refs (cheap — use before shot);
                                     [css] scopes to a subtree, --diff shows only changes since last snap,
-                                    --href includes all link URLs (default: only nameless links)
-  click <match> <@ref|css>          click an element (fails loudly if an overlay covers it)
-  fill <match> <@ref|css> <value>   set input value (React-safe)
-  type <match> <@ref|css> <text>    per-char typing — triggers autocomplete/keystroke UIs
-  press <match> <key> [@ref|css]    key press (Enter/Tab/Escape/…) on focused or given element
-  hover <match> <@ref|css>          hover an element (opens hover menus)
+                                    --href includes all link URLs (default: only nameless links);
+                                    lines prefixed '* ' are elements new since the previous snap
+  click <match> <@ref|css> [--diff]  click an element (fails loudly if an overlay covers it)
+  fill <match> <@ref|css> <value> [--diff]   set input value (React-safe)
+  type <match> <@ref|css> <text> [--diff]    per-char typing — triggers autocomplete/keystroke UIs
+  press <match> <key> [@ref|css>] [--diff]  key press (Enter/Tab/Escape/…) on focused or given element
+  hover <match> <@ref|css> [--diff]  hover an element (opens hover menus)
+                                    [--diff] on an action: settle (100ms DOM quiet, 3s cap), then
+                                    append the snap-diff to the result — act + observe in one call
   wait <match> [css|--text t] [--timeout ms]
   eval <match> <js|-> [--world main|isolated]     '-' reads JS from stdin
   shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full]
@@ -136,10 +139,12 @@ async function run(cmdName, args) {
       break;
 
     case 'nav':
-    case 'navigate':
-      if (!args[0] || !args[1]) fail('usage: nav <match> <url>');
-      print(await cmd({ type: 'navigate', urlMatch: args[0], url: args[1] }));
+    case 'navigate': {
+      const rest = args.filter((a) => a !== '--diff');
+      if (!rest[0] || !rest[1]) fail('usage: nav <match> <url> [--diff]');
+      print(await cmd({ type: 'navigate', urlMatch: rest[0], url: rest[1], ...(args.includes('--diff') ? { diff: true } : {}) }));
       break;
+    }
 
     case 'close':
     case 'mark':
@@ -158,30 +163,31 @@ async function run(cmdName, args) {
       break;
     }
 
+    // --diff on an action appends a settle + snap-diff to the result — the
+    // post-action observation rides along instead of costing two more
+    // shell calls (click → wait → snap --diff becomes one command).
     case 'click':
-      if (!args[0] || !args[1]) fail('usage: click <match> <@ref|css>');
-      print(await cmd({ type: 'click', urlMatch: args[0], target: args[1] }));
+    case 'hover': {
+      const rest = args.filter((a) => a !== '--diff');
+      if (!rest[0] || !rest[1]) fail(`usage: ${cmdName} <match> <@ref|css> [--diff]`);
+      print(await cmd({ type: cmdName, urlMatch: rest[0], target: rest[1], ...(args.includes('--diff') ? { diff: true } : {}) }));
       break;
+    }
 
     case 'fill':
-      if (!args[0] || !args[1] || args[2] === undefined) fail('usage: fill <match> <@ref|css> <value>');
-      print(await cmd({ type: 'fill', urlMatch: args[0], target: args[1], value: args.slice(2).join(' ') }));
+    case 'type': {
+      const rest = args.filter((a) => a !== '--diff');
+      if (!rest[0] || !rest[1] || rest[2] === undefined) fail(`usage: ${cmdName} <match> <@ref|css> <value> [--diff]`);
+      print(await cmd({ type: cmdName, urlMatch: rest[0], target: rest[1], value: rest.slice(2).join(' '), ...(args.includes('--diff') ? { diff: true } : {}) }));
       break;
+    }
 
-    case 'type':
-      if (!args[0] || !args[1] || args[2] === undefined) fail('usage: type <match> <@ref|css> <text>');
-      print(await cmd({ type: 'type', urlMatch: args[0], target: args[1], value: args.slice(2).join(' ') }));
+    case 'press': {
+      const rest = args.filter((a) => a !== '--diff');
+      if (!rest[0] || !rest[1]) fail('usage: press <match> <key> [@ref|css] [--diff]');
+      print(await cmd({ type: 'press', urlMatch: rest[0], key: rest[1], target: rest[2] || null, ...(args.includes('--diff') ? { diff: true } : {}) }));
       break;
-
-    case 'press':
-      if (!args[0] || !args[1]) fail('usage: press <match> <key> [@ref|css]');
-      print(await cmd({ type: 'press', urlMatch: args[0], key: args[1], target: args[2] || null }));
-      break;
-
-    case 'hover':
-      if (!args[0] || !args[1]) fail('usage: hover <match> <@ref|css>');
-      print(await cmd({ type: 'hover', urlMatch: args[0], target: args[1] }));
-      break;
+    }
 
     case 'net': {
       const [match, ...rest] = args;

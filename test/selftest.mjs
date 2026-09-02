@@ -121,7 +121,7 @@ try {
     if (msg.type === 'eval') return respond({ echo: msg.code.length });
     if (msg.type === 'big') return respond('x'.repeat(3 * 1024 * 1024)); // 3 MB — exercises 64-bit frames
     if (msg.type === 'shot') { lastShot = msg; return respond('data:image/png;base64,' + Buffer.from('fakepng').toString('base64')); }
-    if (['snap', 'press', 'type', 'hover', 'net'].includes(msg.type)) return respond(msg); // echo for flag-parsing checks
+    if (['snap', 'press', 'type', 'hover', 'net', 'click', 'fill', 'navigate'].includes(msg.type)) return respond(msg); // echo for flag-parsing checks
     return respond(null);
   });
   await new Promise((r) => setTimeout(r, 100));
@@ -165,6 +165,16 @@ try {
 
   const netc = await cli('net', 'example.com', '--dur', '500', '--filter', '/api');
   assert(netc.status === 0 && netc.stdout.includes('"duration":500') && netc.stdout.includes('"filter":"/api"'), 'cli net flags', netc.stdout + netc.stderr);
+
+  // --diff on actions: flag reaches the extension; plain actions don't send it
+  const clickDiff = await cli('click', 'example.com', '@e3', '--diff');
+  assert(clickDiff.status === 0 && clickDiff.stdout.includes('"target":"@e3"') && clickDiff.stdout.includes('"diff":true'), 'cli click --diff', clickDiff.stdout + clickDiff.stderr);
+  const clickPlain = await cli('click', 'example.com', '@e3');
+  assert(clickPlain.status === 0 && !clickPlain.stdout.includes('"diff"'), 'cli click without --diff sends no diff', clickPlain.stdout + clickPlain.stderr);
+  const fillDiff = await cli('fill', 'example.com', '@e2', 'hello world', '--diff');
+  assert(fillDiff.status === 0 && fillDiff.stdout.includes('"value":"hello world"') && fillDiff.stdout.includes('"diff":true'), 'cli fill --diff keeps value', fillDiff.stdout + fillDiff.stderr);
+  const navDiff = await cli('nav', 'example.com', 'https://example.org/x', '--diff');
+  assert(navDiff.status === 0 && navDiff.stdout.includes('"url":"https://example.org/x"') && navDiff.stdout.includes('"diff":true'), 'cli nav --diff', navDiff.stdout + navDiff.stderr);
 
   // large frame extension→server (3 MB result)
   const bigRes = await fetch(`http://127.0.0.1:${PORT}/cmd`, {

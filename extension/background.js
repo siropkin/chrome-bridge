@@ -333,6 +333,14 @@ const SNAP_SRC = (scope, diff, href) => `(() => {
   // while its role+name are unchanged (playwright-mcp style), so a re-snap
   // after a DOM change doesn't renumber the page the agent already read.
   const refs = (window.__bridgeRefs = window.__bridgeRefs || {});
+  // A star prefix marks refs not present in any earlier snap this navigation,
+  // so a re-snap shows new content (browser-use does the same) without a
+  // separate --diff round trip. Skipped on a page's first snap (everything
+  // would be new) and inside --diff output (its '+ ~' lines already say it).
+  // NOTE: no backticks in comments inside these templates — one closes the
+  // template and the function silently becomes string * string = NaN.
+  const seen = (window.__bridgeSeen = window.__bridgeSeen || new Set());
+  const markFresh = seen.size > 0 && !${diff ? 'true' : 'false'};
   for (const k in refs) if (!refs[k].isConnected) delete refs[k];
   let n = (window.__bridgeRefN = window.__bridgeRefN || 0);
   let truncated = false;
@@ -400,7 +408,9 @@ const SNAP_SRC = (scope, diff, href) => `(() => {
         el.__bridgeRefKey = key;
       }
       refs[ref] = el;
-      lines.push('  '.repeat(Math.min(depth, 10)) + role + (name ? ' ' + JSON.stringify(name) : '') + ' @' + ref + stateOf(el, role, name));
+      const fresh = markFresh && !seen.has(ref);
+      seen.add(ref);
+      lines.push('  '.repeat(Math.min(depth, 10)) + (fresh ? '* ' : '') + role + (name ? ' ' + JSON.stringify(name) : '') + ' @' + ref + stateOf(el, role, name));
       childDepth = depth + 1;
     }
     for (const c of el.children) walk(c, childDepth);
@@ -577,18 +587,52 @@ const hoverSrc = (target) => `(() => {
   return 'hovered ' + sel;
 })()`;
 
+// Mutation-driven wait (puppeteer `polling: 'mutation'` style): the predicate
+// re-runs on every mutation batch (microtask latency) instead of a fixed
+// 150ms sleep; a slow interval backstops changes that mutate nothing.
 const waitSrc = ({ selector, text, timeout }) => `(async () => {
   const sel = ${JSON.stringify(selector || null)}, text = ${JSON.stringify(text || null)}, timeout = ${Number(timeout) || 10000};
   const t0 = Date.now();
-  while (Date.now() - t0 < timeout) {
+  const check = () => {
     if (sel) {
       const el = document.querySelector(sel);
       if (el) { const r = el.getBoundingClientRect(); if (r.width > 0 && r.height > 0) return 'found ' + sel; }
     }
     if (text && (document.body?.innerText || '').includes(text)) return 'found text ' + JSON.stringify(text);
-    await new Promise((r) => setTimeout(r, 150));
-  }
+    return null;
+  };
+  const first = check();
+  if (first) return first;
+  await new Promise((resolve) => {
+    const done = () => { try { mo.disconnect(); } catch {} clearInterval(iv); resolve(); };
+    const tryDone = () => { if (check() || Date.now() - t0 >= timeout) done(); };
+    const mo = new MutationObserver(tryDone);
+    mo.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+    const iv = setInterval(tryDone, 200);
+  });
+  const r = check();
+  if (r) return r;
   throw new Error('timeout after ' + timeout + 'ms waiting for ' + (sel || JSON.stringify(text)));
+})()`;
+
+// Post-action settle (chrome-devtools-mcp style): resolves once the DOM has
+// been quiet for 100ms, capped at 3s — a --diff observation then reads the
+// finished state instead of a half-updated page.
+const SETTLE_SRC = `(async () => {
+  const t0 = Date.now();
+  await new Promise((resolve) => {
+    const done = () => { try { mo.disconnect(); } catch {} clearTimeout(t); clearInterval(iv); resolve(); };
+    let t = null;
+    const mo = new MutationObserver(() => {
+      if (Date.now() - t0 >= 3000) return done();
+      clearTimeout(t);
+      t = setTimeout(done, 100);
+    });
+    mo.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+    t = setTimeout(done, 100);
+    const iv = setInterval(() => { if (Date.now() - t0 >= 3000) done(); }, 500);
+  });
+  return 'settled ' + Math.round(Date.now() - t0) + 'ms';
 })()`;
 
 // Console hook must run in the MAIN world — isolated worlds get their own console.
@@ -675,6 +719,40 @@ async function runEval(tabId, code, world = 'auto') {
   }
 }
 
+// --- --diff on actions: observe in the same round trip ----------------------
+// The core agent loop collapses from click → wait → snap --diff (3 shell
+// calls, ~1s harness round trip each) to `click <match> @e3 --diff` (1 call):
+// settle, then diff-snap, appended to the action result. playwright-mcp and
+// BrowserMCP return a post-action snapshot with every action for the same
+// reason; a diff costs fewer tokens than the full snap it replaces.
+async function observeDiff(tabId, actionResult) {
+  try {
+    await runEval(tabId, SETTLE_SRC);
+    const snap = await runEval(tabId, SNAP_SRC(null, true, false));
+    return actionResult + '\n' + snap;
+  } catch (e) {
+    // The action worked; only the observation failed (e.g. it navigated and
+    // tore the context mid-settle). Don't turn a success into an error.
+    return actionResult + '\n(observation unavailable: ' + String(e).slice(0, 120) + ' — re-snap; refs expired on navigation)';
+  }
+}
+
+// Bounded wait for a tab to reach status 'complete' — nav/open then read as
+// loaded instead of the agent paying a separate `wait` round trip (playwright
+// caps goto the same way). 8s ceiling; `loaded: false` means still loading.
+function waitForLoad(tabId, timeout = 8000) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => { chrome.tabs.onUpdated.removeListener(onUpd); resolve(false); }, timeout);
+    const onUpd = (tid, info) => {
+      if (tid !== tabId || info.status !== 'complete') return;
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(onUpd);
+      resolve(true);
+    };
+    chrome.tabs.onUpdated.addListener(onUpd);
+  });
+}
+
 // --- Commands ---------------------------------------------------------------
 
 // Takes the whole msg: records _tabId so the onmessage finally can flip a
@@ -721,14 +799,20 @@ async function handle(msg) {
     msg._tabId = tab.id;
     await setFavicon(tab.id, '⏳');
     await markTab(tab.id);
-    return { id: tab.id, url: tab.url };
+    const complete = await waitForLoad(tab.id);
+    return { id: tab.id, url: tab.url, loaded: complete };
   }
 
   if (msg.type === 'navigate') {
     const tab = await findTab(msg);
+    // Listener before update: a fast page can hit 'complete' before
+    // tabs.update resolves, and a missed event would mean a wasted 8s wait.
+    const loaded = waitForLoad(tab.id);
     await chrome.tabs.update(tab.id, { url: msg.url });
     await markTab(tab.id);
-    return { id: tab.id };
+    const complete = await loaded;
+    if (msg.diff) return await observeDiff(tab.id, `navigated${complete ? '' : ' (still loading)'}`);
+    return { id: tab.id, loaded: complete };
   }
 
   if (msg.type === 'close') {
@@ -759,29 +843,16 @@ async function handle(msg) {
     return await runEval(tab.id, SNAP_SRC(msg.scope, msg.diff, msg.href));
   }
 
-  if (msg.type === 'click') {
+  if (['click', 'fill', 'type', 'press', 'hover'].includes(msg.type)) {
     const tab = await findTab(msg);
-    return await runEval(tab.id, clickSrc(msg.target));
-  }
-
-  if (msg.type === 'fill') {
-    const tab = await findTab(msg);
-    return await runEval(tab.id, fillSrc(msg.target, msg.value));
-  }
-
-  if (msg.type === 'type') {
-    const tab = await findTab(msg);
-    return await runEval(tab.id, typeSrc(msg.target, msg.value));
-  }
-
-  if (msg.type === 'press') {
-    const tab = await findTab(msg);
-    return await runEval(tab.id, pressSrc(msg.key, msg.target));
-  }
-
-  if (msg.type === 'hover') {
-    const tab = await findTab(msg);
-    return await runEval(tab.id, hoverSrc(msg.target));
+    const src =
+      msg.type === 'click' ? clickSrc(msg.target) :
+      msg.type === 'fill' ? fillSrc(msg.target, msg.value) :
+      msg.type === 'type' ? typeSrc(msg.target, msg.value) :
+      msg.type === 'press' ? pressSrc(msg.key, msg.target) :
+      hoverSrc(msg.target);
+    const result = await runEval(tab.id, src);
+    return msg.diff ? await observeDiff(tab.id, result) : result;
   }
 
   if (msg.type === 'net') {

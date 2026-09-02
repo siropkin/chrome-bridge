@@ -88,12 +88,12 @@ The HTTP API is one endpoint: `POST /cmd` with `{"type": "snap", "urlMatch": "�
 | Command | What it does |
 |---|---|
 | `tabs` | List tabs (id, url, title, driven flag) |
-| `open <url>` · `nav <match> <url>` · `close <match>` | Tab lifecycle |
-| `snap <match> [css] [--diff] [--href]` | Accessibility-tree snapshot with `@eN` refs — **cheap; use it before screenshots**. Scope to a subtree, diff against the last snap, or include all link URLs with `--href` |
-| `click <match> <@ref\|css>` | Click (scrolls into view, full pointer/mouse event sequence, overlay-coverage check) |
-| `fill <match> <@ref\|css> <value>` | Set input value — React-safe (native setter + input/change events) |
-| `type <match> <@ref\|css> <text>` · `press <match> <key>` · `hover <match> <@ref\|css>` | Per-char typing (autocomplete UIs), key presses, hover |
-| `wait <match> [css\|--text t] [--timeout ms]` | Wait for element or visible text |
+| `open <url>` · `nav <match> <url> [--diff]` · `close <match>` | Tab lifecycle — `open`/`nav` wait for the page to load (8s cap) |
+| `snap <match> [css] [--diff] [--href]` | Accessibility-tree snapshot with `@eN` refs — **cheap; use it before screenshots**. Scope to a subtree, diff against the last snap, or include all link URLs with `--href`. Lines prefixed `*` are elements new since the previous snap |
+| `click <match> <@ref\|css> [--diff]` | Click (scrolls into view, full pointer/mouse event sequence, overlay-coverage check) |
+| `fill <match> <@ref\|css> <value> [--diff]` | Set input value — React-safe (native setter + input/change events) |
+| `type <match> <@ref\|css> <text> [--diff]` · `press <match> <key> [@ref] [--diff]` · `hover <match> <@ref\|css> [--diff]` | Per-char typing (autocomplete UIs), key presses, hover |
+| `wait <match> [css\|--text t] [--timeout ms]` | Wait for element or visible text — MutationObserver-driven, resolves as soon as the page changes |
 | `eval <match> <js\|-> [--world main]` | Run JS in the page; `-` reads from stdin |
 | `shot <match> <out> [--max px] [--scale N] [--format jpeg] [--quality N] [--crop x,y,w,h] [--full]` | Screenshot via CDP. Long edge capped at `--max` px (default 1280, `0` = native res) — models downscale big images on read anyway, so native res buys file size, not detail. `--full` = whole page height |
 | `net <match> [--dur ms] [--filter s]` | Capture network traffic via CDP — one compact line per request |
@@ -102,7 +102,7 @@ The HTTP API is one endpoint: `POST /cmd` with `{"type": "snap", "urlMatch": "�
 | `grid <match>` | Toggle an 8px alignment grid overlay |
 | `emulate <match> <w> <h> [mobile]` · `unemulate <match>` | Switch between desktop and mobile device views — CDP emulation, no window resize |
 | `resize <match> <w> <h>` | Resize the window |
-| `batch` | Run commands from stdin, one per line — one process for a whole sequence (`click` → `wait` → `snap --diff`); stops on the first error |
+| `batch` | Run commands from stdin, one per line — one process for a whole sequence; stops on the first error |
 | `mark <match>` · `release <match>` | Add/remove the driven-tab corner tag + 🟣 tab group |
 | `swlogs` | Service-worker console tail (errors/warnings) |
 
@@ -124,10 +124,10 @@ node cli.mjs unemulate news.ycombinator.com                # back to normal
 
 1. **`snap` first** — a text tree costs ~10× fewer tokens than a screenshot and usually answers the question.
 2. Keep it small: `snap <match> "dialog"` scopes to a subtree; after an action, `snap --diff` returns only what changed (refs stay stable across snaps).
-3. Act by ref: `click @e4`, `fill @e2 "…"`, `type @e2 "query"` for autocomplete UIs.
+3. **Act + observe in one call**: `click <match> @e4 --diff` runs the click, settles (waits for the DOM to go quiet, 3s cap), and returns the snap-diff in the same result — no separate `wait` and `snap` round trips.
 4. `shot` only when pixels matter, and then cheap: `--max 800 --format jpeg`, or `--crop` to the component.
 5. For layout questions ("is this centered?") trust `measure` numbers, not eyeballs.
-6. Batch dependent steps — `printf 'click m @e4\nwait m --text "Saved"\nsnap m --diff\n' \| node cli.mjs batch` — one process and one shell call for the whole sequence.
+6. Batch independent steps — `printf 'click m @e4\nfill m @e2 "hi"\n' \| node cli.mjs batch` — one process and one shell call for the whole sequence.
 
 ## Design reviews
 
