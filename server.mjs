@@ -174,9 +174,16 @@ server.on('upgrade', (req, socket) => {
       `Sec-WebSocket-Accept: ${accept}\r\n\r\n`
   );
   socket.setNoDelay(true);
-  if (extSocket && !extSocket.destroyed) extSocket.destroy(); // newest extension wins
+  // First healthy connection holds the seat. A newcomer only takes it when
+  // the current socket is already dead (SW restart closes the old socket,
+  // freeing the seat) — a client stuck in a reconnect loop must not evict a
+  // working connection.
+  if (extSocket && !extSocket.destroyed) {
+    socket.destroy();
+    return;
+  }
   extSocket = socket;
-  console.log('[bridge] extension connected');
+  console.log('[bridge] extension connected origin=' + (origin || 'none'));
   const state = { buf: Buffer.alloc(0), fragments: [] };
   socket.on('data', (chunk) => handleWsData(socket, chunk, state));
   const onGone = () => {
