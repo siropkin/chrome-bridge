@@ -31,13 +31,15 @@ node <repo>/cli.mjs <command> …
 - `click <match> @e3` / `fill <match> @e2 "value"` / `type <match> @e2 "text"` — act by ref. Refs survive re-snaps, expire on navigation (re-snap after `nav`).
 - `nav <match> <url>` / `open <url>` / `close <match>` — tab lifecycle.
 - `wait <match> --text "Saved"` — wait after actions that trigger loads.
+- `batch` — commands on stdin, one per line: `printf 'click m @e4\nwait m\nsnap m --diff\n' | node cli.mjs batch` — dependent chains in one process, one shell call.
 - `shot <match> out.png [--max 800] [--format jpeg]` — only when pixels matter; `--max` caps the long edge (default 1280).
 - `eval <match> <js|->` — run JS in the page; `-` reads from stdin.
 - `net <match> [--dur ms] [--filter s]` — capture network, one line per request.
 - `measure <match> <css>` — rect + computed styles; layout truth without pixels.
 - `console <match>` — page console + errors.
 - `emulate <match> <w> <h> [mobile]` / `unemulate <match>` — device view without resizing the window.
-- `release <match>` — **always release when done** (removes the driven-tab marker).
+- `swlogs` — service-worker console tail (errors/warnings).
+- `release <match>` — **always release when done** (removes the driven-tab marker, restores favicon).
 
 `<match>` is a URL substring; the most recently active matching tab wins.
 

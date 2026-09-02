@@ -53,7 +53,7 @@ git clone https://github.com/siropkin/chrome-bridge && cd chrome-bridge && ./ins
 
 验证:`node cli.mjs health` → `{"ok":true,"extension":true}`
 
-被桥接驱动的标签页会显示一圈紫色细边框和右下角的小 🟣 标签(点击可隐藏,下次导航前不再显示)并加入 🟣 标签页分组,你随时知道哪些页面正在被自动化;`release`(或 `close`)即可归还。
+被桥接驱动的标签页会显示一圈紫色细边框和右下角的小 🟣 标签(点击可隐藏,下次导航前不再显示)并加入 🟣 标签页分组,你随时知道哪些页面正在被自动化;命令执行期间标签页 favicon 显示 ⏳,完成后显示 ✅,点击/悬停处会闪现紫色指针标记智能体的操作位置;`release`(或 `close`)即可全部还原。
 
 ## 接入 AI 智能体——只需一行
 
@@ -97,7 +97,9 @@ HTTP API 只有一个端点:`POST /cmd`,Body 如 `{"type": "snap", "urlMatch": "
 | `grid <match>` | 开关 8px 对齐网格覆盖层 |
 | `emulate <match> <w> <h> [mobile]` · `unemulate <match>` | 桌面 / 移动设备视图切换——CDP 模拟,无需调整窗口大小 |
 | `resize <match> <w> <h>` | 调整窗口大小 |
+| `batch` | 从 stdin 逐行读取命令,一个进程跑完整序列(`click` → `wait` → `snap --diff`);遇错即停 |
 | `mark <match>` · `release <match>` | 添加 / 移除驱动标记(右下角 🟣 标签)+ 标签页分组 |
+| `swlogs` | 服务工作线程控制台日志尾部(错误/警告) |
 
 `<match>` 是标签页 URL 的子串;匹配多个时取最近活动的那个。引用在重复 `snap` 之间保持稳定(只要 role+name 不变,元素就保持它的 `@eN`),但导航后失效——`nav` 之后请重新 `snap`。
 
@@ -120,6 +122,7 @@ node cli.mjs unemulate news.ycombinator.com                # 恢复正常
 3. 按引用操作:`click @e4`、`fill @e2 "…"`、自动补全 UI 用 `type @e2 "query"`。
 4. 只有需要像素时才 `shot`,且尽量便宜:`--max 800 --format jpeg`,或 `--crop` 到组件区域。
 5. 布局问题("这个居中了吗?")相信 `measure` 的数字,而不是肉眼。
+6. 有依赖关系的步骤用 `batch` 串起来——`printf 'click m @e4\nwait m --text "Saved"\nsnap m --diff\n' | node cli.mjs batch`,整个序列只占一个进程、一次 shell 调用。
 
 ## 设计走查
 

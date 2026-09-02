@@ -66,7 +66,7 @@ MCP bridges (mcp-chrome, BrowserMCP, playwriter) also drive your real browser �
 
 `install.sh` checks Node ≥ 18, starts the server in the background (logs to `server.log`), opens `chrome://extensions`, and prints the agent one-liner with your real path filled in. If the server dies or the machine reboots, the agent's health check fails and it'll ask you to restart it: `node server.mjs`.
 
-Tabs the bridge drives get a thin purple viewport frame and a small 🟣 tag in the bottom-right corner (click it to hide it until the next navigation) and join a 🟣 tab group so you always know what's being automated; `release` (or `close`) gives them back.
+Tabs the bridge drives get a thin purple viewport frame and a small 🟣 tag in the bottom-right corner (click it to hide it until the next navigation) and join a 🟣 tab group so you always know what's being automated; the tab's favicon shows ⏳ while a command is in flight and ✅ when it lands, and clicks/hovers flash a purple pointer where the agent acts. `release` (or `close`) gives them back.
 
 ## Works with any AI agent — not just Claude
 
@@ -102,7 +102,9 @@ The HTTP API is one endpoint: `POST /cmd` with `{"type": "snap", "urlMatch": "�
 | `grid <match>` | Toggle an 8px alignment grid overlay |
 | `emulate <match> <w> <h> [mobile]` · `unemulate <match>` | Switch between desktop and mobile device views — CDP emulation, no window resize |
 | `resize <match> <w> <h>` | Resize the window |
+| `batch` | Run commands from stdin, one per line — one process for a whole sequence (`click` → `wait` → `snap --diff`); stops on the first error |
 | `mark <match>` · `release <match>` | Add/remove the driven-tab corner tag + 🟣 tab group |
+| `swlogs` | Service-worker console tail (errors/warnings) |
 
 `<match>` is a substring of the tab URL; the most recently active matching tab wins. Refs survive re-`snap`s (an element keeps its `@eN` while its role+name are unchanged) and expire on navigation — re-`snap` after `nav`.
 
@@ -125,6 +127,7 @@ node cli.mjs unemulate news.ycombinator.com                # back to normal
 3. Act by ref: `click @e4`, `fill @e2 "…"`, `type @e2 "query"` for autocomplete UIs.
 4. `shot` only when pixels matter, and then cheap: `--max 800 --format jpeg`, or `--crop` to the component.
 5. For layout questions ("is this centered?") trust `measure` numbers, not eyeballs.
+6. Batch dependent steps — `printf 'click m @e4\nwait m --text "Saved"\nsnap m --diff\n' \| node cli.mjs batch` — one process and one shell call for the whole sequence.
 
 ## Design reviews
 

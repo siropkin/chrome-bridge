@@ -1,6 +1,24 @@
 const WS_URL = 'ws://127.0.0.1:9333/ws';
 let ws = null;
 
+// --- Service-worker log ring ------------------------------------------------
+// The SW console is invisible to the CLI (it's not a tab); keep the tail so
+// `swlogs` can read it. Cleared on SW restart, like everything else here.
+const swLogs = [];
+const logLine = (line) => {
+  swLogs.push(new Date().toISOString().slice(11, 19) + ' ' + line);
+  if (swLogs.length > 100) swLogs.shift();
+};
+self.addEventListener('error', (e) => logLine('ERROR ' + e.message + (e.filename ? ` @${e.filename}:${e.lineno}` : '')));
+self.addEventListener('unhandledrejection', (e) => logLine('REJECT ' + String(e.reason)));
+for (const lvl of ['error', 'warn']) {
+  const orig = console[lvl].bind(console);
+  console[lvl] = (...a) => {
+    logLine(lvl.toUpperCase() + ' ' + a.map((x) => String(x?.stack || x)).join(' '));
+    orig(...a);
+  };
+}
+
 function connect() {
   try {
     ws = new WebSocket(WS_URL);
@@ -14,6 +32,13 @@ function connect() {
       ws.send(JSON.stringify({ id: msg.id, ok: true, result }));
     } catch (err) {
       ws.send(JSON.stringify({ id: msg.id, ok: false, error: String(err) }));
+    } finally {
+      // ✅ when a command on a driven tab lands. Non-driven tabs are left
+      // alone — otherwise any stray command would stick a ✅ on them with
+      // no release to ever restore it. Release restores in releaseTab.
+      if (msg._tabId != null && drivenTabs.has(msg._tabId)) {
+        setFavicon(msg._tabId, '✅');
+      }
     }
   };
   ws.onclose = () => {
@@ -94,6 +119,53 @@ async function groupTab(tabId) {
   }
 }
 
+// --- Status favicon ----------------------------------------------------------
+// ⏳ while a command is in flight on the tab, ✅ when it lands. The link swap
+// is best-effort (loading/chrome:// pages reject injection); tabStatus
+// re-applies the current emoji after every load since navigations reset it.
+const tabStatus = new Map(); // tabId -> emoji
+
+// Runs in the page; must be self-contained. `emoji === null` restores the
+// site's own favicon. rel must be exactly `icon` (one of its tokens) so we
+// don't grab apple-touch-icon, which never controls the tab strip.
+function faviconInject(emoji) {
+  const svg = (e) =>
+    'data:image/svg+xml,' +
+    encodeURIComponent(
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">' + e + '</text></svg>'
+    );
+  let link = [...document.querySelectorAll('link[rel]')].find((l) =>
+    l.rel.split(/\s+/).includes('icon')
+  );
+  if (!link) {
+    link = document.createElement('link');
+    link.rel = 'icon';
+    link.dataset.bridgeMade = '1';
+    (document.head || document.documentElement).appendChild(link);
+  }
+  if (emoji === null) {
+    if (link.dataset.bridgeMade) link.remove();
+    else if (link.dataset.bridgeOrig !== undefined) link.href = link.dataset.bridgeOrig;
+    return;
+  }
+  if (link.dataset.bridgeOrig === undefined) {
+    link.dataset.bridgeOrig = link.getAttribute('href') || '';
+  }
+  link.href = svg(emoji);
+}
+
+async function setFavicon(tabId, emoji) {
+  if (emoji === null) tabStatus.delete(tabId);
+  else tabStatus.set(tabId, emoji);
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: faviconInject,
+      args: [emoji],
+    });
+  } catch {} // best-effort — onUpdated re-applies once the page loads
+}
+
 async function markTab(tabId) {
   drivenTabs.add(tabId);
   await groupTab(tabId);
@@ -109,6 +181,7 @@ async function markTab(tabId) {
 
 async function releaseTab(tabId) {
   drivenTabs.delete(tabId);
+  await setFavicon(tabId, null); // restore the site's own favicon
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
@@ -120,17 +193,26 @@ async function releaseTab(tabId) {
   } catch {}
 }
 
-// Re-banner a driven tab after every load (navigations wipe the DOM marker).
+// Re-banner a driven tab after every load (navigations wipe the DOM marker),
+// and re-apply the status favicon (loads reset it to the site's own).
 chrome.tabs.onUpdated.addListener((tabId, info) => {
   if (info.status === 'complete' && drivenTabs.has(tabId)) {
     chrome.scripting
       .executeScript({ target: { tabId }, func: injectBanner })
       .catch(() => {});
+    const emoji = tabStatus.get(tabId);
+    if (emoji) {
+      chrome.scripting
+        .executeScript({ target: { tabId }, func: faviconInject, args: [emoji] })
+        .catch(() => {});
+    }
   }
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   drivenTabs.delete(tabId);
+  tabStatus.delete(tabId);
+  worldCache.delete(tabId);
   emulatedTabs.delete(tabId); // debugger auto-detaches on close
 });
 
@@ -350,6 +432,34 @@ const SNAP_SRC = (scope, diff, href) => `(() => {
   return lines.join('\\n');
 })()`;
 
+// Page-side: fake pointer at (x, y) so the user sees where the agent is
+// acting. `ripple` = the click ping. Style block is idempotent; the cursor
+// element self-erases. String-concat inside — this gets interpolated into
+// other template literals below.
+const CURSOR_SRC = `
+  const showCursor = (x, y, ripple) => {
+    if (!document.getElementById('bridge-cursor-style')) {
+      const st = document.createElement('style');
+      st.id = 'bridge-cursor-style';
+      st.textContent =
+        '@keyframes bridge-ripple{from{transform:scale(.3);opacity:.9}to{transform:scale(2.4);opacity:0}}' +
+        '@keyframes bridge-cursor-fade{to{opacity:0}}';
+      document.documentElement.appendChild(st);
+    }
+    const c = document.createElement('div');
+    c.style.cssText =
+      'position:fixed;z-index:2147483647;pointer-events:none;left:' + x + 'px;top:' + y +
+      'px;animation:bridge-cursor-fade .3s .9s forwards';
+    c.innerHTML =
+      (ripple
+        ? '<div style="position:absolute;left:-14px;top:-14px;width:28px;height:28px;border:3px solid rgba(168,85,247,.9);border-radius:50%;animation:bridge-ripple .6s ease-out forwards"></div>'
+        : '') +
+      '<svg width="20" height="20" viewBox="0 0 20 20" style="filter:drop-shadow(0 1px 1px rgba(0,0,0,.4))"><path d="M3 1v16l3.9-3.7 2.3 5.5 2.8-1.2-2.4-5.4 5.6-.6z" fill="#fff" stroke="#222" stroke-width="1.3"/></svg>';
+    (document.body || document.documentElement).appendChild(c);
+    setTimeout(() => c.remove(), 1300);
+  };
+`;
+
 const clickSrc = (target) => `(() => {
   const sel = ${JSON.stringify(target)};
   const el = sel.startsWith('@') ? window.__bridgeRefs?.[sel.slice(1)] : document.querySelector(sel);
@@ -365,6 +475,8 @@ const clickSrc = (target) => `(() => {
     const txt = (top.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 40);
     throw new Error('click covered by <' + top.tagName.toLowerCase() + cls + '>' + (txt ? ' "' + txt + '"' : '') + ' — close the overlay or click that element first');
   }
+  ${CURSOR_SRC}
+  showCursor(cx, cy, true);
   const o = { bubbles: true, cancelable: true, composed: true, clientX: cx, clientY: cy, button: 0 };
   el.dispatchEvent(new PointerEvent('pointerover', o));
   el.dispatchEvent(new PointerEvent('pointerdown', o));
@@ -456,6 +568,8 @@ const hoverSrc = (target) => `(() => {
   if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
   el.scrollIntoView({ block: 'center', inline: 'center' });
   const r = el.getBoundingClientRect();
+  ${CURSOR_SRC}
+  showCursor(r.left + r.width / 2, r.top + r.height / 2, false);
   const o = { bubbles: true, cancelable: true, composed: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
   el.dispatchEvent(new PointerEvent('pointerover', o));
   el.dispatchEvent(new MouseEvent('mouseover', o));
@@ -498,6 +612,8 @@ const consoleSrc = (clear) => `(() => {
 // --- eval machinery -----------------------------------------------------------
 // Errors are caught in-page and returned as data so the caller sees the real
 // failure (e.g. CSP EvalError) instead of a null result.
+const worldCache = new Map(); // tabId -> world whose eval worked (CSP pages pay the full ISOLATED→MAIN→CDP ladder per command otherwise)
+
 async function runEval(tabId, code, world = 'auto') {
   const injected = (src) => {
     try {
@@ -521,12 +637,15 @@ async function runEval(tabId, code, world = 'auto') {
       args: [code],
     });
 
-  const worlds = world === 'auto' ? ['ISOLATED', 'MAIN'] : [world];
+  // Cached world first; on CSP failure fall through to the full ladder.
+  const worlds = world === 'auto' ? [...new Set([worldCache.get(tabId), 'ISOLATED', 'MAIN'])] : [world];
   for (const w of worlds) {
+    if (!w) continue;
     const r = (await run(w))?.[0]?.result;
     if (r && r.ok === false && /EvalError|eval/.test(r.error)) continue; // CSP — try next
     if (!r) throw new Error('no injection result');
     if (r.ok === false) throw new Error(r.error);
+    if (world === 'auto') worldCache.set(tabId, w);
     return r.value;
   }
 
@@ -558,19 +677,32 @@ async function runEval(tabId, code, world = 'auto') {
 
 // --- Commands ---------------------------------------------------------------
 
-async function findTab(urlMatch) {
+// Takes the whole msg: records _tabId so the onmessage finally can flip a
+// driven tab's favicon to ✅, and marks a driven tab busy (⏳) for the command
+// about to run. `open` sets msg._tabId itself — it creates rather than finds.
+async function findTab(msg) {
   const tabs = await chrome.tabs.query({});
-  const matches = tabs.filter((t) => t.url && t.url.includes(urlMatch));
+  const matches = tabs.filter((t) => t.url && t.url.includes(msg.urlMatch));
   if (!matches.length) {
-    throw new Error(`no tab matching "${urlMatch}"`);
+    throw new Error(`no tab matching "${msg.urlMatch}"`);
   }
   matches.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
+  msg._tabId = matches[0].id;
+  // Not `release`: it would flash ⏳ on the still-driven tab right before
+  // releaseTab restores the site's own favicon.
+  if (msg.type !== 'release' && drivenTabs.has(matches[0].id)) {
+    await setFavicon(matches[0].id, '⏳');
+  }
   return matches[0];
 }
 
 async function handle(msg) {
   if (msg.type === 'ping') {
     return 'pong';
+  }
+
+  if (msg.type === 'swlogs') {
+    return swLogs;
   }
 
   if (msg.type === 'tabs') {
@@ -586,87 +718,89 @@ async function handle(msg) {
 
   if (msg.type === 'open') {
     const tab = await chrome.tabs.create({ url: msg.url, active: false });
+    msg._tabId = tab.id;
+    await setFavicon(tab.id, '⏳');
     await markTab(tab.id);
     return { id: tab.id, url: tab.url };
   }
 
   if (msg.type === 'navigate') {
-    const tab = await findTab(msg.urlMatch);
+    const tab = await findTab(msg);
     await chrome.tabs.update(tab.id, { url: msg.url });
     await markTab(tab.id);
     return { id: tab.id };
   }
 
   if (msg.type === 'close') {
-    const tab = await findTab(msg.urlMatch);
+    const tab = await findTab(msg);
     await chrome.tabs.remove(tab.id);
     return { id: tab.id };
   }
 
   if (msg.type === 'mark') {
-    const tab = await findTab(msg.urlMatch);
+    const tab = await findTab(msg);
     await markTab(tab.id);
     return { id: tab.id };
   }
 
   if (msg.type === 'release') {
-    const tab = await findTab(msg.urlMatch);
+    const tab = await findTab(msg);
     await releaseTab(tab.id);
     return { id: tab.id };
   }
 
   if (msg.type === 'eval') {
-    const tab = await findTab(msg.urlMatch);
+    const tab = await findTab(msg);
     return await runEval(tab.id, msg.code, msg.world || 'auto');
   }
 
   if (msg.type === 'snap') {
-    const tab = await findTab(msg.urlMatch);
+    const tab = await findTab(msg);
     return await runEval(tab.id, SNAP_SRC(msg.scope, msg.diff, msg.href));
   }
 
   if (msg.type === 'click') {
-    const tab = await findTab(msg.urlMatch);
+    const tab = await findTab(msg);
     return await runEval(tab.id, clickSrc(msg.target));
   }
 
   if (msg.type === 'fill') {
-    const tab = await findTab(msg.urlMatch);
+    const tab = await findTab(msg);
     return await runEval(tab.id, fillSrc(msg.target, msg.value));
   }
 
   if (msg.type === 'type') {
-    const tab = await findTab(msg.urlMatch);
+    const tab = await findTab(msg);
     return await runEval(tab.id, typeSrc(msg.target, msg.value));
   }
 
   if (msg.type === 'press') {
-    const tab = await findTab(msg.urlMatch);
+    const tab = await findTab(msg);
     return await runEval(tab.id, pressSrc(msg.key, msg.target));
   }
 
   if (msg.type === 'hover') {
-    const tab = await findTab(msg.urlMatch);
+    const tab = await findTab(msg);
     return await runEval(tab.id, hoverSrc(msg.target));
   }
 
   if (msg.type === 'net') {
-    const tab = await findTab(msg.urlMatch);
+    const tab = await findTab(msg);
     return await captureNetwork(tab.id, msg.duration, msg.filter);
   }
 
   if (msg.type === 'wait') {
-    const tab = await findTab(msg.urlMatch);
+    const tab = await findTab(msg);
     return await runEval(tab.id, waitSrc(msg));
   }
 
   if (msg.type === 'console') {
-    const tab = await findTab(msg.urlMatch);
+    const tab = await findTab(msg);
     return await runEval(tab.id, consoleSrc(msg.clear), 'MAIN');
   }
 
   if (msg.type === 'emulate') {
-    const tab = await findTab(msg.urlMatch);
+    const tab = await findTab(msg);
     await setEmulation(tab.id, msg);
     return {
       id: tab.id,
@@ -677,13 +811,13 @@ async function handle(msg) {
   }
 
   if (msg.type === 'unemulate') {
-    const tab = await findTab(msg.urlMatch);
+    const tab = await findTab(msg);
     await clearEmulation(tab.id);
     return { id: tab.id };
   }
 
   if (msg.type === 'resize') {
-    const tab = await findTab(msg.urlMatch);
+    const tab = await findTab(msg);
     await chrome.windows.update(tab.windowId, {
       width: msg.width,
       height: msg.height,
@@ -693,7 +827,7 @@ async function handle(msg) {
   }
 
   if (msg.type === 'shot') {
-    const tab = await findTab(msg.urlMatch);
+    const tab = await findTab(msg);
     // No tab activation here: CDP captureScreenshot works on background tabs,
     // and activating would steal the user's view. Only the fallback below needs it.
     const format = msg.format === 'jpeg' ? 'jpeg' : 'png';
