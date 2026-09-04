@@ -904,14 +904,28 @@ const SETTLE_SRC = `(async () => {
 // pre-filter ("does this page mention X?"), never as ground truth.
 // ponytail: 3000-char page cap stays under Nano's default input quota; if real
 // use needs whole-page Q&A, chunk + map-reduce is the upgrade path.
-const askSrc = (question) => `(async () => {
-  if (typeof LanguageModel === 'undefined') throw new Error('no Prompt API in this Chrome (needs 138+) — developer.chrome.com/docs/ai/get-started');
+const NANO_GUARD = `if (typeof LanguageModel === 'undefined') throw new Error('no Prompt API in this Chrome (needs 138+) — developer.chrome.com/docs/ai/get-started');
   const avail = await LanguageModel.availability();
-  if (avail !== 'available') throw new Error('Gemini Nano not ready (availability: ' + avail + ') — the first LanguageModel.create() downloads it (~2GB), then ask works');
+  if (avail !== 'available') throw new Error('Gemini Nano not ready (availability: ' + avail + ') — the first LanguageModel.create() downloads it (~2GB), then ask works');`;
+
+const askSrc = (question) => `(async () => {
+  ${NANO_GUARD}
   const text = (${PAGE_TEXT}).replace(/\\s+/g, ' ').trim().slice(0, 3000);
   const session = await LanguageModel.create();
   try {
     return await session.prompt('Answer from this page text. Page ' + location.href + ':\\n' + text + '\\n\\nQuestion: ' + ${JSON.stringify(question)});
+  } finally {
+    session.destroy();
+  }
+})()`;
+
+// Nano over text the service worker already holds (console logs) — the page
+// only lends its LanguageModel; the content rides in as a string literal.
+const nanoSrc = (context, question) => `(async () => {
+  ${NANO_GUARD}
+  const session = await LanguageModel.create();
+  try {
+    return await session.prompt(${JSON.stringify(context + '\n\nQuestion: ' + question)});
   } finally {
     session.destroy();
   }
@@ -1221,7 +1235,16 @@ async function handle(msg) {
 
   if (msg.type === 'console') {
     const tab = await findTab(msg);
-    return await runEval(tab.id, consoleSrc(msg.clear), 'MAIN');
+    const log = await runEval(tab.id, consoleSrc(msg.clear), 'MAIN');
+    if (!msg.ask) return log;
+    if (/^\(empty/.test(log)) return log; // nothing to triage
+    // --ask: Nano reads the noise locally; only its verdict costs cloud tokens.
+    // Newest-last buffer, so the tail is the fresh end — cap from the left.
+    const question =
+      msg.ask === true
+        ? 'Which of these are real problems worth investigating? Most severe first, one line each. If nothing matters, say "all noise".'
+        : msg.ask;
+    return await runEval(tab.id, nanoSrc('Browser console messages from ' + tab.url + ' (newest last):\n' + log.slice(-3000), question));
   }
 
   if (msg.type === 'emulate') {

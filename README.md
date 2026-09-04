@@ -101,7 +101,7 @@ The HTTP API is one endpoint: `POST /cmd` with `{"type": "snap", "urlMatch": "�
 | `shot <match> <out> [--max px] [--scale N] [--format jpeg] [--quality N] [--crop x,y,w,h] [--full]` | Screenshot via CDP. Long edge capped at `--max` px (default 1280, `0` = native res) — models downscale big images on read anyway, so native res buys file size, not detail. `--full` = whole page height |
 | `net <match> [--dur ms] [--filter s]` | Capture network traffic via CDP — one compact line per request |
 | `measure <match> <css>` | Bounding rect + computed styles as JSON — layout truth without pixels |
-| `console <match> [--clear]` | Page console + uncaught errors (hook installs on first call) |
+| `console <match> [--clear] [--ask [q]]` | Page console + uncaught errors (hook installs on first call); `--ask` triages the log with local Gemini Nano — only the verdict costs cloud tokens |
 | `grid <match>` | Toggle an 8px alignment grid overlay |
 | `emulate <match> <w> <h> [mobile]` · `unemulate <match>` | Switch between desktop and mobile device views — CDP emulation, no window resize |
 | `resize <match> <w> <h>` | Resize the window |

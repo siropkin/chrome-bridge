@@ -95,7 +95,10 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     --body s also captures JSON/text response bodies for URLs
                                     containing s (≤8, 1500 chars each; implies --filter s)
   measure <match> <css>             rect + computed styles as JSON
-  console <match> [--clear]         page console + errors (hook installs on first call)
+  console <match> [--clear] [--ask [question]]
+                                    page console + errors (hook installs on first call);
+                                    --ask triages the log with local Gemini Nano — only
+                                    the verdict costs cloud tokens, not the noise
   grid <match>                      toggle 8px alignment grid
   mark|release <match>              add/remove driven-tab markers
   swlogs                            service-worker console tail (errors/warnings)
@@ -350,10 +353,17 @@ async function run(cmdName, args) {
       print(await cmd({ type: 'eval', urlMatch: args[0], code: measureSrc(args[1]) }));
       break;
 
-    case 'console':
-      if (!args[0]) fail('usage: console <match> [--clear]');
-      print(await cmd({ type: 'console', urlMatch: args[0], clear: args.includes('--clear') }));
+    case 'console': {
+      if (!args[0]) fail('usage: console <match> [--clear] [--ask [question]]');
+      const ai = args.indexOf('--ask');
+      let ask = null;
+      if (ai >= 0) {
+        const q = args.slice(ai + 1).filter((a) => a !== '--clear').join(' ');
+        ask = q || true; // bare --ask → extension's default triage question
+      }
+      print(await cmd({ type: 'console', urlMatch: args[0], clear: args.includes('--clear'), ...(ask ? { ask } : {}) }));
       break;
+    }
 
     case 'grid':
       if (!args[0]) fail('usage: grid <match>');

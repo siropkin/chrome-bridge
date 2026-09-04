@@ -63,7 +63,8 @@ shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--c
                                   --max caps the long edge (default 1280, 0 = native res)
 net <match> [--dur ms] [--filter s]   capture network for N ms (CDP; one line per request)
 measure <match> <css>             rect + computed styles as JSON
-console <match> [--clear]         page console + errors (hook installs on first call)
+console <match> [--clear] [--ask [q]]   page console + errors (hook installs on first call);
+                                  --ask triages the log with local Nano — only the verdict costs cloud tokens
 grid <match>                      toggle 8px alignment grid
 mark|release <match>              add/remove driven-tab markers
 swlogs                            service-worker console tail (errors/warnings)

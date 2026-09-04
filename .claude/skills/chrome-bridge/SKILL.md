@@ -37,7 +37,7 @@ node <repo>/cli.mjs <command> …
 - `eval <match> <js|->` — run JS in the page; `-` reads from stdin.
 - `net <match> [--dur ms] [--filter s]` — capture network, one line per request.
 - `measure <match> <css>` — rect + computed styles; layout truth without pixels.
-- `console <match>` — page console + errors.
+- `console <match> [--ask 'what broke?']` — page console + errors; `--ask` triages locally with Gemini Nano instead of spending cloud tokens on log noise.
 - `emulate <match> <w> <h> [mobile]` / `unemulate <match>` — device view without resizing the window.
 - `swlogs` — service-worker console tail (errors/warnings).
 - `release <match>` — **always release when done** (removes the driven-tab marker, restores favicon).
