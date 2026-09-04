@@ -2,6 +2,8 @@
 // chrome-bridge CLI — zero dependencies, Node >= 18.
 // Run without arguments for usage.
 import fs from 'node:fs';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const PORT = process.env.BRIDGE_PORT || 9333;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -73,8 +75,13 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
   type <match> <@ref|css> <text> [--diff]    per-char typing — triggers autocomplete/keystroke UIs
   press <match> <key> [@ref|css>] [--diff]  key press (Enter/Tab/Escape/…) on focused or given element
   hover <match> <@ref|css> [--diff]  hover an element (opens hover menus)
+  scroll <match> <up|down|top|bottom|@ref|css> [--diff]
+                                    scroll the page (or an element into view); --diff
+                                    shows what lazy-loaded in
                                     [--diff] on an action: settle (100ms DOM quiet, 3s cap), then
                                     append the snap-diff to the result — act + observe in one call
+  ask <match> <question>            (experimental) answer from page text with Chrome's
+                                    built-in Gemini Nano — local, no cloud tokens
   wait <match> [css|--text t] [--timeout ms]
   eval <match> <js|-> [--world main|isolated]     '-' reads JS from stdin
   shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full]
@@ -89,6 +96,8 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
   unemulate <match>                 clear emulation + detach debugger
   resize <match> <w> <h>            resize the window
   health                            server + extension status
+  start                             start the server (detached) if it's down
+  stop                              stop the server
 
 <match> is a substring of the tab URL; the most recently active match wins.
 Refs (@eN) come from snap; they survive re-snaps but expire on navigation.`;
@@ -105,8 +114,42 @@ async function run(cmdName, args) {
         const res = await fetch(`${BASE}/health`);
         print(await res.json());
       } catch {
-        fail('bridge server not running — start it: node server.mjs');
+        fail('bridge server not running — start it: node cli.mjs start');
       }
+      break;
+    }
+
+    case 'start': {
+      // Self-heal: an agent whose health check failed can bring the server up
+      // itself instead of asking the user (the extension still needs a human
+      // click at chrome://extensions — nothing here can do that).
+      try {
+        const res = await fetch(`${BASE}/health`);
+        if (res.ok) {
+          print('already running');
+          break;
+        }
+      } catch {}
+      const log = fs.openSync(fileURLToPath(new URL('./server.log', import.meta.url)), 'a');
+      const child = spawn(process.execPath, [fileURLToPath(new URL('./server.mjs', import.meta.url))], {
+        detached: true,
+        stdio: ['ignore', log, log],
+      });
+      child.unref();
+      let up = false;
+      for (let i = 0; i < 20 && !up; i++) {
+        await new Promise((r) => setTimeout(r, 250));
+        up = await fetch(`${BASE}/health`).then((r) => r.ok).catch(() => false);
+      }
+      if (!up) fail('server did not come up in 5s — check server.log');
+      print('started (log: server.log) — a loaded extension reconnects on its own');
+      break;
+    }
+
+    case 'stop': {
+      const res = await fetch(`${BASE}/stop`, { method: 'POST' }).catch(() => null);
+      if (!res?.ok) fail('bridge server not running');
+      print('stopped');
       break;
     }
 
@@ -186,6 +229,19 @@ async function run(cmdName, args) {
       const rest = args.filter((a) => a !== '--diff');
       if (!rest[0] || !rest[1]) fail('usage: press <match> <key> [@ref|css] [--diff]');
       print(await cmd({ type: 'press', urlMatch: rest[0], key: rest[1], target: rest[2] || null, ...(args.includes('--diff') ? { diff: true } : {}) }));
+      break;
+    }
+
+    case 'scroll': {
+      const rest = args.filter((a) => a !== '--diff');
+      if (!rest[0] || !rest[1]) fail('usage: scroll <match> <up|down|top|bottom|@ref|css> [--diff]');
+      print(await cmd({ type: 'scroll', urlMatch: rest[0], target: rest[1], ...(args.includes('--diff') ? { diff: true } : {}) }));
+      break;
+    }
+
+    case 'ask': {
+      if (!args[0] || args.length < 2) fail('usage: ask <match> <question>');
+      print(await cmd({ type: 'ask', urlMatch: args[0], question: args.slice(1).join(' ') }));
       break;
     }
 

@@ -28,5 +28,5 @@ echo "  3. Load unpacked → $ROOT/extension/"
 echo
 echo "Then give your AI agent this one line (CLAUDE.md, .cursorrules, AGENTS.md, system prompt, …):"
 echo
-echo "  To drive my Chrome browser (real logged-in tabs), read $ROOT/AGENTS.md and run \`node $ROOT/cli.mjs <command>\`. If the health check fails, tell me to start the bridge."
+echo "  To drive my Chrome browser (real logged-in tabs), read $ROOT/AGENTS.md and run \`node $ROOT/cli.mjs <command>\`. If the health check fails, run \`node $ROOT/cli.mjs start\`; if the extension is disconnected, tell me to reload it."
 echo

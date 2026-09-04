@@ -23,7 +23,7 @@ Done. Tell your agent about it:
 - **Claude Code** — copy `.claude/skills/chrome-bridge/` into your project's `.claude/skills/` (or your `~/.claude/skills/`). It auto-loads on browser tasks and points at `AGENTS.md` for the full manual.
 - **Any other agent** (Cursor, Qwen, GLM, Baseten, raw curl) — paste this one line into your agent's instructions (`CLAUDE.md`, `.cursorrules`, `AGENTS.md`, system prompt, …):
 
-  > To drive my Chrome browser (real logged-in tabs), read `<path>/chrome-bridge/AGENTS.md` and run `node <path>/chrome-bridge/cli.mjs <command>`. If the health check fails, tell me to start the bridge.
+  > To drive my Chrome browser (real logged-in tabs), read `<path>/chrome-bridge/AGENTS.md` and run `node <path>/chrome-bridge/cli.mjs <command>`. If the health check fails, run `node <path>/chrome-bridge/cli.mjs start`; if the extension is disconnected, tell me to reload it.
 
 That's the whole integration. `AGENTS.md` is a self-contained operating manual — commands, recipes, gotchas — that any agent with file or web access can read. Agents with web access can read it straight from GitHub: `https://raw.githubusercontent.com/siropkin/chrome-bridge/master/AGENTS.md`.
 
@@ -64,9 +64,9 @@ MCP bridges (mcp-chrome, BrowserMCP, playwriter) also drive your real browser �
 
 ## Install detail
 
-`install.sh` checks Node ≥ 18, starts the server in the background (logs to `server.log`), opens `chrome://extensions`, and prints the agent one-liner with your real path filled in. If the server dies or the machine reboots, the agent's health check fails and it'll ask you to restart it: `node server.mjs`.
+`install.sh` checks Node ≥ 18, starts the server in the background (logs to `server.log`), opens `chrome://extensions`, and prints the agent one-liner with your real path filled in. If the server dies or the machine reboots, the agent's health check fails and it can restart it itself with `node cli.mjs start` (`node cli.mjs stop` shuts it down).
 
-Tabs the bridge drives get a thin purple viewport frame and a small 🟣 tag in the bottom-right corner (click it to hide it until the next navigation) and join a 🟣 tab group so you always know what's being automated; the tab's favicon shows ⏳ while a command is in flight and ✅ when it lands, and clicks/hovers flash a purple pointer where the agent acts. `release` (or `close`) gives them back.
+Tabs the bridge drives get a thin purple viewport frame and a 🟣 pill in the bottom-right corner (click it to hide until the next navigation) and join a 🟣 tab group so you always know what's being automated. The pill labels itself with the command in flight (`🟣 click @e4`) and its tooltip lists the last few actions; the tab's favicon shows ⏳ while a command is in flight and ✅ when it lands, and clicks/hovers flash a purple pointer where the agent acts. `release` (or `close`) gives them back.
 
 ## Works with any AI agent — not just Claude
 
@@ -93,6 +93,8 @@ The HTTP API is one endpoint: `POST /cmd` with `{"type": "snap", "urlMatch": "�
 | `click <match> <@ref\|css> [--diff]` | Click (scrolls into view, full pointer/mouse event sequence, overlay-coverage check) |
 | `fill <match> <@ref\|css> <value> [--diff]` | Set input value — React-safe (native setter + input/change events) |
 | `type <match> <@ref\|css> <text> [--diff]` · `press <match> <key> [@ref] [--diff]` · `hover <match> <@ref\|css> [--diff]` | Per-char typing (autocomplete UIs), key presses, hover |
+| `scroll <match> <up\|down\|top\|bottom\|@ref\|css> [--diff]` | Scroll — finds the real scroller on app-shell pages (Linear, Gmail) that scroll an inner panel, not the window |
+| `ask <match> <question>` | *(experimental)* Local Gemini Nano answers from page text — no cloud tokens, pre-filter quality |
 | `wait <match> [css\|--text t] [--timeout ms]` | Wait for element or visible text — MutationObserver-driven, resolves as soon as the page changes |
 | `eval <match> <js\|-> [--world main]` | Run JS in the page; `-` reads from stdin |
 | `shot <match> <out> [--max px] [--scale N] [--format jpeg] [--quality N] [--crop x,y,w,h] [--full]` | Screenshot via CDP. Long edge capped at `--max` px (default 1280, `0` = native res) — models downscale big images on read anyway, so native res buys file size, not detail. `--full` = whole page height |
@@ -105,6 +107,7 @@ The HTTP API is one endpoint: `POST /cmd` with `{"type": "snap", "urlMatch": "�
 | `batch` | Run commands from stdin, one per line — one process for a whole sequence; stops on the first error |
 | `mark <match>` · `release <match>` | Add/remove the driven-tab corner tag + 🟣 tab group |
 | `swlogs` | Service-worker console tail (errors/warnings) |
+| `start` · `stop` | Server lifecycle — `start` spawns it detached if down (agents can self-heal a dead server) |
 
 `<match>` is a substring of the tab URL; the most recently active matching tab wins. Refs survive re-`snap`s (an element keeps its `@eN` while its role+name are unchanged) and expire on navigation — re-`snap` after `nav`.
 

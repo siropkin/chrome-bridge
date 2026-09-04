@@ -153,6 +153,19 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
+  if (req.method === 'POST' && req.url === '/stop') {
+    // Same drive-by guard as /cmd: browsers must never stop the bridge.
+    if (req.headers.origin || req.headers['sec-fetch-site']) {
+      res.writeHead(403);
+      res.end();
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    console.log('[bridge] stop requested — exiting');
+    setTimeout(() => process.exit(0), 50); // let the response flush first
+    return;
+  }
   res.writeHead(404);
   res.end();
 });

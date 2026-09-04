@@ -121,7 +121,7 @@ try {
     if (msg.type === 'eval') return respond({ echo: msg.code.length });
     if (msg.type === 'big') return respond('x'.repeat(3 * 1024 * 1024)); // 3 MB — exercises 64-bit frames
     if (msg.type === 'shot') { lastShot = msg; return respond('data:image/png;base64,' + Buffer.from('fakepng').toString('base64')); }
-    if (['snap', 'press', 'type', 'hover', 'net', 'click', 'fill', 'navigate'].includes(msg.type)) return respond(msg); // echo for flag-parsing checks
+    if (['snap', 'press', 'type', 'hover', 'net', 'click', 'fill', 'navigate', 'scroll', 'ask'].includes(msg.type)) return respond(msg); // echo for flag-parsing checks
     return respond(null);
   });
   await new Promise((r) => setTimeout(r, 100));
@@ -176,6 +176,14 @@ try {
   const navDiff = await cli('nav', 'example.com', 'https://example.org/x', '--diff');
   assert(navDiff.status === 0 && navDiff.stdout.includes('"url":"https://example.org/x"') && navDiff.stdout.includes('"diff":true'), 'cli nav --diff', navDiff.stdout + navDiff.stderr);
 
+  const scrollDiff = await cli('scroll', 'example.com', 'down', '--diff');
+  assert(scrollDiff.status === 0 && scrollDiff.stdout.includes('"target":"down"') && scrollDiff.stdout.includes('"diff":true'), 'cli scroll --diff', scrollDiff.stdout + scrollDiff.stderr);
+  const scrollPlain = await cli('scroll', 'example.com', '@e3');
+  assert(scrollPlain.status === 0 && scrollPlain.stdout.includes('"target":"@e3"') && !scrollPlain.stdout.includes('"diff"'), 'cli scroll plain sends no diff', scrollPlain.stdout + scrollPlain.stderr);
+
+  const ask = await cli('ask', 'example.com', 'what', 'is', 'this page about?');
+  assert(ask.status === 0 && ask.stdout.includes('"question":"what is this page about?"'), 'cli ask joins question args', ask.stdout + ask.stderr);
+
   // large frame extension→server (3 MB result)
   const bigRes = await fetch(`http://127.0.0.1:${PORT}/cmd`, {
     method: 'POST',
@@ -221,6 +229,20 @@ try {
   await new Promise((r) => setTimeout(r, 500));
   h = await cli('health');
   assert(JSON.parse(h.stdout).extension === false, 'health: extension false after disconnect', h.stdout + h.stderr);
+
+  // stop → health fails → start (detached) → health recovers. Runs last: it
+  // kills the test server for real, and `start` spawns a detached replacement
+  // that the final stop cleans up.
+  const stop1 = await cli('stop');
+  assert(stop1.status === 0 && stop1.stdout.includes('stopped'), 'cli stop', stop1.stdout + stop1.stderr);
+  await new Promise((r) => setTimeout(r, 300));
+  const hDown = await cli('health');
+  assert(hDown.status !== 0 && hDown.stderr.includes('not running'), 'health fails after stop', hDown.stdout + hDown.stderr);
+  const start = await cli('start');
+  assert(start.status === 0 && start.stdout.includes('started'), 'cli start brings the server up', start.stdout + start.stderr);
+  const hUp = await cli('health');
+  assert(hUp.status === 0 && JSON.parse(hUp.stdout).ok === true, 'health ok after start', hUp.stdout + hUp.stderr);
+  await cli('stop'); // leave no detached server behind
 
   console.log(`\n${passed} checks passed`);
 } finally {

@@ -65,6 +65,18 @@ chrome.alarms.onAlarm.addListener(() => {
 const drivenTabs = new Set();
 let drivenGroupId = null;
 
+// SW restarts wipe drivenTabs while the visuals (group, banner, favicon)
+// persist in the pages — rehydrate from the 🟣 Bridge tab group, else after a
+// reload the bridge treats still-bannered tabs as strangers (no favicon
+// status, no pill updates, release won't clean them up).
+(async () => {
+  try {
+    for (const g of await chrome.tabGroups.query({ title: '🟣 Bridge' })) {
+      for (const t of await chrome.tabs.query({ groupId: g.id })) drivenTabs.add(t.id);
+    }
+  } catch {}
+})();
+
 // Runs in the page; must be self-contained.
 // No document.title prefix: pages rewrite their title constantly (unread
 // counts, SPA navs), so it never stays put — and it leaks into any page that
@@ -90,6 +102,38 @@ function injectBanner() {
 
 function removeBanner() {
   document.getElementById('bridge-banner')?.remove();
+}
+
+// --- Live status in the corner pill ------------------------------------------
+// The human watching the tab sees what the agent is doing, not just that it
+// is: every command re-labels the pill ("🟣 click @e4 ✕") and appends to a
+// 5-entry ring shown as the pill tooltip. recordActivity is fire-and-forget —
+// never awaited, so it adds no latency to the command path. A pill the user
+// hid by clicking stays hidden: pillInject no-ops when the banner is absent.
+const tabActivity = new Map(); // tabId -> last 5 "HH:MM:SS label" lines
+
+// Runs in the page; must be self-contained.
+function pillInject(label, lines) {
+  const pill = document.querySelector('#bridge-banner > div');
+  if (!pill) return;
+  pill.textContent = '🟣 ' + label + ' ✕';
+  pill.title = lines.join('\n') + '\n(click to hide)';
+}
+
+function recordActivity(tabId, label) {
+  const lines = tabActivity.get(tabId) || [];
+  lines.push(new Date().toISOString().slice(11, 19) + ' ' + label);
+  if (lines.length > 5) lines.shift();
+  tabActivity.set(tabId, lines);
+  chrome.scripting
+    .executeScript({ target: { tabId }, func: pillInject, args: [label, lines] })
+    .catch(() => {}); // banner absent (user hid it / chrome:// page) — fine
+}
+
+// One-line command summary for the pill: "click @e4", "nav github.com/…".
+function activityLabel(msg) {
+  const s = msg.type + (msg.target ? ' ' + msg.target : msg.url ? ' ' + msg.url : msg.key ? ' ' + msg.key : '');
+  return s.length > 40 ? s.slice(0, 37) + '…' : s;
 }
 
 async function groupTab(tabId) {
@@ -212,6 +256,7 @@ chrome.tabs.onUpdated.addListener((tabId, info) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   drivenTabs.delete(tabId);
   tabStatus.delete(tabId);
+  tabActivity.delete(tabId);
   worldCache.delete(tabId);
   emulatedTabs.delete(tabId); // debugger auto-detaches on close
 });
@@ -589,6 +634,42 @@ const hoverSrc = (target) => `(() => {
   return 'hovered ' + sel;
 })()`;
 
+// Instant (not CSS-smooth) scrolling, so the position readback is true even on
+// pages with scroll-behavior: smooth. up/down page by 85% of the scroller.
+// App shells (Linear, Gmail) scroll an inner panel, not the window — when the
+// document itself can't move, scroll the tallest visible overflow panel instead.
+const scrollSrc = (what) => `(() => {
+  const what = ${JSON.stringify(what)};
+  const o = { behavior: 'instant' };
+  if (!['top', 'bottom', 'up', 'down'].includes(what)) {
+    const el = what.startsWith('@') ? window.__bridgeRefs?.[what.slice(1)] : document.querySelector(what);
+    if (!el) throw new Error('element not found: ' + what + (what.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
+    el.scrollIntoView({ ...o, block: 'center' });
+    return 'scrolled ' + what + ' into view';
+  }
+  let scroller = document.scrollingElement || document.documentElement;
+  if (scroller.scrollHeight <= scroller.clientHeight + 8) {
+    let best = null;
+    for (const el of document.querySelectorAll('*')) {
+      const cs = getComputedStyle(el);
+      if ((cs.overflowY === 'auto' || cs.overflowY === 'scroll') && el.scrollHeight > el.clientHeight + 8 && el.clientHeight > 100) {
+        const r = el.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0 && (!best || el.clientHeight > best.clientHeight)) best = el;
+      }
+    }
+    if (best) scroller = best;
+  }
+  const isWin = scroller === document.scrollingElement || scroller === document.documentElement || scroller === document.body;
+  const y0 = Math.round(scroller.scrollTop);
+  const d = Math.round((isWin ? innerHeight : scroller.clientHeight) * 0.85);
+  if (what === 'top') scroller.scrollTo({ ...o, top: 0 });
+  else if (what === 'bottom') scroller.scrollTo({ ...o, top: scroller.scrollHeight });
+  else scroller.scrollTo({ ...o, top: scroller.scrollTop + (what === 'up' ? -d : d) });
+  const y1 = Math.round(scroller.scrollTop);
+  const name = isWin ? 'window' : '<' + scroller.tagName.toLowerCase() + (scroller.id ? '#' + scroller.id : '') + '>';
+  return 'scrolled ' + what + ' ' + name + ' (' + y0 + ' → ' + y1 + ')' + (y1 !== y0 ? '' : ' — nothing moved (at the end, or no scrollable content)');
+})()`;
+
 // Mutation-driven wait (puppeteer `polling: 'mutation'` style): the predicate
 // re-runs on every mutation batch (microtask latency) instead of a fixed
 // 150ms sleep; a slow interval backstops changes that mutate nothing.
@@ -635,6 +716,25 @@ const SETTLE_SRC = `(async () => {
     const iv = setInterval(() => { if (Date.now() - t0 >= 3000) done(); }, 500);
   });
   return 'settled ' + Math.round(Date.now() - t0) + 'ms';
+})()`;
+
+// Experimental: answer a question about the page with Chrome's built-in
+// Gemini Nano (Prompt API) — local, so page text never leaves the machine and
+// costs no cloud tokens. Quality ceiling is a small on-device model: use as a
+// pre-filter ("does this page mention X?"), never as ground truth.
+// ponytail: 3000-char page cap stays under Nano's default input quota; if real
+// use needs whole-page Q&A, chunk + map-reduce is the upgrade path.
+const askSrc = (question) => `(async () => {
+  if (typeof LanguageModel === 'undefined') throw new Error('no Prompt API in this Chrome (needs 138+) — developer.chrome.com/docs/ai/get-started');
+  const avail = await LanguageModel.availability();
+  if (avail !== 'available') throw new Error('Gemini Nano not ready (availability: ' + avail + ') — the first LanguageModel.create() downloads it (~2GB), then ask works');
+  const text = (document.body?.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 3000);
+  const session = await LanguageModel.create();
+  try {
+    return await session.prompt('Answer from this page text. Page ' + location.href + ':\\n' + text + '\\n\\nQuestion: ' + ${JSON.stringify(question)});
+  } finally {
+    session.destroy();
+  }
 })()`;
 
 // Console hook must run in the MAIN world — isolated worlds get their own console.
@@ -772,6 +872,7 @@ async function findTab(msg) {
   // releaseTab restores the site's own favicon.
   if (msg.type !== 'release' && drivenTabs.has(matches[0].id)) {
     await setFavicon(matches[0].id, '⏳');
+    recordActivity(matches[0].id, activityLabel(msg));
   }
   return matches[0];
 }
@@ -805,6 +906,7 @@ async function handle(msg) {
     const complete = waitForLoad(tab.id);
     await setFavicon(tab.id, '⏳');
     await markTab(tab.id);
+    recordActivity(tab.id, activityLabel(msg));
     const loaded = await complete;
     const { url } = await chrome.tabs.get(tab.id); // create returns url:"" while pending
     return { id: tab.id, url, loaded };
@@ -860,6 +962,19 @@ async function handle(msg) {
       hoverSrc(msg.target);
     const result = await runEval(tab.id, src);
     return msg.diff ? await observeDiff(tab.id, result) : result;
+  }
+
+  if (msg.type === 'scroll') {
+    const tab = await findTab(msg);
+    const result = await runEval(tab.id, scrollSrc(msg.target));
+    // --diff shines here: lazy-loaded content is DOM mutations, so the
+    // settle + snap-diff returns exactly what the scroll revealed.
+    return msg.diff ? await observeDiff(tab.id, result) : result;
+  }
+
+  if (msg.type === 'ask') {
+    const tab = await findTab(msg);
+    return await runEval(tab.id, askSrc(msg.question));
   }
 
   if (msg.type === 'net') {
