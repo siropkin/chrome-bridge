@@ -40,6 +40,15 @@ function connect() {
       const result = await handle(msg);
       s.send(JSON.stringify({ id: msg.id, ok: true, result }));
     } catch (err) {
+      // Failures belong in the human-visible history too — a red-ink line in
+      // the pill log, not just an error back to the agent.
+      if (msg._tabId != null && drivenTabs.has(msg._tabId)) {
+        const { done } = activityPhrases(msg);
+        const lines = pushActivity(msg._tabId, '✗ ' + done + ' — ' + String(err).slice(0, 60));
+        chrome.scripting
+          .executeScript({ target: { tabId: msg._tabId }, func: pillInject, args: ['✗ ' + done, lines, null, false] })
+          .catch(() => {});
+      }
       s.send(JSON.stringify({ id: msg.id, ok: false, error: String(err) }));
     } finally {
       // ✅ when a command on a driven tab lands. Non-driven tabs are left
@@ -115,10 +124,34 @@ function injectBanner() {
   d.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;border:3px solid transparent;border-radius:2px';
   const pill = document.createElement('div');
   pill.style.cssText =
-    'position:fixed;bottom:8px;right:8px;background:#a855f7;color:#fff;font:12px sans-serif;padding:3px 10px;border-radius:11px;pointer-events:auto;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.4)';
-  pill.textContent = '🟣 AI idle ✕';
-  pill.title = 'An AI agent is driving this tab (chrome-bridge) — click to hide until next navigation';
-  pill.onclick = () => d.remove();
+    'position:fixed;bottom:8px;right:8px;background:#a855f7;color:#fff;font:12px sans-serif;padding:3px 10px;border-radius:11px;pointer-events:auto;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.4);user-select:none';
+  const label = document.createElement('span');
+  label.textContent = '🟣 AI idle';
+  const x = document.createElement('span');
+  x.textContent = ' ✕';
+  x.title = 'hide until next navigation';
+  x.style.opacity = '.75';
+  x.onclick = (e) => {
+    e.stopPropagation();
+    d.remove();
+  };
+  pill.append(label, x);
+  pill.title = 'An AI agent is driving this tab (chrome-bridge) — click for action history';
+  // Click the pill body → a scrolling log of what the agent did on this tab
+  // (pill.dataset.log, fed by pillInject). Click again to close. The ✕ span
+  // keeps the old whole-pill click-to-hide behavior.
+  pill.onclick = () => {
+    if (document.getElementById('bridge-log')) {
+      document.getElementById('bridge-log').remove();
+      return;
+    }
+    const p = document.createElement('pre');
+    p.id = 'bridge-log';
+    p.style.cssText =
+      'position:fixed;bottom:36px;right:8px;width:380px;max-height:50vh;overflow:auto;margin:0;background:rgba(24,12,40,.94);color:#e9d5ff;font:11px/1.6 monospace;padding:8px 10px;border-radius:8px;pointer-events:auto;white-space:pre-wrap;box-shadow:0 2px 12px rgba(0,0,0,.5)';
+    p.textContent = pill.dataset.log || '(no activity yet)';
+    d.appendChild(p);
+  };
   d.appendChild(pill);
   (document.body || document.documentElement).appendChild(d);
 }
@@ -129,11 +162,12 @@ function removeBanner() {
 
 // --- Live status in the corner pill ------------------------------------------
 // The human watching the tab sees what the agent is doing, not just that it
-// is: every command re-labels the pill ("🟣 click @e4 ✕") and appends to a
-// 5-entry ring shown as the pill tooltip. recordActivity is fire-and-forget —
-// never awaited, so it adds no latency to the command path. A pill the user
-// hid by clicking stays hidden: pillInject no-ops when the banner is absent.
-const tabActivity = new Map(); // tabId -> last 5 "HH:MM:SS label" lines
+// is: every command re-labels the pill ("🟣 clicking @e4") and appends to a
+// 30-entry ring shown as the pill tooltip and the click-to-open log panel.
+// recordActivity is fire-and-forget — never awaited, so it adds no latency to
+// the command path. A pill the user hid via ✕ stays hidden: pillInject no-ops
+// when the banner is absent.
+const tabActivity = new Map(); // tabId -> last 30 "HH:MM:SS label" lines
 
 // Runs in the page; must be self-contained. `@e21`-style refs mean nothing to
 // a human, so resolve them to the element's own name right here — refs live in
@@ -152,8 +186,12 @@ function pillInject(label, lines, target, active) {
       lines = lines.map((l) => l.replace(target, '"' + name + '"'));
     }
   }
-  pill.textContent = '🟣 ' + label + ' ✕';
-  pill.title = lines.join('\n') + '\n(click to hide)';
+  pill.firstChild.textContent = '🟣 ' + label;
+  const log = lines.join('\n');
+  pill.dataset.log = log;
+  pill.title = log + '\n(click for history · ✕ hides)';
+  const p = document.getElementById('bridge-log');
+  if (p) p.textContent = log || '(no activity yet)'; // panel open → live-update it
 }
 
 // Per-tab command counter: the idle-reset in onmessage is delayed ~800ms so a
@@ -161,12 +199,17 @@ function pillInject(label, lines, target, active) {
 // delayed reset from clobbering a NEWER command's label in rapid sequences.
 const pillSeq = new Map();
 
+function pushActivity(tabId, line) {
+  const lines = tabActivity.get(tabId) || [];
+  lines.push(new Date().toISOString().slice(11, 19) + ' ' + line);
+  if (lines.length > 30) lines.shift();
+  tabActivity.set(tabId, lines);
+  return lines;
+}
+
 function recordActivity(tabId, msg) {
   const { ing, done } = activityPhrases(msg);
-  const lines = tabActivity.get(tabId) || [];
-  lines.push(new Date().toISOString().slice(11, 19) + ' ' + done);
-  if (lines.length > 5) lines.shift();
-  tabActivity.set(tabId, lines);
+  const lines = pushActivity(tabId, done);
   pillSeq.set(tabId, (pillSeq.get(tabId) || 0) + 1);
   chrome.scripting
     .executeScript({ target: { tabId }, func: pillInject, args: [ing + '…', lines, msg.target || null, true] })
