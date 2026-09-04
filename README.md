@@ -66,6 +66,14 @@ MCP bridges (mcp-chrome, BrowserMCP, playwriter) also drive your real browser �
 
 `install.sh` checks Node ≥ 18, starts the server in the background (logs to `server.log`), opens `chrome://extensions`, waits for the extension to connect (up to ~90s), and prints the agent one-liner with your real path filled in. If the server dies or the machine reboots, the agent's health check fails and it can restart it itself with `node cli.mjs start` (`node cli.mjs stop` shuts it down).
 
+**Upgrades**: after `git pull`, restart the server — it runs the code from when it was started, and its health check still passes, so nothing else reminds you. Also reload the extension at `chrome://extensions` (the service worker is old code too):
+
+```bash
+node cli.mjs stop && node cli.mjs start
+```
+
+**Windows**: `install.sh` is bash (macOS/Linux, or Git Bash). The bridge itself is plain Node — `node server.mjs` in a terminal works everywhere, and every `cli.mjs` command is cross-platform.
+
 Tabs the bridge drives get a 🟣 pill in the bottom-right corner (click it to hide until the next navigation) and join a 🟣 tab group so you always know what's being automated. The pill narrates what the agent is doing right now (`🟣 taking screenshot…`, `🟣 reading page…`, `🟣 AI idle` when nothing's running) and its tooltip lists the last few actions; while a command runs, a purple viewport frame lights up, the tab's favicon shows ⏳ (✅ when it lands), and clicks/hovers flash a purple pointer where the agent acts. `release` (or `close`) gives them back.
 
 ## Works with any AI agent — not just Claude

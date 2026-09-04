@@ -39,6 +39,8 @@ node <repo>/cli.mjs <command> …
 - `measure <match> <css>` — rect + computed styles; layout truth without pixels.
 - `console <match> [--ask 'what broke?']` — page console + errors; `--ask` triages locally with Gemini Nano instead of spending cloud tokens on log noise.
 - `emulate <match> <w> <h> [mobile]` / `unemulate <match>` — device view without resizing the window.
+- `note <match> <text>` — narrate to the human watching the driven tab (pill + history): before a risky/long sequence or to explain a surprising step. Sparing — the pill already shows every command; notes add intent.
+- `watch` — live feed of every bridge command in the user's terminal. Not for you (you see the results) — suggest it when the user wants to follow along.
 - `swlogs` — service-worker console tail (errors/warnings).
 - `release <match>` — **always release when done** (removes the driven-tab marker, restores favicon).
 
