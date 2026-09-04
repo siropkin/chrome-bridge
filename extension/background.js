@@ -425,7 +425,21 @@ const MOBILE_UA =
 const emulatedTabs = new Set();
 
 async function setEmulation(tabId, { width, height, mobile }) {
-  await attachDbg(tabId);
+  // The emulation share in cdpRefs is owned by emulatedTabs membership, not by
+  // each call — re-emulating a tab (resize the device) must not take a second
+  // share, or N emulates + one unemulate would leave the debugger attached and
+  // the metrics uncleared. Membership is set before the first await so a
+  // concurrent emulate on the same tab can't double-claim the share.
+  const fresh = !emulatedTabs.has(tabId);
+  if (fresh) {
+    emulatedTabs.add(tabId);
+    try {
+      await attachDbg(tabId);
+    } catch (e) {
+      emulatedTabs.delete(tabId);
+      throw e;
+    }
+  }
   try {
     await chrome.debugger.sendCommand(
       { tabId },
@@ -445,12 +459,14 @@ async function setEmulation(tabId, { width, height, mobile }) {
       );
     }
   } catch (e) {
-    // Failed mid-setup: drop our share now — a leaked count would make a later
-    // unemulate's detach a no-op and leave the debugger silently attached.
-    await detachDbg(tabId);
+    // Mid-setup failure: only a fresh attach owns a share to give back — a
+    // re-emulation's failure leaves the previous emulation in effect.
+    if (fresh) {
+      emulatedTabs.delete(tabId);
+      await detachDbg(tabId);
+    }
     throw e;
   }
-  emulatedTabs.add(tabId);
 }
 
 async function clearEmulation(tabId) {
@@ -460,8 +476,9 @@ async function clearEmulation(tabId) {
       'Emulation.clearDeviceMetricsOverride'
     );
   } catch {}
-  await detachDbg(tabId);
-  emulatedTabs.delete(tabId);
+  // Drop the emulation share only if this tab held one — a stray unemulate
+  // must not decrement a piggybacking net/shot off the shared session.
+  if (emulatedTabs.delete(tabId)) await detachDbg(tabId);
 }
 
 // --- Network capture (CDP) ---------------------------------------------------
