@@ -406,19 +406,37 @@ const cdpRefs = new Map(); // tabId -> active owners
 async function attachDbg(tabId) {
   try {
     await chrome.debugger.attach({ tabId }, '1.3');
+    logLine('dbg +' + tabId);
   } catch (e) {
     if (!/already attached/i.test(String(e))) throw e; // ours from a sibling command — share it
+    logLine('dbg +' + tabId + ' (shared)');
   }
   cdpRefs.set(tabId, (cdpRefs.get(tabId) || 0) + 1);
 }
 async function detachDbg(tabId) {
   const n = (cdpRefs.get(tabId) || 1) - 1;
-  if (n > 0) return cdpRefs.set(tabId, n);
+  if (n > 0) {
+    logLine('dbg -' + tabId + ' (share left: ' + n + ')');
+    return cdpRefs.set(tabId, n);
+  }
   cdpRefs.delete(tabId);
+  logLine('dbg -' + tabId + ' (detaching)');
   try {
     await chrome.debugger.detach({ tabId });
-  } catch {} // tab already closed — debugger auto-detaches
+  } catch (e) {
+    logLine('dbg detach ' + tabId + ' FAILED: ' + String(e).slice(0, 80));
+  } // tab already closed — debugger auto-detaches
 }
+
+// External detach (user cancels the "debugging" infobar, DevTools opens on the
+// tab, extension reload) invalidates the refcount silently — without this, a
+// stale count makes every later unemulate's detach a no-op and the session
+// stays wedged until the tab closes.
+chrome.debugger.onDetach.addListener((src) => {
+  if (cdpRefs.delete(src.tabId) || emulatedTabs.has(src.tabId)) logLine('dbg DETACHED EXTERNALLY ' + src.tabId);
+  cdpRefs.delete(src.tabId);
+  emulatedTabs.delete(src.tabId);
+});
 
 // --- Device emulation (CDP) -------------------------------------------------
 // DevTools-device-toolbar behavior without resizing the window. Attaches
@@ -479,7 +497,10 @@ async function clearEmulation(tabId) {
       { tabId },
       'Emulation.clearDeviceMetricsOverride'
     );
-  } catch {}
+    logLine('emulation cleared ' + tabId);
+  } catch (e) {
+    logLine('emulation clear ' + tabId + ' FAILED: ' + String(e).slice(0, 80));
+  }
   // Drop the emulation share only if this tab held one — a stray unemulate
   // must not decrement a piggybacking net/shot off the shared session.
   if (emulatedTabs.delete(tabId)) await detachDbg(tabId);
@@ -1201,26 +1222,27 @@ async function handle(msg) {
   }
 
   if (msg.type === 'open') {
-    // chrome.tabs.create resolves only once the navigation commits — an
-    // unreachable URL never does, so create hangs past the documented 8s cap
-    // and the server's 70s timeout, silently leaving a marked tab behind.
-    // Bound it at the same 8s; a late-committing tab may still appear (unmarked,
-    // visible in `tabs`) — the abandoned create's rejection is silenced.
-    const creating = chrome.tabs.create({ url: msg.url, active: false });
-    const tab = await Promise.race([creating, new Promise((r) => setTimeout(r, 8000, null))]);
-    if (!tab) throw new Error('no committed navigation in 8s — unreachable or blocked URL? (a tab may still appear later; check `tabs`)');
-    creating.catch(() => {});
+    // chrome.tabs.create resolves promptly — the HANG is the marking below:
+    // executeScript sits pending forever on an uncommitted navigation (an
+    // unreachable URL never gets a document), which used to blow the 8s cap
+    // to the server's 70s timeout. So: don't await the marking — setFavicon
+    // and markTab set their SW-side state synchronously, the pill/favicon
+    // land when the page commits (onUpdated re-applies both after load),
+    // and the 8s waitForLoad below keeps the documented cap by itself.
+    const tab = await chrome.tabs.create({ url: msg.url, active: false });
     msg._tabId = tab.id;
     // Listener before the favicon/banner work: those are two executeScript
     // round trips, and a fast page can hit 'complete' inside that window
     // (observed with example.com) — the load event would be missed.
     const complete = waitForLoad(tab.id);
-    await setFavicon(tab.id, '⏳');
-    await markTab(tab.id);
+    setFavicon(tab.id, '⏳').catch(() => {});
+    markTab(tab.id).catch(() => {});
     recordActivity(tab.id, msg);
     const loaded = await complete;
-    const { url } = await chrome.tabs.get(tab.id); // create returns url:"" while pending
-    return { id: tab.id, url, loaded };
+    const { url } = await chrome.tabs.get(tab.id); // "" while pending
+    // url falls back to the requested one: a still-pending tab can't be
+    // matched by its (empty) URL, and the agent needs a usable <match>.
+    return { id: tab.id, url: url || msg.url, loaded };
   }
 
   if (msg.type === 'navigate') {

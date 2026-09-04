@@ -243,9 +243,15 @@ try {
     assert(bg.split('chrome.debugger.attach(').length === 2, 'ext: one debugger-attach site (the refcount helper)');
     assert(bg.split('chrome.debugger.detach(').length === 2, 'ext: one debugger-detach site (the refcount helper)');
     assert(bg.split('await attachDbg(').length >= 5 && bg.split('await detachDbg(').length >= 5, 'ext: all 5 CDP call sites refcounted');
-    // open's 8s cap must bound chrome.tabs.create too — create only resolves
-    // once the navigation commits, and an unreachable URL never commits.
-    assert(bg.includes('setTimeout(r, 8000, null)') && bg.includes('no committed navigation in 8s'), 'ext: open bounds tabs.create at the 8s cap');
+    // open must not await the favicon/banner marking — executeScript sits
+    // pending forever on an uncommitted navigation (unreachable URL), which
+    // hung open past its 8s cap to the server's 70s timeout. The response
+    // also needs the requested URL: a still-pending tab has url "" and could
+    // never be matched.
+    assert(bg.includes('url: url || msg.url') && /markTab\(tab\.id\)\.catch/.test(bg), 'ext: open fire-and-forgets marking, url falls back to the request');
+    // External debugger detach must reset the refcount (infobar cancel,
+    // DevTools opened) — else a stale count wedges the session until close.
+    assert(bg.includes('chrome.debugger.onDetach.addListener'), 'ext: onDetach resets the CDP refcount');
   }
 
   // activity feed (watch): every relayed command lands in /log; since= yields a delta
