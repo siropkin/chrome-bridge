@@ -509,6 +509,11 @@ async function setEmulation(tabId, { width, height, mobile }) {
 }
 
 async function clearEmulation(tabId) {
+  // A stray unemulate (nothing emulated) is a clean no-op — firing the CDP
+  // clear at an unattached debugger logged a FAILED in swlogs while the caller
+  // got ok (stress: 1 per 40 interleaved cycles). The entry guard also keeps
+  // it from decrementing a piggybacking net/shot off the shared session.
+  if (!emulatedTabs.has(tabId)) return;
   try {
     await chrome.debugger.sendCommand(
       { tabId },
@@ -518,9 +523,8 @@ async function clearEmulation(tabId) {
   } catch (e) {
     logLine('emulation clear ' + tabId + ' FAILED: ' + String(e).slice(0, 80));
   }
-  // Drop the emulation share only if this tab held one — a stray unemulate
-  // must not decrement a piggybacking net/shot off the shared session.
-  if (emulatedTabs.delete(tabId)) await detachDbg(tabId);
+  emulatedTabs.delete(tabId);
+  await detachDbg(tabId);
 }
 
 // --- Network capture (CDP) ---------------------------------------------------
@@ -1219,6 +1223,19 @@ async function findTab(msg) {
 }
 
 async function handle(msg) {
+  // open/nav with a non-URL: tabs.create resolves it RELATIVE TO THE EXTENSION
+  // (stress: open "::x" created a driven chrome-extension://… tab and reported
+  // ok, unmatchable until it committed). Validate before any tab exists — one
+  // guard here covers both creators and every caller of them.
+  if (msg.type === 'open' || msg.type === 'navigate') {
+    let u;
+    try {
+      u = new URL(msg.url);
+    } catch {}
+    if (!u || !/^(https?|file|about|chrome|view-source|data):/i.test(u.protocol))
+      throw new Error('invalid URL ' + JSON.stringify(String(msg.url).slice(0, 60)) + ' — give a full URL (http(s)://…)');
+  }
+
   if (msg.type === 'ping') {
     return 'pong';
   }

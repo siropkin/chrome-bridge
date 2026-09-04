@@ -256,6 +256,16 @@ try {
     // External debugger detach must reset the refcount (infobar cancel,
     // DevTools opened) — else a stale count wedges the session until close.
     assert(bg.includes('chrome.debugger.onDetach.addListener'), 'ext: onDetach resets the CDP refcount');
+    // open/nav must reject a non-URL up front: tabs.create resolves such
+    // strings relative to the extension itself (stress: open "::x" created a
+    // driven chrome-extension://… tab and reported ok).
+    assert(
+      bg.includes("msg.type === 'open' || msg.type === 'navigate'") && bg.includes('invalid URL '),
+      'ext: open/nav validate the URL before creating a tab'
+    );
+    // A stray unemulate (nothing emulated) must no-op cleanly — the CDP clear
+    // at an unattached debugger logged a swlogs FAILED while the caller got ok.
+    assert(bg.includes('if (!emulatedTabs.has(tabId)) return;'), 'ext: stray unemulate no-ops instead of logging a FAILED clear');
   }
 
   // activity feed (watch): every relayed command lands in /log; since= yields a delta
