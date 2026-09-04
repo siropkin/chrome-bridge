@@ -86,7 +86,10 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
   eval <match> <js|-> [--world main|isolated]     '-' reads JS from stdin
   shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full]
                                     --max caps the long edge (default 1280, 0 = native res)
-  net <match> [--dur ms] [--filter s]   capture network for N ms (CDP, one line per request)
+  net <match> [--dur ms] [--filter s] [--body s]
+                                    capture network for N ms (CDP, one line per request);
+                                    --body s also captures JSON/text response bodies for URLs
+                                    containing s (≤8, 1500 chars each; implies --filter s)
   measure <match> <css>             rect + computed styles as JSON
   console <match> [--clear]         page console + errors (hook installs on first call)
   grid <match>                      toggle 8px alignment grid
@@ -249,13 +252,16 @@ async function run(cmdName, args) {
       const [match, ...rest] = args;
       let duration = null;
       let filter = null;
+      let body = null;
       for (let i = 0; i < rest.length; i++) {
         if (rest[i] === '--dur') duration = Number(rest[++i]);
         else if (rest[i] === '--filter') filter = rest[++i];
+        else if (rest[i] === '--body') body = rest[++i];
         else fail(`unknown flag ${rest[i]}`);
       }
-      if (!match) fail('usage: net <match> [--dur ms] [--filter s]');
-      print(await cmd({ type: 'net', urlMatch: match, duration, filter }));
+      if (!match) fail('usage: net <match> [--dur ms] [--filter s] [--body s]');
+      if (body && !filter) filter = body; // --body implies you only want those lines
+      print(await cmd({ type: 'net', urlMatch: match, duration, filter, body }));
       break;
     }
 

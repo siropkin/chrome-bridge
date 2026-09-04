@@ -422,7 +422,9 @@ async function clearEmulation(tabId) {
 
 // --- Network capture (CDP) ---------------------------------------------------
 // Opt-in debug mode: attaches the debugger (infobar shows) for `duration` ms,
-// returns one compact line per request. Bodies stay out — replay with eval.
+// returns one compact line per request. Bodies are opt-in (--body <substr>):
+// only matching JSON/text URLs, 8 max, 1500 chars each — enough to read an
+// API answer, capped so a busy page can't flood the agent's context.
 const netCollectors = new Map(); // tabId -> Map(requestId -> entry)
 
 chrome.debugger.onEvent.addListener((src, method, params) => {
@@ -432,17 +434,23 @@ chrome.debugger.onEvent.addListener((src, method, params) => {
     c.set(params.requestId, { t: Date.now(), method: params.request.method, url: params.request.url });
   } else if (method === 'Network.responseReceived') {
     const r = c.get(params.requestId);
-    if (r) r.status = params.response.status;
+    if (r) { r.status = params.response.status; r.mime = params.response.mimeType; }
   } else if (method === 'Network.loadingFinished') {
     const r = c.get(params.requestId);
-    if (r) { r.ms = Date.now() - r.t; r.size = params.encodedDataLength; }
+    if (r) {
+      r.ms = Date.now() - r.t; r.size = params.encodedDataLength;
+      if (c.bodyFilter && (c.bodyCount || 0) < 8 && r.url.includes(c.bodyFilter) && /json|text|xml|javascript/.test(r.mime || '')) {
+        c.bodyCount = (c.bodyCount || 0) + 1;
+        r.bodyP = chrome.debugger.sendCommand(src, 'Network.getResponseBody', { requestId: params.requestId }).catch(() => null);
+      }
+    }
   } else if (method === 'Network.loadingFailed') {
     const r = c.get(params.requestId);
     if (r) { r.ms = Date.now() - r.t; r.error = params.errorText; }
   }
 });
 
-async function captureNetwork(tabId, duration, filter) {
+async function captureNetwork(tabId, duration, filter, bodyFilter) {
   let attachedByUs = true;
   try {
     await chrome.debugger.attach({ tabId }, '1.3');
@@ -451,6 +459,7 @@ async function captureNetwork(tabId, duration, filter) {
     attachedByUs = false; // emulate/shot is holding it — don't detach.
   }
   const c = new Map();
+  c.bodyFilter = bodyFilter;
   netCollectors.set(tabId, c);
   try {
     await chrome.debugger.sendCommand({ tabId }, 'Network.enable', {
@@ -458,6 +467,13 @@ async function captureNetwork(tabId, duration, filter) {
       maxResourceBufferSize: 5_000_000,
     });
     await new Promise((r) => setTimeout(r, Math.min(duration || 4000, 30000)));
+    if (bodyFilter)
+      // Await body fetches while still attached — they fail after detach.
+      for (const r of c.values())
+        if (r.bodyP) {
+          const b = await r.bodyP;
+          r.body = !b ? '(body unavailable)' : b.base64Encoded ? '(binary body)' : b.body.slice(0, 1500);
+        }
     await chrome.debugger.sendCommand({ tabId }, 'Network.disable').catch(() => {});
   } finally {
     netCollectors.delete(tabId);
@@ -478,6 +494,7 @@ async function captureNetwork(tabId, duration, filter) {
     const kb = r.size !== undefined ? ' ' + (r.size > 1024 ? Math.round(r.size / 1024) + 'kB' : r.size + 'B') : '';
     const ms = r.ms !== undefined ? ' ' + r.ms + 'ms' : '';
     lines.push(`${r.method} ${status} ${u}${kb}${ms}`);
+    if (r.body) lines.push('  ↳ ' + r.body.replace(/\s+/g, ' ').trim());
     if (lines.length >= 100) { lines.push('… truncated at 100 requests — use --filter'); break; }
   }
   return lines.join('\n') || '(no requests captured — is the page idle? trigger the action, then run net again)';
@@ -1101,7 +1118,7 @@ async function handle(msg) {
 
   if (msg.type === 'net') {
     const tab = await findTab(msg);
-    return await captureNetwork(tab.id, msg.duration, msg.filter);
+    return await captureNetwork(tab.id, msg.duration, msg.filter, msg.body);
   }
 
   if (msg.type === 'wait') {
