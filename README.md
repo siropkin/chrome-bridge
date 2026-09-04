@@ -4,11 +4,13 @@
 
 [![MIT license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Node ≥ 18](https://img.shields.io/badge/node-%E2%89%A5%2018-339933)](https://nodejs.org) [![zero dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](package.json)
 
-Let **any AI agent** drive your **real** Chrome — the tabs you already have open, with your logged-in sessions, SSO, and cookies. No fresh browser profile, no `--remote-debugging-port` restart, no MCP server, zero npm dependencies.
+Let **any AI agent** drive the Chrome you're already using — your open tabs, logged-in sessions, SSO. MCP bridges need an MCP client and a configured server; Playwright launches a fresh browser. chrome-bridge needs neither: one unpacked extension, one zero-dependency Node CLI — and every tab the agent touches wears a 🟣 pill that narrates what it's doing.
 
 ![chrome-bridge driving a tab — 🟣 corner tag marks it](docs/banner.png)
 
 ## Quick start
+
+Requires macOS/Linux (or Git Bash on Windows), Chrome, and Node ≥ 18.
 
 ```bash
 git clone https://github.com/siropkin/chrome-bridge && cd chrome-bridge && ./install.sh
@@ -56,11 +58,11 @@ Link URLs are omitted by default (they were ~60% of snapshot tokens — the `@eN
 
 ## Why not Playwright (or playwright-mcp)?
 
-Playwright drives a browser it launched — or one restarted with a debug port — so you lose your live, authenticated session. chrome-bridge drives the Chrome you're already looking at. It borrows Playwright's two best ideas (accessibility-tree snapshots with element refs, ref-based actions) and skips the 40 MB dependency and the fresh profile.
+Playwright drives a browser it launched — by default a fresh profile, so you lose your live, authenticated session. (Attach modes exist — a `--remote-debugging-port` relaunch, or playwright-mcp's `--extension` — but they're opt-in flags, not the default path.) chrome-bridge drives the Chrome you're already looking at; that's the only mode. It borrows Playwright's two best ideas (accessibility-tree snapshots with element refs, ref-based actions) and skips the 40 MB dependency and the fresh profile.
 
 ## Why not an MCP browser bridge?
 
-MCP bridges (mcp-chrome, BrowserMCP, playwriter) also drive your real browser — but they need an MCP-capable client and a configured, long-running MCP server. (playwright-mcp, above, is an MCP bridge too — it just also loses your live session.) chrome-bridge is a plain CLI and one HTTP endpoint (`POST /cmd`): any agent that can run a shell command can use it — nothing for the agent to install or configure — and the same commands work from a script, a cron job, or your own terminal.
+MCP bridges (mcp-chrome, BrowserMCP, playwriter) also drive your real browser — but they need an MCP-capable client and a configured, long-running MCP server. Chrome DevTools MCP ships a no-MCP CLI and can attach to your real profile (`--autoConnect`, Chrome 144+) — as an opt-in flag, and its pitch is DevTools depth (performance traces, debugging), not minimalism. chrome-bridge's real-browser mode is the *only* mode, and the client is anything that can run a shell command: a plain CLI plus one command endpoint (`POST /cmd`) — nothing for the agent to install or configure — and the same commands work from a script, a cron job, or your own terminal.
 
 ## Install detail
 
@@ -89,9 +91,21 @@ The bridge is a plain local CLI + HTTP endpoint, so it's harness-agnostic by des
 | Cursor | `.cursor/rules` |
 | Your own agent loop | call `cli.mjs`, or skip it and POST JSON straight to `http://127.0.0.1:9333/cmd` |
 
-The HTTP API is one endpoint: `POST /cmd` with `{"type": "snap", "urlMatch": "…"}` — any language, any framework, any model.
+The HTTP API is one command endpoint: `POST /cmd` with `{"type": "snap", "urlMatch": "…"}` — any language, any framework, any model.
+
+## Security
+
+You're handing an agent your logged-in browser — the design assumes you want to watch it work:
+
+- **Local-only.** The server binds `127.0.0.1` and rejects browser-origin requests (Origin/Sec-Fetch/Host guards), so a web page you visit can't drive the bridge — but **any local process still can**. Load the extension while you're using it; unload it at `chrome://extensions` when you're done.
+- **Automation you can see.** Driven tabs wear a 🟣 pill that narrates each action, join a 🟣 tab group, and light a purple frame while a command runs; `node cli.mjs watch` mirrors the feed in your terminal. The tab group is the driven-tab signal a malicious page can't fake.
+- **Why an unpacked extension?** So you can read exactly what runs — the entire extension is one readable file (`extension/background.js`) plus a manifest, not a minified store bundle.
+- **Prompt injection.** Everything the bridge returns is untrusted page content; the rules agents should follow are in [AGENTS.md](AGENTS.md).
 
 ## Commands
+
+<details>
+<summary>Full command table — snap, click, fill, shot, net, emulate, batch, watch, …</summary>
 
 | Command | What it does |
 |---|---|
@@ -121,6 +135,8 @@ The HTTP API is one endpoint: `POST /cmd` with `{"type": "snap", "urlMatch": "�
 | `start` · `stop` | Server lifecycle — `start` spawns it detached if down (agents can self-heal a dead server) |
 
 `<match>` is a substring of the tab URL; the most recently active matching tab wins. Refs survive re-`snap`s (an element keeps its `@eN` while its role+name are unchanged) and expire on navigation — re-`snap` after `nav`.
+
+</details>
 
 ## Desktop & mobile device emulation
 
@@ -152,10 +168,6 @@ node cli.mjs unemulate news.ycombinator.com                # back to normal
 ## Development
 
 `node test/selftest.mjs` — end-to-end check with a fake extension (no Chrome needed).
-
-## Security
-
-The server binds `127.0.0.1` only and rejects browser-origin requests, so a web page you visit can't drive the bridge — but **any local process still can**. Load the extension while you're testing; unload it at `chrome://extensions` when you're done.
 
 ## License
 

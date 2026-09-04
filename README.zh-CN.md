@@ -4,7 +4,7 @@
 
 [![MIT 许可证](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Node ≥ 18](https://img.shields.io/badge/node-%E2%89%A5%2018-339933)](https://nodejs.org) [![零依赖](https://img.shields.io/badge/dependencies-0-brightgreen)](package.json)
 
-让**任何 AI 智能体**驱动你**真实的** Chrome 浏览器——你已经打开的标签页、已登录的会话、SSO 和 Cookie。无需新的浏览器配置文件,无需 `--remote-debugging-port` 重启,无需 MCP 服务器,零 npm 依赖。
+让**任何 AI 智能体**驱动你正在使用的 Chrome——你已打开的标签页、已登录的会话和 SSO。MCP 桥需要 MCP 客户端和配置好的服务器;Playwright 会启动一个全新的浏览器。chrome-bridge 两者都不需要:一个解压加载的扩展,一个零依赖的 Node CLI——被智能体操作的标签页还会戴上 🟣 小标签,实时播报它正在做什么。
 
 ![chrome-bridge 正在驱动标签页——右下角 🟣 标签为标记](docs/banner.png)
 
@@ -35,15 +35,15 @@ table "1. Playa Phone (playaphone.com) 122 points by cutoff 1 hour…" @e14
 
 ## 为什么不用 Playwright(或 playwright-mcp)?
 
-Playwright 驱动的是它自己启动的浏览器——或者需要用调试端口重启的浏览器——所以你会丢失当前的登录会话。chrome-bridge 驱动的是你正在使用的 Chrome。它借鉴了 Playwright 最好的两个设计(带元素引用的无障碍树快照、基于引用的操作),同时省掉了 40 MB 的依赖和全新的浏览器配置。
+Playwright 驱动的是它自己启动的浏览器——默认是全新的浏览器配置,所以你会丢失当前的登录会话。(也可以挂载到真实 Chrome——`--remote-debugging-port` 重启,或 playwright-mcp 的 `--extension` 模式——但那是需要手动开启的选项,不是默认路径。)chrome-bridge 驱动的是你正在使用的 Chrome,而且这是唯一模式。它借鉴了 Playwright 最好的两个设计(带元素引用的无障碍树快照、基于引用的操作),同时省掉了 40 MB 的依赖和全新的浏览器配置。
 
 ## 为什么不选 MCP 浏览器桥?
 
-MCP 桥接工具(mcp-chrome、BrowserMCP、playwriter)同样可以驱动你真实的浏览器——但它们要求客户端支持 MCP,还需要配置一个长期运行的 MCP 服务器。(上文提到的 playwright-mcp 也是一种 MCP 桥——只是它还会丢失你的登录会话。)chrome-bridge 只是一个普通的 CLI 和一个 HTTP 端点(`POST /cmd`):任何能执行 shell 命令的智能体都能直接使用——智能体侧无需安装、无需配置——同样的命令也可以用在脚本、cron 任务或你自己的终端里。
+MCP 桥接工具(mcp-chrome、BrowserMCP、playwriter)同样可以驱动你真实的浏览器——但它们要求客户端支持 MCP,还需要配置一个长期运行的 MCP 服务器。Chrome DevTools MCP 现在也提供无需 MCP 的 CLI,并能挂载到你的真实浏览器配置(`--autoConnect`,Chrome 144+)——但那是一个可选开关,而且它的卖点是 DevTools 深度(性能 trace、调试),而不是极简。chrome-bridge 的真实浏览器模式就是*唯一*模式,客户端是任何能执行 shell 命令的工具:一个普通 CLI 加一个命令端点(`POST /cmd`)——智能体侧无需安装、无需配置——同样的命令也可以用在脚本、cron 任务或你自己的终端里。
 
 ## 安装
 
-两部分:一个**解压加载的 Chrome 扩展**(MV3)和一个**本地 Node 服务器**。不需要 npm install。
+两部分:一个**解压加载的 Chrome 扩展**(MV3)和一个**本地 Node 服务器**。不需要 npm install。需要 macOS/Linux(或 Windows 上的 Git Bash)、Chrome 和 Node ≥ 18。
 
 ```bash
 git clone https://github.com/siropkin/chrome-bridge && cd chrome-bridge && ./install.sh
@@ -76,9 +76,21 @@ git clone https://github.com/siropkin/chrome-bridge && cd chrome-bridge && ./ins
 | Cursor | `.cursor/rules` |
 | 你自己的智能体循环 | 直接调用 `cli.mjs`,或向 `http://127.0.0.1:9333/cmd` POST JSON |
 
-HTTP API 只有一个端点:`POST /cmd`,Body 如 `{"type": "snap", "urlMatch": "…"}`——任何语言、任何框架、任何模型都能用。
+HTTP API 只有一个命令端点:`POST /cmd`,Body 如 `{"type": "snap", "urlMatch": "…"}`——任何语言、任何框架、任何模型都能用。
+
+## 安全
+
+你要把已登录的浏览器交给智能体——本工具的设计前提是你想看着它工作:
+
+- **仅本地**:服务器只绑定 `127.0.0.1`,并拒绝来自浏览器页面的请求(Origin/Sec-Fetch/Host 防护),你访问的网页无法驱动桥接器——但**任何本地进程仍然可以**。使用时加载扩展;用完后在 `chrome://extensions` 卸载。
+- **看得见的自动化**:被驱动的标签页会戴上 🟣 小标签并播报每一步操作、加入 🟣 标签页分组、命令执行时亮起紫色边框;`node cli.mjs watch` 会在终端同步显示操作流。标签页分组是恶意页面无法伪造的驱动信号。
+- **为什么是解压加载的扩展?** 因为你可以直接读到运行的全部代码——整个扩展只有一个可读的 `extension/background.js` 加一个 manifest,没有应用商店的压缩包。
+- **提示注入**:桥接器返回的一切都是不可信的页面内容;智能体应遵循的规则见 [AGENTS.md](AGENTS.md)。
 
 ## 命令
+
+<details>
+<summary>完整命令表——snap、click、fill、shot、net、emulate、batch 等</summary>
 
 | 命令 | 作用 |
 |---|---|
@@ -102,6 +114,8 @@ HTTP API 只有一个端点:`POST /cmd`,Body 如 `{"type": "snap", "urlMatch": "
 | `swlogs` | 服务工作线程控制台日志尾部(错误/警告) |
 
 `<match>` 是标签页 URL 的子串;匹配多个时取最近活动的那个。引用在重复 `snap` 之间保持稳定(只要 role+name 不变,元素就保持它的 `@eN`),但导航后失效——`nav` 之后请重新 `snap`。
+
+</details>
 
 ## 桌面与移动设备模拟
 
@@ -133,10 +147,6 @@ node cli.mjs unemulate news.ycombinator.com                # 恢复正常
 ## 开发
 
 `node test/selftest.mjs`——用模拟扩展做端到端检查(不需要 Chrome)。
-
-## 安全
-
-服务器只绑定 `127.0.0.1`,并拒绝来自浏览器页面的请求(防止你访问的网页驱动桥接器)——但**任何本地进程仍然可以**。测试时加载扩展;用完后在 `chrome://extensions` 卸载。
 
 ## 许可证
 
