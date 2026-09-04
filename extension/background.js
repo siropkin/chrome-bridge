@@ -523,6 +523,7 @@ const SNAP_SRC = (scope, diff, href) => `(() => {
   for (const k in refs) if (!refs[k].isConnected) delete refs[k];
   let n = (window.__bridgeRefN = window.__bridgeRefN || 0);
   let truncated = false;
+  let skipped = 0;
   const lines = [];
   const ROLE_BY_TAG = { A:'link', BUTTON:'button', SELECT:'combobox', TEXTAREA:'textbox', SUMMARY:'button',
     H1:'heading', H2:'heading', H3:'heading', H4:'heading', H5:'heading', H6:'heading',
@@ -577,20 +578,27 @@ const SNAP_SRC = (scope, diff, href) => `(() => {
     let childDepth = depth;
     if (role && hasBox(el)) {
       const name = nameOf(el, role);
-      const key = role + ' ' + name;
-      let ref = el.__bridgeRef;
-      if (ref && (refs[ref] !== el || el.__bridgeRefKey !== key)) ref = null; // name/role changed → mint fresh
-      if (!ref) {
-        ref = 'e' + ++n;
-        window.__bridgeRefN = n;
-        el.__bridgeRef = ref;
-        el.__bridgeRefKey = key;
+      // Unnamed imgs/statuses are decorative icons and empty live regions —
+      // zero information, but 60-80 lines per snap on real apps. No line, no
+      // ref; children still walked at the same depth.
+      if (!name && (role === 'img' || role === 'status')) {
+        skipped++;
+      } else {
+        const key = role + ' ' + name;
+        let ref = el.__bridgeRef;
+        if (ref && (refs[ref] !== el || el.__bridgeRefKey !== key)) ref = null; // name/role changed → mint fresh
+        if (!ref) {
+          ref = 'e' + ++n;
+          window.__bridgeRefN = n;
+          el.__bridgeRef = ref;
+          el.__bridgeRefKey = key;
+        }
+        refs[ref] = el;
+        const fresh = markFresh && !seen.has(ref);
+        seen.add(ref);
+        lines.push('  '.repeat(Math.min(depth, 10)) + (fresh ? '* ' : '') + role + (name ? ' ' + JSON.stringify(name) : '') + ' @' + ref + stateOf(el, role, name));
+        childDepth = depth + 1;
       }
-      refs[ref] = el;
-      const fresh = markFresh && !seen.has(ref);
-      seen.add(ref);
-      lines.push('  '.repeat(Math.min(depth, 10)) + (fresh ? '* ' : '') + role + (name ? ' ' + JSON.stringify(name) : '') + ' @' + ref + stateOf(el, role, name));
-      childDepth = depth + 1;
     }
     for (const c of el.children) walk(c, childDepth);
     if (el.shadowRoot) for (const c of el.shadowRoot.children) walk(c, childDepth);
@@ -619,6 +627,38 @@ const SNAP_SRC = (scope, diff, href) => `(() => {
     for (const ref in cur) if (prev[ref] !== cur[ref]) out.push((prev[ref] ? '~' : '+') + ' ' + cur[ref].trim());
     for (const ref in prev) if (!cur[ref]) out.push('- @' + ref);
     return out.length ? out.join('\\n') : '(no changes since last snap)';
+  }
+  // Display elision (full snaps only): identical lines — same indent, role,
+  // name, state, differing only by ref — collapse after the first occurrence
+  // into trailing "… N more" summaries that keep the refs clickable. Repeated
+  // rows (avatar stacks, row checkboxes, icon buttons) were ~25% of snap
+  // bytes on real apps. Starred (fresh) lines always show. The diff store
+  // above is built from full lines, so --diff is unaffected.
+  if (!${diff ? 'true' : 'false'}) {
+    // Two passes: count identical lines first so dups occurring only twice
+    // stay inline in place (a "1 more" summary costs what it saves), and only
+    // lines seen 3+ times collapse — first occurrence in place, rest summarized.
+    const keys = lines.map((l) => (/^\\s*\\* /.test(l) ? null : l.replace(/ @e\\d+/, '')));
+    const counts = new Map();
+    for (const k of keys) if (k) counts.set(k, (counts.get(k) || 0) + 1);
+    const shown = new Set();
+    const extra = new Map();
+    const out = [];
+    for (let i = 0; i < lines.length; i++) {
+      const k = keys[i];
+      if (!k || counts.get(k) < 3 || !shown.has(k)) {
+        if (k) shown.add(k);
+        out.push(lines[i]);
+        continue;
+      }
+      if (!extra.has(k)) extra.set(k, []);
+      extra.get(k).push(lines[i].match(/@(e\\d+)/)[1]);
+    }
+    for (const [k, refs2] of extra) {
+      out.push('… ' + refs2.length + ' more · ' + k.trim() + ' → ' + refs2.map((r) => '@' + r).join(' '));
+    }
+    if (skipped) out.push('… ' + skipped + ' unnamed img/status elided (decorative — no name, no ref)');
+    return out.join('\\n');
   }
   return lines.join('\\n');
 })()`;

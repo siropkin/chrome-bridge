@@ -69,7 +69,8 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
   snap <match> [css] [--diff] [--href]   a11y-tree snapshot with @eN refs (cheap — use before shot);
                                     [css] scopes to a subtree, --diff shows only changes since last snap,
                                     --href includes all link URLs (default: only nameless links);
-                                    lines prefixed '* ' are elements new since the previous snap
+                                    lines prefixed '* ' are elements new since the previous snap;
+                                    lines seen 3+ times collapse to '… N more · <line> → @refs'
   click <match> <@ref|css> [--diff]  click an element (fails loudly if an overlay covers it)
   fill <match> <@ref|css> <value> [--diff]   set input value (React-safe)
   type <match> <@ref|css> <text> [--diff]    per-char typing — triggers autocomplete/keystroke UIs

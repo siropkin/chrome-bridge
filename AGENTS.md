@@ -41,6 +41,8 @@ snap <match> [css] [--diff] [--href]
                                   --diff prints only lines added/removed/changed since last snap,
                                   --href includes all link URLs (default: only nameless links);
                                   '* ' prefix marks elements new since the previous snap
+                                  identical lines seen 3+ times collapse to '… N more · <line> → @refs'
+                                  (refs stay clickable); unnamed decorative imgs are elided
 click <match> <@ref|css> [--diff]   click (fails loudly if an overlay covers the click point)
 fill <match> <@ref|css> <value> [--diff]   set input value (React-safe)
 type <match> <@ref|css> <text> [--diff]    per-char typing — triggers autocomplete/keystroke UIs
