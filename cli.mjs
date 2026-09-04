@@ -111,7 +111,10 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
   start                             start the server (detached) if it's down
   stop                              stop the server
 
-<match> is a substring of the tab URL; the most recently active match wins.
+<match> is a substring of the tab URL; a driven tab wins, then the most recently
+active. Ambiguous matches print a warning naming the other tabs — re-run with a
+longer match. Mutating commands (click/fill/type/press/upload/eval) auto-mark
+the tab (🟣 pill + tab group).
 Refs (@eN) come from snap; they survive re-snaps but expire on navigation.`;
 
 async function run(cmdName, args) {

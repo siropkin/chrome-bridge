@@ -2,6 +2,7 @@
 // WebSocket, and exercises the CLI end-to-end. Run: node test/selftest.mjs
 import { spawn } from 'node:child_process';
 import net from 'node:net';
+import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 
@@ -121,6 +122,7 @@ try {
     if (msg.type === 'eval') return respond({ echo: msg.code.length, world: msg.world, match: msg.urlMatch, label: msg.label || null });
     if (msg.type === 'big') return respond('x'.repeat(3 * 1024 * 1024)); // 3 MB — exercises 64-bit frames
     if (msg.type === 'shot') { lastShot = msg; return respond('data:image/png;base64,' + Buffer.from('fakepng').toString('base64')); }
+    if (msg.type === 'ansierr') return ext.send({ id: msg.id, ok: false, error: 'bad \x1b[31mRED\x1b[0m\nforged line' });
     if (['snap', 'press', 'type', 'hover', 'net', 'click', 'fill', 'navigate', 'scroll', 'ask', 'upload', 'console', 'note', 'measure', 'grid'].includes(msg.type)) return respond(msg); // echo for flag-parsing checks
     return respond(null);
   });
@@ -268,6 +270,14 @@ try {
     // A stray unemulate (nothing emulated) must no-op cleanly — the CDP clear
     // at an unattached debugger logged a swlogs FAILED while the caller got ok.
     assert(bg.includes('if (!emulatedTabs.has(tabId)) return;'), 'ext: stray unemulate no-ops instead of logging a FAILED clear');
+    // Tab-match confusion: a lookalike URL path (evil.com/github.com matches
+    // 'github.com') must not silently win — findTab warns on ambiguity (the
+    // warning rides the result via onmessage), prefers driven tabs over MRU,
+    // and mutating commands auto-mark so acting on a tab is never invisible.
+    assert(bg.includes('tabs match') && bg.includes('msg._warn'), 'ext: findTab warns on an ambiguous match');
+    assert(bg.includes('drivenTabs.has(b.id)'), 'ext: findTab prefers driven tabs over most-recently-active');
+    assert(bg.includes('MUTATING.has(msg.type)') && bg.includes('markTab(matches[0].id)'), 'ext: mutating commands auto-mark the tab');
+    assert(bg.includes('if (msg._warn)'), 'ext: onmessage appends the ambiguous-match warning to the result');
 
     // Contract drift tripwires: the command list lives in 3 places (cli USAGE,
     // handle() dispatch, ACT_VERBS) kept in sync by hand — fail here when they
@@ -341,6 +351,53 @@ try {
     setTimeout(() => { s.destroy(); resolve(false); }, 1000);
   });
   assert(evilWs, 'server: WS upgrade with browser Origin rejected');
+
+  // DNS-rebinding guard: a non-loopback Host is refused on every route, even
+  // with no Origin/Sec-Fetch headers at all (a rebound page is "same-origin",
+  // so those guards don't apply to its GETs — Host is the one header fetch
+  // can't forge).
+  const hostReq = (path, method = 'GET') =>
+    new Promise((resolve) => {
+      const r = http.request({ host: '127.0.0.1', port: PORT, path, method, headers: { Host: `evil.com:${PORT}` } }, (res) => {
+        res.resume();
+        resolve(res.statusCode);
+      });
+      r.on('error', () => resolve(0));
+      r.end();
+    });
+  assert((await hostReq('/log')) === 403, 'server: /log with rebound Host → 403');
+  assert((await hostReq('/health')) === 403, 'server: /health with rebound Host → 403');
+  assert((await hostReq('/cmd', 'POST')) === 403, 'server: /cmd with rebound Host → 403');
+  assert((await hostReq('/stop', 'POST')) === 403, 'server: /stop with rebound Host → 403');
+  h = await cli('health');
+  assert(JSON.parse(h.stdout).ok === true, 'server survives the rebound /stop attempt', h.stdout + h.stderr);
+
+  const rebindWs = await new Promise((resolve) => {
+    const s = net.connect(PORT, '127.0.0.1');
+    let buf = '';
+    s.on('data', (c) => (buf += c));
+    s.on('connect', () =>
+      s.write(
+        // No Origin at all — a non-browser client would pass the origin rule;
+        // only the Host guard rejects this.
+        `GET /ws HTTP/1.1\r\nHost: evil.com:${PORT}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${crypto.randomBytes(16).toString('base64')}\r\nSec-WebSocket-Version: 13\r\n\r\n`
+      )
+    );
+    s.on('close', () => resolve(!buf.includes('101')));
+    s.on('error', () => resolve(!buf.includes('101')));
+    setTimeout(() => { s.destroy(); resolve(false); }, 1000);
+  });
+  assert(rebindWs, 'server: WS upgrade with rebound Host rejected');
+
+  // Page-influenced error text can't inject ANSI escapes or forged lines into
+  // the activity feed (server.log / `watch` terminal).
+  await fetch(`http://127.0.0.1:${PORT}/cmd`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ type: 'ansierr' }),
+  });
+  const ansiLine = (await fetch(`http://127.0.0.1:${PORT}/log`).then((r) => r.json())).lines.find((a) => a.line.includes('ansierr'));
+  assert(ansiLine && !/[\x00-\x1f\x7f]/.test(ansiLine.line), 'server /log strips control chars from error text', JSON.stringify(ansiLine));
 
   // extension disconnect → health flips
   ext.socket.destroy();
