@@ -38,6 +38,17 @@ function connect() {
       // no release to ever restore it. Release restores in releaseTab.
       if (msg._tabId != null && drivenTabs.has(msg._tabId)) {
         setFavicon(msg._tabId, '✅');
+        // Pill back to neutral after a beat — the in-flight label needs
+        // ~800ms to be glanceable, and the tooltip ring keeps the history.
+        // The seq guard skips the reset if a newer command already started.
+        const tabId = msg._tabId;
+        const seq = pillSeq.get(tabId) || 0;
+        setTimeout(() => {
+          if ((pillSeq.get(tabId) || 0) !== seq) return;
+          chrome.scripting
+            .executeScript({ target: { tabId }, func: pillInject, args: ['AI idle', tabActivity.get(tabId) || [], null, false] })
+            .catch(() => {});
+        }, 800);
       }
     }
   };
@@ -87,13 +98,15 @@ function injectBanner() {
   }
   const d = document.createElement('div');
   d.id = 'bridge-banner';
-  // Thin viewport frame (pointer-events: none, covers nothing) + a small
-  // clickable corner pill — unmistakable without hiding page content.
-  d.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;border:3px solid rgba(168,85,247,.75);border-radius:2px';
+  // The viewport frame starts transparent: it lights up purple only while a
+  // command is in flight (pillInject toggles it) — a peripheral "the agent is
+  // acting RIGHT NOW" signal — while the pill carries identity + history and
+  // idle tabs stay clean. pointer-events: none, covers nothing.
+  d.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;border:3px solid transparent;border-radius:2px';
   const pill = document.createElement('div');
   pill.style.cssText =
     'position:fixed;bottom:8px;right:8px;background:#a855f7;color:#fff;font:12px sans-serif;padding:3px 10px;border-radius:11px;pointer-events:auto;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.4)';
-  pill.textContent = '🟣 bridge ✕';
+  pill.textContent = '🟣 AI idle ✕';
   pill.title = 'An AI agent is driving this tab (chrome-bridge) — click to hide until next navigation';
   pill.onclick = () => d.remove();
   d.appendChild(pill);
@@ -112,28 +125,78 @@ function removeBanner() {
 // hid by clicking stays hidden: pillInject no-ops when the banner is absent.
 const tabActivity = new Map(); // tabId -> last 5 "HH:MM:SS label" lines
 
-// Runs in the page; must be self-contained.
-function pillInject(label, lines) {
-  const pill = document.querySelector('#bridge-banner > div');
+// Runs in the page; must be self-contained. `@e21`-style refs mean nothing to
+// a human, so resolve them to the element's own name right here — refs live in
+// this world's window.__bridgeRefs, no extra round trip needed. `active` also
+// lights the viewport frame for the duration of the command.
+function pillInject(label, lines, target, active) {
+  const banner = document.getElementById('bridge-banner');
+  const pill = banner?.querySelector('div');
   if (!pill) return;
+  banner.style.borderColor = active ? 'rgba(168,85,247,.75)' : 'transparent';
+  if (target && target.startsWith('@')) {
+    const el = window.__bridgeRefs?.[target.slice(1)];
+    const name = String(el?.getAttribute('aria-label') || el?.innerText || el?.placeholder || '').replace(/\s+/g, ' ').trim().slice(0, 24);
+    if (name) {
+      label = label.replace(target, '"' + name + '"');
+      lines = lines.map((l) => l.replace(target, '"' + name + '"'));
+    }
+  }
   pill.textContent = '🟣 ' + label + ' ✕';
   pill.title = lines.join('\n') + '\n(click to hide)';
 }
 
-function recordActivity(tabId, label) {
+// Per-tab command counter: the idle-reset in onmessage is delayed ~800ms so a
+// fast command's in-flight label stays glanceable, and the counter keeps that
+// delayed reset from clobbering a NEWER command's label in rapid sequences.
+const pillSeq = new Map();
+
+function recordActivity(tabId, msg) {
+  const { ing, done } = activityPhrases(msg);
   const lines = tabActivity.get(tabId) || [];
-  lines.push(new Date().toISOString().slice(11, 19) + ' ' + label);
+  lines.push(new Date().toISOString().slice(11, 19) + ' ' + done);
   if (lines.length > 5) lines.shift();
   tabActivity.set(tabId, lines);
+  pillSeq.set(tabId, (pillSeq.get(tabId) || 0) + 1);
   chrome.scripting
-    .executeScript({ target: { tabId }, func: pillInject, args: [label, lines] })
+    .executeScript({ target: { tabId }, func: pillInject, args: [ing + '…', lines, msg.target || null, true] })
     .catch(() => {}); // banner absent (user hid it / chrome:// page) — fine
 }
 
-// One-line command summary for the pill: "click @e4", "nav github.com/…".
-function activityLabel(msg) {
-  const s = msg.type + (msg.target ? ' ' + msg.target : msg.url ? ' ' + msg.url : msg.key ? ' ' + msg.key : '');
-  return s.length > 40 ? s.slice(0, 37) + '…' : s;
+// One-line command summary for the pill, in human words: present-continuous
+// while the command runs ("taking screenshot…"), past tense for the tooltip
+// history ring. The user glances at the tab to see what the agent is doing
+// RIGHT NOW — agent-speak like "click @e4" doesn't answer that.
+const ACT_VERBS = {
+  open: ['opening page', 'opened page'],
+  navigate: ['opening page', 'opened page'],
+  close: ['closing tab', 'closed tab'],
+  mark: ['marking tab', 'marked tab'],
+  release: ['releasing tab', 'released tab'],
+  snap: ['reading page', 'read page'],
+  shot: ['taking screenshot', 'took screenshot'],
+  click: ['clicking', 'clicked'],
+  fill: ['filling in', 'filled in'],
+  type: ['typing into', 'typed into'],
+  press: ['pressing', 'pressed'],
+  hover: ['hovering over', 'hovered over'],
+  scroll: ['scrolling', 'scrolled'],
+  wait: ['waiting for', 'waited for'],
+  ask: ['asking Nano', 'asked Nano'],
+  eval: ['running a script', 'ran a script'],
+  net: ['watching network', 'watched network'],
+  console: ['reading page logs', 'read page logs'],
+  measure: ['measuring layout', 'measured layout'],
+  grid: ['toggling grid', 'toggled grid'],
+  emulate: ['emulating device', 'emulated device'],
+  resize: ['resizing window', 'resized window'],
+};
+function activityPhrases(msg) {
+  let v = ACT_VERBS[msg.type] || [msg.type, msg.type];
+  const detail = msg.target || msg.key || msg.selector || msg.text || msg.question || msg.url || '';
+  if (msg.type === 'scroll' && detail && !['up', 'down', 'top', 'bottom'].includes(detail)) v = ['scrolling to', 'scrolled to'];
+  const cut = (s) => (s.length > 36 ? s.slice(0, 33) + '…' : s);
+  return { ing: cut(detail ? v[0] + ' ' + detail : v[0]), done: cut(detail ? v[1] + ' ' + detail : v[1]) };
 }
 
 async function groupTab(tabId) {
@@ -511,7 +574,7 @@ const CURSOR_SRC = `
       (ripple
         ? '<div style="position:absolute;left:-14px;top:-14px;width:28px;height:28px;border:3px solid rgba(168,85,247,.9);border-radius:50%;animation:bridge-ripple .6s ease-out forwards"></div>'
         : '') +
-      '<svg width="20" height="20" viewBox="0 0 20 20" style="filter:drop-shadow(0 1px 1px rgba(0,0,0,.4))"><path d="M3 1v16l3.9-3.7 2.3 5.5 2.8-1.2-2.4-5.4 5.6-.6z" fill="#fff" stroke="#222" stroke-width="1.3"/></svg>';
+      '<svg width="20" height="20" viewBox="0 0 20 20" style="filter:drop-shadow(0 1px 1px rgba(0,0,0,.4))"><path d="M3 1v16l3.9-3.7 2.3 5.5 2.8-1.2-2.4-5.4 5.6-.6z" fill="#a855f7" stroke="#fff" stroke-width="1.3"/></svg>';
     (document.body || document.documentElement).appendChild(c);
     setTimeout(() => c.remove(), 1300);
   };
@@ -872,7 +935,7 @@ async function findTab(msg) {
   // releaseTab restores the site's own favicon.
   if (msg.type !== 'release' && drivenTabs.has(matches[0].id)) {
     await setFavicon(matches[0].id, '⏳');
-    recordActivity(matches[0].id, activityLabel(msg));
+    recordActivity(matches[0].id, msg);
   }
   return matches[0];
 }
@@ -906,7 +969,7 @@ async function handle(msg) {
     const complete = waitForLoad(tab.id);
     await setFavicon(tab.id, '⏳');
     await markTab(tab.id);
-    recordActivity(tab.id, activityLabel(msg));
+    recordActivity(tab.id, msg);
     const loaded = await complete;
     const { url } = await chrome.tabs.get(tab.id); // create returns url:"" while pending
     return { id: tab.id, url, loaded };
