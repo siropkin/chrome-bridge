@@ -990,7 +990,9 @@ async function runEval(tabId, code, world = 'auto') {
   for (const w of worlds) {
     if (!w) continue;
     const r = (await run(w))?.[0]?.result;
-    if (r && r.ok === false && /EvalError|eval/.test(r.error)) continue; // CSP — try next
+    // Anchored: CSP refusal is always a sync 'EvalError: Refused to evaluate…' —
+    // a bare /eval/ would re-run user code whose own error message mentions 'eval'.
+    if (r && r.ok === false && r.error.startsWith('EvalError:')) continue; // CSP — try next
     if (!r) throw new Error('no injection result');
     if (r.ok === false) throw new Error(r.error);
     if (world === 'auto') worldCache.set(tabId, w);
@@ -1066,6 +1068,9 @@ function waitForLoad(tabId, timeout = 8000) {
 // driven tab's favicon to ✅, and marks a driven tab busy (⏳) for the command
 // about to run. `open` sets msg._tabId itself — it creates rather than finds.
 async function findTab(msg) {
+  // A flag where <match> belongs can never match a URL — say so instead of
+  // 'no tab matching "--max"'. One guard here covers every command.
+  if (msg.urlMatch?.startsWith('--')) throw new Error(`"${msg.urlMatch}" is a flag, not a tab match — <match> goes first (check the command's usage)`);
   const tabs = await chrome.tabs.query({});
   const matches = tabs.filter((t) => t.url && t.url.includes(msg.urlMatch));
   if (!matches.length) {
