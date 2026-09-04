@@ -20,6 +20,10 @@ const pending = new Map();
 // Ring of 300; `since` in GET /log picks up only the new lines.
 const activity = [];
 let actSeq = 0;
+// `watch` keys its `since` cursor on actSeq, which resets on restart — the
+// boot id lets it detect the reset instead of silently filtering out every
+// line until seq climbs back past the old high-water mark.
+const bootId = Date.now();
 function summarize(msg) {
   const s = [msg.type];
   if (msg.urlMatch) s.push(msg.urlMatch);
@@ -185,7 +189,7 @@ const server = http.createServer((req, res) => {
     // cross-origin (no CORS headers), so no drive-by guard is needed.
     const since = Number(new URL(req.url, 'http://x').searchParams.get('since') || 0);
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify(activity.filter((a) => a.seq > since)));
+    res.end(JSON.stringify({ boot: bootId, lines: activity.filter((a) => a.seq > since) }));
     return;
   }
   if (req.method === 'POST' && req.url === '/stop') {

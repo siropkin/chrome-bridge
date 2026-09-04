@@ -269,14 +269,14 @@ try {
   }
 
   // activity feed (watch): every relayed command lands in /log; since= yields a delta
-  const logAll = await fetch(`http://127.0.0.1:${PORT}/log`).then((r) => r.json());
+  const logAll = (await fetch(`http://127.0.0.1:${PORT}/log`).then((r) => r.json())).lines;
   assert(
     logAll.some((a) => a.line.includes('eval example.com') && a.line.includes('· ok')) &&
       logAll.some((a) => a.line.includes('note example.com saving the draft')),
     'server /log records commands',
     JSON.stringify(logAll.slice(-3))
   );
-  const logDelta = await fetch(`http://127.0.0.1:${PORT}/log?since=${logAll[logAll.length - 1].seq - 1}`).then((r) => r.json());
+  const logDelta = (await fetch(`http://127.0.0.1:${PORT}/log?since=${logAll[logAll.length - 1].seq - 1}`).then((r) => r.json())).lines;
   assert(logDelta.length === 1, 'server /log since= delta filtering', JSON.stringify(logDelta));
 
   // unknown command surfaces the extension's error

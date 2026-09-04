@@ -46,12 +46,11 @@ async function stdin() {
   return s.trim();
 }
 
-// POSIX-ish word split honoring 'single'/"double" quotes (quote whole args).
-const tokenize = (line) => {
-  const out = [];
-  line.replace(/'([^']*)'|"([^"]*)"|(\S+)/g, (_, s, d, w) => out.push(s ?? d ?? w));
-  return out;
-};
+// POSIX-ish word split honoring 'single'/"double" quotes — including quotes
+// glued onto bare words (a"b c" → `ab c`), like a shell. Two steps: split
+// into maximal runs of bare/quoted parts, then strip the quotes per part.
+const tokenize = (line) =>
+  (line.match(/(?:[^\s'"]+|"[^"]*"|'[^']*')+/g) || []).map((t) => t.replace(/"([^"]*)"|'([^']*)'/g, (_, d, s) => d ?? s));
 
 // Page-side helpers (eval-based).
 const measureSrc = (sel) =>
@@ -148,7 +147,12 @@ async function run(cmdName, args) {
           break;
         }
       } catch {}
-      const log = fs.openSync(fileURLToPath(new URL('./server.log', import.meta.url)), 'a');
+      const logPath = fileURLToPath(new URL('./server.log', import.meta.url));
+      // Append-only forever would grow without bound — cap at 5MB per boot.
+      try {
+        if (fs.statSync(logPath).size > 5_000_000) fs.truncateSync(logPath);
+      } catch {}
+      const log = fs.openSync(logPath, 'a');
       const child = spawn(process.execPath, [fileURLToPath(new URL('./server.mjs', import.meta.url))], {
         detached: true,
         stdio: ['ignore', log, log],
@@ -184,18 +188,28 @@ async function run(cmdName, args) {
     // (you already see command results). Ctrl-C to exit.
     case 'watch': {
       let since = 0;
-      const first = await fetch(`${BASE}/log`).then((r) => r.json()).catch(() => null);
+      const poll = () => fetch(`${BASE}/log?since=${since}`).then((r) => r.json()).catch(() => null);
+      const first = await poll();
       if (!first) fail('bridge server not running — start it: node cli.mjs start');
-      for (const a of first.slice(-15)) console.log(a.line);
-      if (first.length) since = first[first.length - 1].seq;
+      let boot = first.boot;
+      for (const a of first.lines.slice(-15)) console.log(a.line);
+      if (first.lines.length) since = first.lines[first.lines.length - 1].seq;
       console.log('— watching (Ctrl-C to exit) —');
       // ponytail: 500ms poll — SSE would be push-perfect, but this is 5 lines
       // and survives server restarts; switch if latency ever matters
       for (;;) {
         await new Promise((r) => setTimeout(r, 500));
-        const rows = await fetch(`${BASE}/log?since=${since}`).then((r) => r.json()).catch(() => []);
-        for (const a of rows) console.log(a.line);
-        if (rows.length) since = rows[rows.length - 1].seq;
+        const res = await poll();
+        if (!res) continue;
+        // actSeq resets on a server restart; without this every new line would
+        // be filtered out until seq climbs back past the old cursor.
+        if (res.boot !== boot) {
+          boot = res.boot;
+          since = 0;
+          console.log('— server restarted —');
+        }
+        for (const a of res.lines) console.log(a.line);
+        if (res.lines.length) since = res.lines[res.lines.length - 1].seq;
       }
     }
 
@@ -251,9 +265,10 @@ async function run(cmdName, args) {
         if (!args[fi + 1] || args[fi + 1].startsWith('--')) fail('--find needs a query');
         find = args[fi + 1];
       }
-      // scope = the first leftover positional (--diff/--href are flags,
-      // --find's query is consumed as its value)
-      const scope = args.slice(1).find((a) => !a.startsWith('--') && a !== find) || null;
+      // scope = the first leftover positional (--diff/--href are flags; the
+      // token right after --find is its query — excluded by INDEX, not value,
+      // so a scope that happens to equal the query still works)
+      const scope = args.slice(1).find((a, i) => !a.startsWith('--') && i !== fi) || null;
       print(await cmd({ type: 'snap', urlMatch: args[0], scope, diff, href, ...(find ? { find } : {}) }));
       break;
     }
@@ -322,8 +337,10 @@ async function run(cmdName, args) {
       let filter = null;
       let body = null;
       for (let i = 0; i < rest.length; i++) {
-        if (rest[i] === '--dur') duration = Number(rest[++i]);
-        else if (rest[i] === '--filter') filter = rest[++i];
+        if (rest[i] === '--dur') {
+          duration = Number(rest[++i]);
+          if (!Number.isFinite(duration) || duration < 0) fail('--dur needs a number (ms)');
+        } else if (rest[i] === '--filter') filter = rest[++i];
         else if (rest[i] === '--body') body = rest[++i];
         else fail(`unknown flag ${rest[i]}`);
       }
@@ -345,6 +362,9 @@ async function run(cmdName, args) {
       }
       const selector = pos[0] || null;
       if (!match || (!selector && !text)) fail('usage: wait <match> [css|--text t] [--timeout ms]');
+      // Above 60s the server's 70s command cap fires first and the caller gets
+      // a misleading 'extension timeout' for a healthy wait — fail here instead.
+      if (!Number.isFinite(timeout) || timeout < 1 || timeout > 60000) fail('--timeout must be 1..60000 ms (the server kills commands at 70s)');
       print(await cmd({ type: 'wait', urlMatch: match, selector, text, timeout }));
       break;
     }
@@ -388,6 +408,9 @@ async function run(cmdName, args) {
         else fail(`unknown flag ${k}`);
       }
       if (msg.full && msg.crop) fail('--full and --crop are mutually exclusive');
+      for (const k of ['max', 'scale', 'quality']) if (msg[k] !== undefined && !Number.isFinite(msg[k])) fail(`flag --${k} needs a number`);
+      if (msg.format && !['png', 'jpeg'].includes(msg.format)) fail('--format must be png|jpeg');
+      if (msg.crop && (msg.crop.length !== 4 || msg.crop.some((n) => !Number.isFinite(n)))) fail('--crop needs 4 numbers: x,y,w,h');
       const dataUrl = await cmd(msg);
       const b64 = dataUrl.includes(',') ? dataUrl.split(',', 2)[1] : dataUrl;
       const buf = Buffer.from(b64, 'base64');
@@ -421,14 +444,14 @@ async function run(cmdName, args) {
       break;
 
     case 'emulate':
-      if (!args[0] || !args[1] || !args[2]) fail('usage: emulate <match> <w> <h> [mobile]');
-      print(await cmd({ type: 'emulate', urlMatch: args[0], width: Number(args[1]), height: Number(args[2]), mobile: args[3] === 'mobile' }));
+    case 'resize': {
+      if (!args[0] || !args[1] || !args[2]) fail(`usage: ${cmdName} <match> <w> <h>${cmdName === 'emulate' ? ' [mobile]' : ''}`);
+      const w = Number(args[1]);
+      const h = Number(args[2]);
+      if (!Number.isFinite(w) || !Number.isFinite(h) || w < 1 || h < 1) fail(`${cmdName} needs numeric <w> <h>`);
+      print(await cmd({ type: cmdName, urlMatch: args[0], width: w, height: h, ...(cmdName === 'emulate' ? { mobile: args[3] === 'mobile' } : {}) }));
       break;
-
-    case 'resize':
-      if (!args[0] || !args[1] || !args[2]) fail('usage: resize <match> <w> <h>');
-      print(await cmd({ type: 'resize', urlMatch: args[0], width: Number(args[1]), height: Number(args[2]) }));
-      break;
+    }
 
     default:
       fail(`unknown command: ${cmdName}\n\n${USAGE}`);

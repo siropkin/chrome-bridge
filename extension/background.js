@@ -40,10 +40,12 @@ function connect() {
   }
   s.onmessage = async (e) => {
     const msg = JSON.parse(e.data);
+    let failed = false;
     try {
       const result = await handle(msg);
       s.send(JSON.stringify({ id: msg.id, ok: true, result }));
     } catch (err) {
+      failed = true;
       // Failures belong in the human-visible history too — a red-ink line in
       // the pill log, not just an error back to the agent.
       if (msg._tabId != null && drivenTabs.has(msg._tabId)) {
@@ -55,18 +57,23 @@ function connect() {
       }
       s.send(JSON.stringify({ id: msg.id, ok: false, error: String(err) }));
     } finally {
-      // ✅ when a command on a driven tab lands. Non-driven tabs are left
-      // alone — otherwise any stray command would stick a ✅ on them with
+      // ✅ when a command on a driven tab lands, ✗ when it failed — the strip
+      // icon must not claim success on an error. Non-driven tabs are left
+      // alone — otherwise any stray command would stick an icon on them with
       // no release to ever restore it. Release restores in releaseTab.
-      if (msg._tabId != null && drivenTabs.has(msg._tabId)) {
-        setFavicon(msg._tabId, '✅');
+      const tabId = msg._tabId;
+      if (msg._pill) inflight.set(tabId, (inflight.get(tabId) || 1) - 1);
+      if (tabId != null && drivenTabs.has(tabId)) {
+        setFavicon(tabId, failed ? '✗' : '✅');
         // Pill back to neutral after a beat — the in-flight label needs
         // ~800ms to be glanceable, and the tooltip ring keeps the history.
-        // The seq guard skips the reset if a newer command already started.
-        const tabId = msg._tabId;
+        // The seq guard skips the reset if a newer command already started;
+        // the inflight guard skips it if a sibling command is STILL running
+        // (its own reset will fire when it finishes).
         const seq = pillSeq.get(tabId) || 0;
         setTimeout(() => {
           if ((pillSeq.get(tabId) || 0) !== seq) return;
+          if ((inflight.get(tabId) || 0) > 0) return;
           chrome.scripting
             .executeScript({ target: { tabId }, func: pillInject, args: ['AI idle', tabActivity.get(tabId) || [], null, false] })
             .catch(() => {});
@@ -186,8 +193,10 @@ function pillInject(label, lines, target, active) {
     const el = window.__bridgeRefs?.[target.slice(1)];
     const name = String(el?.getAttribute('aria-label') || el?.innerText || el?.placeholder || '').replace(/\s+/g, ' ').trim().slice(0, 24);
     if (name) {
-      label = label.replace(target, '"' + name + '"');
-      lines = lines.map((l) => l.replace(target, '"' + name + '"'));
+      // (?!\d): '@e3' must not rewrite the '@e3' inside '@e30'.
+      const re = new RegExp(target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?!\\d)', 'g');
+      label = label.replace(re, '"' + name + '"');
+      lines = lines.map((l) => l.replace(re, '"' + name + '"'));
     }
   }
   pill.firstChild.textContent = '🟣 ' + label;
@@ -202,6 +211,10 @@ function pillInject(label, lines, target, active) {
 // fast command's in-flight label stays glanceable, and the counter keeps that
 // delayed reset from clobbering a NEWER command's label in rapid sequences.
 const pillSeq = new Map();
+// tabId -> commands currently running. The seq guard alone can't tell "a newer
+// command started" from "a sibling started during this one and is still
+// running" — both bump seq — so the idle-reset also checks this.
+const inflight = new Map();
 
 function pushActivity(tabId, line) {
   const lines = tabActivity.get(tabId) || [];
@@ -215,6 +228,8 @@ function recordActivity(tabId, msg) {
   const { ing, done } = activityPhrases(msg);
   const lines = pushActivity(tabId, done);
   pillSeq.set(tabId, (pillSeq.get(tabId) || 0) + 1);
+  msg._pill = true; // onmessage's finally decrements inflight only for commands that recorded
+  inflight.set(tabId, (inflight.get(tabId) || 0) + 1);
   chrome.scripting
     .executeScript({ target: { tabId }, func: pillInject, args: [ing + '…', lines, msg.target || null, true] })
     .catch(() => {}); // banner absent (user hid it / chrome:// page) — fine
@@ -356,6 +371,9 @@ async function markTab(tabId) {
 
 async function releaseTab(tabId) {
   drivenTabs.delete(tabId);
+  tabActivity.delete(tabId); // else a re-mark resurrects the stale history ring
+  pillSeq.delete(tabId);
+  inflight.delete(tabId);
   await setFavicon(tabId, null); // restore the site's own favicon
   try {
     await chrome.scripting.executeScript({
@@ -388,6 +406,8 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   drivenTabs.delete(tabId);
   tabStatus.delete(tabId);
   tabActivity.delete(tabId);
+  pillSeq.delete(tabId);
+  inflight.delete(tabId);
   worldCache.delete(tabId);
   cdpRefs.delete(tabId); // debugger auto-detaches on close
   cdpQ.delete(tabId);
@@ -405,14 +425,23 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 // dance that only covered two of the five CDP users.
 const cdpRefs = new Map(); // tabId -> active owners
 async function attachDbg(tabId) {
+  // Claim the share BEFORE the await: an attach-in-flight must still count,
+  // or a sibling's detach (e.g. runEval's CDP fallback, which runs outside
+  // withCdp) can drop the count to zero and pull the session out from under
+  // this attach between its resolution and the increment.
+  const n = (cdpRefs.get(tabId) || 0) + 1;
+  cdpRefs.set(tabId, n);
   try {
     await chrome.debugger.attach({ tabId }, '1.3');
     logLine('dbg +' + tabId);
   } catch (e) {
-    if (!/already attached/i.test(String(e))) throw e; // ours from a sibling command — share it
-    logLine('dbg +' + tabId + ' (shared)');
+    if (!/already attached/i.test(String(e))) {
+      if (n <= 1) cdpRefs.delete(tabId);
+      else cdpRefs.set(tabId, n - 1);
+      throw e;
+    }
+    logLine('dbg +' + tabId + ' (shared)'); // ours from a sibling command — share it
   }
-  cdpRefs.set(tabId, (cdpRefs.get(tabId) || 0) + 1);
 }
 async function detachDbg(tabId) {
   const n = (cdpRefs.get(tabId) || 1) - 1;
@@ -437,6 +466,13 @@ chrome.debugger.onDetach.addListener((src) => {
   if (cdpRefs.delete(src.tabId) || emulatedTabs.has(src.tabId)) logLine('dbg DETACHED EXTERNALLY ' + src.tabId);
   cdpRefs.delete(src.tabId);
   emulatedTabs.delete(src.tabId);
+  // A detach can drop an in-flight sendCommand's callback entirely — the
+  // queued chain behind it would never advance, wedging every later CDP
+  // command on this tab. Drop the chain; the stuck command itself still
+  // fails via the withCdp timeout.
+  cdpQ.delete(src.tabId);
+  const c = netCollectors.get(src.tabId);
+  if (c) c.detached = true; // captureNetwork reports the cut-short capture
 });
 
 // Serialize the CDP-holding commands per tab. The refcount makes concurrent
@@ -451,8 +487,16 @@ chrome.debugger.onDetach.addListener((src) => {
 const cdpQ = new Map(); // tabId -> in-flight CDP command chain
 function withCdp(tabId, fn) {
   const run = (cdpQ.get(tabId) || Promise.resolve()).then(fn);
-  cdpQ.set(tabId, run.catch(() => {}));
-  return run;
+  // Timeout under the server's 70s cap: a dropped sendCommand callback (Chrome
+  // does this on detach) must fail THIS command and let the queue advance —
+  // otherwise every later CDP command on the tab chains onto a promise that
+  // never settles and rots to 'extension timeout' until the SW restarts.
+  const timed = Promise.race([
+    run,
+    new Promise((_, rej) => setTimeout(() => rej(new Error('CDP command stuck (dropped callback?) — queue advanced')), 65_000)),
+  ]);
+  cdpQ.set(tabId, timed.catch(() => {}));
+  return timed;
 }
 
 // --- Device emulation (CDP) -------------------------------------------------
@@ -519,6 +563,10 @@ async function clearEmulation(tabId) {
       { tabId },
       'Emulation.clearDeviceMetricsOverride'
     );
+    // setEmulation also sets touch + (mobile) a UA override — clear both, or
+    // the tab keeps the phone UA after unemulate.
+    await chrome.debugger.sendCommand({ tabId }, 'Emulation.setTouchEmulationEnabled', { enabled: false });
+    await chrome.debugger.sendCommand({ tabId }, 'Network.setUserAgentOverride', { userAgent: '' });
     logLine('emulation cleared ' + tabId);
   } catch (e) {
     logLine('emulation clear ' + tabId + ' FAILED: ' + String(e).slice(0, 80));
@@ -598,6 +646,10 @@ async function captureNetwork(tabId, duration, filter, bodyFilter) {
     if (r.body) lines.push('  ↳ ' + r.body.replace(/\s+/g, ' ').trim());
     if (lines.length >= 100) { lines.push('… truncated at 100 requests — use --filter'); break; }
   }
+  // External detach mid-capture (user cancelled the infobar): the sleep ran
+  // out the full duration but events stopped — say so, don't pass the partial
+  // list off as a full capture.
+  if (c.detached) lines.push('⚠ capture cut short — debugger detached mid-capture');
   return lines.join('\n') || '(no requests captured — is the page idle? trigger the action, then run net again)';
 }
 
@@ -795,6 +847,9 @@ const CURSOR_SRC = `
 // gesture and JS value-set is ignored. Fail loudly toward upload instead of
 // returning fake success ('clicked'/'filled'/'typed' while nothing happened).
 const FILE_INPUT_GUARD = `if (el.tagName === 'INPUT' && el.type === 'file') throw new Error('file input — synthetic events cannot set it; use: upload <match> ' + sel + ' <file...>');`;
+// fill on a checkbox/radio would set .value without toggling checked and
+// report 'filled' — fake success. Fail loudly toward click instead.
+const CHECK_RADIO_GUARD = `if (el.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio')) throw new Error('checkbox/radio — fill cannot toggle checked; use: click <match> ' + sel);`;
 
 const clickSrc = (target) => `(() => {
   const sel = ${JSON.stringify(target)};
@@ -830,13 +885,19 @@ const fillSrc = (target, value) => `(() => {
   const el = sel.startsWith('@') ? window.__bridgeRefs?.[sel.slice(1)] : document.querySelector(sel);
   if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
   ${FILE_INPUT_GUARD}
+  ${CHECK_RADIO_GUARD}
   el.scrollIntoView({ block: 'center' });
   el.focus?.();
   if (el.isContentEditable) {
     el.innerText = value;
     el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
   } else if (el.tagName === 'SELECT') {
-    el.value = value;
+    // el.value = <no matching option> silently selects NOTHING and the old code
+    // still returned 'filled'. Match by value or visible label first, and fail
+    // loudly with the available choices instead of reporting fake success.
+    const hit = [...el.options].find((o) => o.value === value || o.label === value || o.text === value);
+    if (!hit) throw new Error('no option matching ' + JSON.stringify(String(value).slice(0, 40)) + ' — values: ' + [...el.options].map((o) => o.value).slice(0, 8).join(', '));
+    el.value = hit.value;
     el.dispatchEvent(new Event('change', { bubbles: true }));
   } else {
     // Native setter + events, so React's value tracker sees a real change.
@@ -1184,7 +1245,7 @@ async function observeDiff(tabId, actionResult) {
 // Bounded wait for a tab to reach status 'complete' — nav/open then read as
 // loaded instead of the agent paying a separate `wait` round trip (playwright
 // caps goto the same way). 8s ceiling; `loaded: false` means still loading.
-function waitForLoad(tabId, timeout = 8000) {
+function waitForLoad(tabId, timeout = 8000, recheck = false) {
   return new Promise((resolve) => {
     const timer = setTimeout(() => { chrome.tabs.onUpdated.removeListener(onUpd); resolve(false); }, timeout);
     const onUpd = (tid, info) => {
@@ -1194,6 +1255,11 @@ function waitForLoad(tabId, timeout = 8000) {
       resolve(true);
     };
     chrome.tabs.onUpdated.addListener(onUpd);
+    // open(): a fresh tab can commit before this listener attaches (about:blank,
+    // cached data:/file: URLs) — re-check status so the event isn't missed and
+    // paid for with the full 8s timeout. Never for nav: there the tab's OLD
+    // page is already complete, so a pre-nav recheck would resolve instantly.
+    if (recheck) chrome.tabs.get(tabId).then((t) => onUpd(tabId, { status: t.status })).catch(() => {});
   });
 }
 
@@ -1267,8 +1333,9 @@ async function handle(msg) {
     msg._tabId = tab.id;
     // Listener before the favicon/banner work: those are two executeScript
     // round trips, and a fast page can hit 'complete' inside that window
-    // (observed with example.com) — the load event would be missed.
-    const complete = waitForLoad(tab.id);
+    // (observed with example.com) — the load event would be missed. The
+    // recheck covers the tighter race: committed before this listener attached.
+    const complete = waitForLoad(tab.id, 8000, true);
     setFavicon(tab.id, '⏳').catch(() => {});
     markTab(tab.id).catch(() => {});
     recordActivity(tab.id, msg);
