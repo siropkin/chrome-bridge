@@ -18,6 +18,10 @@ for (const lvl of ['error', 'warn']) {
     orig(...a);
   };
 }
+// First entry of every fresh worker's ring: `swlogs` answers "which file is
+// actually running, since when" — the one question reload trouble-shooting
+// can't answer otherwise (behavior can't distinguish loaded from stale).
+logLine('background v' + chrome.runtime.getManifest().version + ' loaded ' + new Date().toISOString());
 
 function connect() {
   // Two connects in flight (reconnect timer + keepalive alarm) means two
