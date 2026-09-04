@@ -97,7 +97,7 @@ The HTTP API is one endpoint: `POST /cmd` with `{"type": "snap", "urlMatch": "�
 | `upload <match> <@ref\|css> <file...> [--diff]` | Set a file input's files via CDP — works on hidden inputs; target the input or an element wrapping it |
 | `ask <match> <question>` | *(experimental)* Local Gemini Nano answers from page text — no cloud tokens, pre-filter quality |
 | `wait <match> [css\|--text t] [--timeout ms]` | Wait for element or visible text — MutationObserver-driven, resolves as soon as the page changes |
-| `eval <match> <js\|-> [--world main]` | Run JS in the page; `-` reads from stdin |
+| `eval <match> <js\|-> [--world main|isolated]` | Run JS in the page; `-` reads from stdin |
 | `shot <match> <out> [--max px] [--scale N] [--format jpeg] [--quality N] [--crop x,y,w,h] [--full]` | Screenshot via CDP. Long edge capped at `--max` px (default 1280, `0` = native res) — models downscale big images on read anyway, so native res buys file size, not detail. `--full` = whole page height |
 | `net <match> [--dur ms] [--filter s]` | Capture network traffic via CDP — one compact line per request |
 | `measure <match> <css>` | Bounding rect + computed styles as JSON — layout truth without pixels |

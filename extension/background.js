@@ -559,7 +559,7 @@ const SNAP_SRC = (scope, diff, href) => `(() => {
     if (el.getAttribute('aria-expanded') === 'true') s.push('expanded');
     if (el.getAttribute('aria-expanded') === 'false') s.push('collapsed');
     if (el.getAttribute('aria-selected') === 'true' || el.selected) s.push('selected');
-    if (['textbox', 'searchbox', 'combobox', 'slider'].includes(role)) {
+    if (['textbox', 'searchbox', 'combobox', 'slider', 'file'].includes(role)) {
       const v = el.value ?? el.getAttribute('aria-valuenow');
       if (v !== undefined && v !== null && v !== '') s.push('value=' + JSON.stringify(String(v).slice(0, 40)));
     }
@@ -691,10 +691,16 @@ const CURSOR_SRC = `
   };
 `;
 
+// File inputs can't be driven synthetically: the chooser needs a trusted
+// gesture and JS value-set is ignored. Fail loudly toward upload instead of
+// returning fake success ('clicked'/'filled'/'typed' while nothing happened).
+const FILE_INPUT_GUARD = `if (el.tagName === 'INPUT' && el.type === 'file') throw new Error('file input — synthetic events cannot set it; use: upload <match> ' + sel + ' <file...>');`;
+
 const clickSrc = (target) => `(() => {
   const sel = ${JSON.stringify(target)};
   const el = sel.startsWith('@') ? window.__bridgeRefs?.[sel.slice(1)] : document.querySelector(sel);
   if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
+  ${FILE_INPUT_GUARD}
   el.scrollIntoView({ block: 'center', inline: 'center' });
   const r = el.getBoundingClientRect();
   const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
@@ -723,6 +729,7 @@ const fillSrc = (target, value) => `(() => {
   const sel = ${JSON.stringify(target)}, value = ${JSON.stringify(value)};
   const el = sel.startsWith('@') ? window.__bridgeRefs?.[sel.slice(1)] : document.querySelector(sel);
   if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
+  ${FILE_INPUT_GUARD}
   el.scrollIntoView({ block: 'center' });
   el.focus?.();
   if (el.isContentEditable) {
@@ -747,6 +754,7 @@ const typeSrc = (target, text) => `(async () => {
   const sel = ${JSON.stringify(target)}, text = ${JSON.stringify(text)};
   let el = sel.startsWith('@') ? window.__bridgeRefs?.[sel.slice(1)] : document.querySelector(sel);
   if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
+  ${FILE_INPUT_GUARD}
   el.scrollIntoView({ block: 'center' });
   el.focus?.();
   for (const ch of text) {
@@ -990,6 +998,9 @@ async function runEval(tabId, code, world = 'auto') {
   }
 
   // Page CSP blocks eval() in both scripting worlds; CDP Runtime.evaluate is exempt.
+  // CDP runs in the page's MAIN world — fine for 'auto'/'MAIN', but a caller who
+  // asked for ISOLATED must not silently get page-context execution.
+  if (world === 'ISOLATED') throw new Error('ISOLATED world blocked by page CSP — refusing CDP fallback (it would run in the main world)');
   let attachedByUs = true;
   try {
     await chrome.debugger.attach({ tabId }, '1.3');

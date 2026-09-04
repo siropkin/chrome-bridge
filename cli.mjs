@@ -313,10 +313,13 @@ async function run(cmdName, args) {
       // both parse), or an improvising agent eats 'no tab matching "--world"'.
       const rest = [...args];
       let world = 'auto';
-      const wi = rest.indexOf('--world');
-      if (wi >= 0) {
-        world = rest[wi + 1]?.toUpperCase() === 'MAIN' ? 'MAIN' : rest[wi + 1]?.toUpperCase() === 'ISOLATED' ? 'ISOLATED' : 'auto';
-        rest.splice(wi, 2);
+      for (let i = 0; i < rest.length; i++) {
+        if (rest[i] !== '--world') continue;
+        const w = rest[i + 1]?.toUpperCase();
+        if (w !== 'MAIN' && w !== 'ISOLATED') fail('--world needs a value: main|isolated');
+        world = w; // last --world wins, like the net/wait/shot flag loops
+        rest.splice(i, 2);
+        i--;
       }
       const match = rest.shift();
       let code = rest.join(' ');

@@ -118,7 +118,7 @@ try {
     if (msg.type === 'ping') return respond('pong');
     if (msg.type === 'tabs')
       return respond([{ id: 1, url: 'https://example.com/', title: 'Example', active: true, driven: false }]);
-    if (msg.type === 'eval') return respond({ echo: msg.code.length });
+    if (msg.type === 'eval') return respond({ echo: msg.code.length, world: msg.world, match: msg.urlMatch });
     if (msg.type === 'big') return respond('x'.repeat(3 * 1024 * 1024)); // 3 MB — exercises 64-bit frames
     if (msg.type === 'shot') { lastShot = msg; return respond('data:image/png;base64,' + Buffer.from('fakepng').toString('base64')); }
     if (['snap', 'press', 'type', 'hover', 'net', 'click', 'fill', 'navigate', 'scroll', 'ask', 'upload', 'console'].includes(msg.type)) return respond(msg); // echo for flag-parsing checks
@@ -199,7 +199,10 @@ try {
   assert(conPlain.status === 0 && !conPlain.stdout.includes('"ask"'), 'cli console plain sends no ask', conPlain.stdout + conPlain.stderr);
 
   const evWorld = await cli('eval', '--world', 'main', 'example.com', 'document.title');
-  assert(evWorld.status === 0 && evWorld.stdout.includes('"echo"'), 'cli eval --world before match parses', evWorld.stdout + evWorld.stderr);
+  assert(evWorld.status === 0 && evWorld.stdout.includes('"world":"MAIN"') && evWorld.stdout.includes('"match":"example.com"'), 'cli eval --world before match parses', evWorld.stdout + evWorld.stderr);
+
+  const evWorldBad = await cli('eval', 'example.com', 'document.title', '--world', 'mian');
+  assert(evWorldBad.status !== 0 && evWorldBad.stderr.includes('--world'), 'cli eval rejects invalid --world value', evWorldBad.stdout + evWorldBad.stderr);
 
   // large frame extension→server (3 MB result)
   const bigRes = await fetch(`http://127.0.0.1:${PORT}/cmd`, {

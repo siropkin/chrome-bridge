@@ -89,7 +89,7 @@ HTTP API 只有一个端点:`POST /cmd`,Body 如 `{"type": "snap", "urlMatch": "
 | `fill <match> <@ref\|css> <value>` | 设置输入框的值——React 安全(原生 setter + input/change 事件) |
 | `type <match> <@ref\|css> <text>` · `press <match> <key>` · `hover <match> <@ref\|css>` | 逐字符输入(自动补全 UI)、按键、悬停 |
 | `wait <match> [css\|--text t] [--timeout ms]` | 等待元素或可见文本出现 |
-| `eval <match> <js\|-> [--world main]` | 在页面中执行 JS;`-` 从 stdin 读取 |
+| `eval <match> <js\|-> [--world main|isolated]` | 在页面中执行 JS;`-` 从 stdin 读取 |
 | `shot <match> <out> [--max px] [--scale N] [--format jpeg] [--quality N] [--crop x,y,w,h] [--full]` | CDP 截图。长边默认限制为 `--max` 1280px(`0` = 原始分辨率)——模型读取大图时本来就会缩小,原图只增加文件体积不增加细节。`--full` = 整页高度 |
 | `net <match> [--dur ms] [--filter s]` | CDP 网络抓包——每个请求一行紧凑输出 |
 | `measure <match> <css>` | 元素位置 + 计算样式,JSON 输出——不看像素也能知道布局真相 |
