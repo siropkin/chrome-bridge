@@ -256,7 +256,8 @@ function activityPhrases(msg) {
     return { ing: t, done: t };
   }
   let v = ACT_VERBS[msg.type] || [msg.type, msg.type];
-  const detail = msg.target || msg.key || msg.selector || msg.text || msg.question || msg.url || '';
+  const detail = msg.target || msg.key || msg.selector || msg.find || msg.text || msg.question || msg.url || '';
+  if (msg.type === 'snap' && msg.find) v = ['searching page for', 'searched page for'];
   if (msg.type === 'scroll' && detail && !['up', 'down', 'top', 'bottom'].includes(detail)) v = ['scrolling to', 'scrolled to'];
   const cut = (s) => (s.length > 36 ? s.slice(0, 33) + '…' : s);
   return { ing: cut(detail ? v[0] + ' ' + detail : v[0]), done: cut(detail ? v[1] + ' ' + detail : v[1]) };
@@ -948,6 +949,49 @@ const nanoSrc = (context, question) => `(async () => {
   }
 })()`;
 
+// --- snap --find: Nano-picked shortlist ---------------------------------------
+// The agent asks in natural language ("the cancel button"); Nano picks
+// matching lines from a fresh tree. Comes back as a shortlist to VERIFY, not
+// ground truth — prototype accuracy was ~2/3 on a 227-element page, with a
+// confident wrong pick, so --find never acts and the matched lines are shown
+// verbatim for the agent to confirm. Refs-only output keeps the call ~2s
+// (a JSON-array-output variant measured 11s).
+// ponytail: 48KB candidate cap — probed Nano's quota at ~60-80KB, so 48KB
+// covers whole trees on typical pages with margin; chunk + pick-per-chunk
+// is the upgrade path for true monsters.
+const FIND_SRC = (scope, find) => `(async () => {
+  ${NANO_GUARD}
+  const tree = ${SNAP_SRC(scope, false, false)};
+  const lines = tree.split('\\n').filter((l) => /@e\\d+/.test(l));
+  let listing = '';
+  let listed = 0;
+  for (const l of lines) {
+    if (listing.length + l.length > 48000) break;
+    listing += l + '\\n';
+    listed++;
+  }
+  const session = await LanguageModel.create();
+  try {
+    const out = await session.prompt(
+      'The UI elements of a page, one per line:\\n' + listing +
+      '\\nWhich lines match: ' + ${JSON.stringify(find)} +
+      '? Reply with ONLY their refs (@eN), best first, comma-separated. If none match, reply none.'
+    );
+    const picked = [];
+    for (const m of out.matchAll(/e(\\d+)/g)) {
+      const ref = '@e' + m[1];
+      const line = lines.find((l) => l.includes(ref + ' ') || l.trimEnd().endsWith(ref));
+      if (line && !picked.includes(line)) picked.push(line);
+    }
+    const tail = listed < lines.length ? ' (tree capped at 48KB — scope the snap to reach the rest)' : '';
+    if (!picked.length) return 'no matches in ' + listed + ' ref lines — nano said: ' + out.slice(0, 120) + tail;
+    return picked.map((l) => l.trim()).join('\\n') +
+      '\\n(' + listed + ' ref lines scanned · nano pre-filter — verify before acting)' + tail;
+  } finally {
+    session.destroy();
+  }
+})()`;
+
 // Console hook must run in the MAIN world — isolated worlds get their own console.
 const consoleSrc = (clear) => `(() => {
   if (!window.__bridgeLog) {
@@ -1177,6 +1221,7 @@ async function handle(msg) {
 
   if (msg.type === 'snap') {
     const tab = await findTab(msg);
+    if (msg.find) return await runEval(tab.id, FIND_SRC(msg.scope, msg.find));
     return await runEval(tab.id, SNAP_SRC(msg.scope, msg.diff, msg.href));
   }
 

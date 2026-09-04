@@ -66,11 +66,15 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
   open <url>                        open + mark a new tab (waits for load, 8s cap)
   nav <match> <url> [--diff]        navigate matching tab (waits for load, 8s cap)
   close <match>                     close matching tab
-  snap <match> [css] [--diff] [--href]   a11y-tree snapshot with @eN refs (cheap — use before shot);
+  snap <match> [css] [--diff] [--href] [--find "nl"]
+                                    a11y-tree snapshot with @eN refs (cheap — use before shot);
                                     [css] scopes to a subtree, --diff shows only changes since last snap,
                                     --href includes all link URLs (default: only nameless links);
-                                    lines prefixed '* ' are elements new since the previous snap;
-                                    lines seen 3+ times collapse to '… N more · <line> → @refs'
+                                    --find asks local Gemini Nano to pick the lines matching a
+                                    natural-language query — a ~2s shortlist to VERIFY, not ground
+                                    truth (~2/3 accurate in testing); lines prefixed '* ' are new
+                                    since the previous snap; lines seen 3+ times collapse to
+                                    '… N more · <line> → @refs'
   click <match> <@ref|css> [--diff]  click an element (fails loudly if an overlay covers it)
   fill <match> <@ref|css> <value> [--diff]   set input value (React-safe)
   type <match> <@ref|css> <text> [--diff]    per-char typing — triggers autocomplete/keystroke UIs
@@ -238,11 +242,19 @@ async function run(cmdName, args) {
       break;
 
     case 'snap': {
-      if (!args[0]) fail('usage: snap <match> [css] [--diff] [--href]');
+      if (!args[0]) fail('usage: snap <match> [css] [--diff] [--href] [--find "nl query"]');
       const diff = args.includes('--diff');
       const href = args.includes('--href');
-      const scope = args.slice(1).find((a) => !a.startsWith('--')) || null;
-      print(await cmd({ type: 'snap', urlMatch: args[0], scope, diff, href }));
+      const fi = args.indexOf('--find');
+      let find = null;
+      if (fi >= 0) {
+        if (!args[fi + 1] || args[fi + 1].startsWith('--')) fail('--find needs a query');
+        find = args[fi + 1];
+      }
+      // scope = the first leftover positional (--diff/--href are flags,
+      // --find's query is consumed as its value)
+      const scope = args.slice(1).find((a) => !a.startsWith('--') && a !== find) || null;
+      print(await cmd({ type: 'snap', urlMatch: args[0], scope, diff, href, ...(find ? { find } : {}) }));
       break;
     }
 

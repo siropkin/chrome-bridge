@@ -27,7 +27,7 @@ node <repo>/cli.mjs <command> …
 
 - `health` — preflight; if it fails, tell the user to start the bridge (`node <repo>/server.mjs`) or reload the extension.
 - `tabs` — list open tabs.
-- `snap <match> [css] [--diff]` — a11y tree with `@eN` refs. **Always snap before shooting**; it's ~10× cheaper than a screenshot and usually answers the question. `--diff` prints only what changed since the last snap. Identical repeated lines collapse to `… N more · <line> → @refs` — those refs are clickable.
+- `snap <match> [css] [--diff] [--find "nl"]` — a11y tree with `@eN` refs. **Always snap before shooting**; it's ~10× cheaper than a screenshot and usually answers the question. `--diff` prints only what changed since the last snap. `--find "the cancel button"` asks local Gemini Nano (~2s, no cloud tokens) to pick matching lines — a shortlist to **verify before acting**, never ground truth. Identical repeated lines collapse to `… N more · <line> → @refs` — those refs are clickable.
 - `click <match> @e3` / `fill <match> @e2 "value"` / `type <match> @e2 "text"` — act by ref. Refs survive re-snaps, expire on navigation (re-snap after `nav`).
 - `upload <match> @e5 ./report.pdf` — set a file input's files (CDP — hidden inputs work; target the input or an element wrapping it).
 - `nav <match> <url>` / `open <url>` / `close <match>` — tab lifecycle.

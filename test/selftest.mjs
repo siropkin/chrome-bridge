@@ -147,6 +147,14 @@ try {
   const snap = await cli('snap', 'example.com', '#app', '--diff', '--href');
   assert(snap.status === 0 && snap.stdout.includes('"diff":true') && snap.stdout.includes('"scope":"#app"') && snap.stdout.includes('"href":true'), 'cli snap scope+diff+href flags', snap.stdout + snap.stderr);
 
+  // --find: query rides along; scope detection doesn't swallow it as a scope
+  const snapFind = await cli('snap', 'example.com', '--find', 'the save button');
+  assert(snapFind.status === 0 && snapFind.stdout.includes('"find":"the save button"') && snapFind.stdout.includes('"scope":null'), 'cli snap --find passes query, scope stays null', snapFind.stdout + snapFind.stderr);
+  const snapFindScope = await cli('snap', 'example.com', '#app', '--find', 'the cancel button');
+  assert(snapFindScope.status === 0 && snapFindScope.stdout.includes('"find":"the cancel button"') && snapFindScope.stdout.includes('"scope":"#app"'), 'cli snap --find with scope', snapFindScope.stdout + snapFindScope.stderr);
+  const snapFindBare = await cli('snap', 'example.com', '--find');
+  assert(snapFindBare.status !== 0 && snapFindBare.stderr.includes('--find needs a query'), 'cli snap --find without query fails', snapFindBare.stdout + snapFindBare.stderr);
+
   const shotMax = await cli('shot', 'example.com', shotPath, '--max', '800');
   assert(shotMax.status === 0 && lastShot?.max === 800, 'cli shot --max parses and reaches the extension', shotMax.stderr + JSON.stringify(lastShot));
   fs.unlinkSync(shotPath);

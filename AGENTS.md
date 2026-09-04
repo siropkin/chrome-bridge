@@ -19,7 +19,7 @@ node <repo>/cli.mjs <command> …
 
 1. `tabs` — find the tab. `<match>` is a URL substring; the most recently active match wins.
 2. `open <url>` / `nav <match> <url>` — auto-marks the tab (🟣 corner tag + tab group).
-3. **`snap <match>` — always snap before shooting.** The a11y tree with `@eN` refs is ~10× cheaper than a screenshot and usually answers the question. Big page? Scope it: `snap <match> "dialog"`. Re-checking after an action? `snap <match> --diff` prints only what changed. Looking for one thing? `snap <match> | grep -i save`. Link URLs are omitted except on nameless links (they were most of the bytes — you click refs, not URLs); add `--href` only if you truly need them.
+3. **`snap <match>` — always snap before shooting.** The a11y tree with `@eN` refs is ~10× cheaper than a screenshot and usually answers the question. Big page? Scope it: `snap <match> "dialog"`. Re-checking after an action? `snap <match> --diff` prints only what changed. Looking for one thing? `snap <match> | grep -i save` — or, when you don't know what it's called, `snap <match> --find "the cancel button"` (local Nano picks matching lines, ~2s, verify the shortlist). Link URLs are omitted except on nameless links (they were most of the bytes — you click refs, not URLs); add `--href` only if you truly need them.
 4. `click <match> @e3` / `fill <match> @e2 "value"` — refs **survive re-snaps** (an element keeps its @eN while its role+name are unchanged) but expire on navigation; re-snap after `nav`.
 5. **Act + observe in one call: `click <match> @e3 --diff`** — the action settles (waits for the DOM to go quiet, 3s cap), then the snap-diff (only what changed) rides along in the same result. No separate `wait` + `snap --diff` round trips. If there was no earlier snap, the full tree is returned instead — that's your baseline.
 6. `wait <match> --text "Saved"` only when you need something specific without acting. Chain other dependent steps in one `batch` — stdin, one command per line — one process and one shell call instead of several.
@@ -36,10 +36,13 @@ tabs                              list tabs (compact JSON)
 open <url>                        open + mark a new tab (waits for load, 8s cap)
 nav <match> <url> [--diff]        navigate matching tab (waits for load, 8s cap)
 close <match>                     close matching tab
-snap <match> [css] [--diff] [--href]
+snap <match> [css] [--diff] [--href] [--find "nl"]
                                   a11y tree with @eN refs; [css] scopes to a subtree,
                                   --diff prints only lines added/removed/changed since last snap,
                                   --href includes all link URLs (default: only nameless links);
+                                  --find "query" asks local Gemini Nano (no cloud tokens, ~2s) to pick
+                                  tree lines matching a natural-language query ("the cancel button") —
+                                  a shortlist to VERIFY before acting, never ground truth (~2/3 accurate);
                                   '* ' prefix marks elements new since the previous snap
                                   identical lines seen 3+ times collapse to '… N more · <line> → @refs'
                                   (refs stay clickable); unnamed decorative imgs are elided

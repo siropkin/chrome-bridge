@@ -23,7 +23,7 @@ let actSeq = 0;
 function summarize(msg) {
   const s = [msg.type];
   if (msg.urlMatch) s.push(msg.urlMatch);
-  const extra = msg.target || msg.url || msg.key || msg.label || msg.text || msg.question || '';
+  const extra = msg.target || msg.url || msg.key || msg.label || msg.find || msg.text || msg.question || '';
   if (extra) s.push(String(extra).slice(0, 40));
   return s.join(' ');
 }

@@ -97,7 +97,7 @@ The HTTP API is one endpoint: `POST /cmd` with `{"type": "snap", "urlMatch": "�
 |---|---|
 | `tabs` | List tabs (id, url, title, driven flag) |
 | `open <url>` · `nav <match> <url> [--diff]` · `close <match>` | Tab lifecycle — `open`/`nav` wait for the page to load (8s cap) |
-| `snap <match> [css] [--diff] [--href]` | Accessibility-tree snapshot with `@eN` refs — **cheap; use it before screenshots**. Scope to a subtree, diff against the last snap, or include all link URLs with `--href`. Lines prefixed `*` are elements new since the previous snap |
+| `snap <match> [css] [--diff] [--href] [--find "nl"]` | Accessibility-tree snapshot with `@eN` refs — **cheap; use it before screenshots**. Scope to a subtree, diff against the last snap, or include all link URLs with `--href`. `--find "the cancel button"` has local Gemini Nano (~2s, no cloud tokens) pick the matching lines — a shortlist to verify, not ground truth. Lines prefixed `*` are elements new since the previous snap |
 | `click <match> <@ref\|css> [--diff]` | Click (scrolls into view, full pointer/mouse event sequence, overlay-coverage check) |
 | `fill <match> <@ref\|css> <value> [--diff]` | Set input value — React-safe (native setter + input/change events) |
 | `type <match> <@ref\|css> <text> [--diff]` · `press <match> <key> [@ref] [--diff]` · `hover <match> <@ref\|css> [--diff]` | Per-char typing (autocomplete UIs), key presses, hover |
