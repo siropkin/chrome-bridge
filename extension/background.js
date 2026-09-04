@@ -42,7 +42,13 @@ function connect() {
     const msg = JSON.parse(e.data);
     let failed = false;
     try {
-      const result = await handle(msg);
+      let result = await handle(msg);
+      // findTab's ambiguous-match warning rides on the result whatever its
+      // shape — the agent must see that its <match> was contested.
+      if (msg._warn) {
+        if (typeof result === 'string') result += '\n' + msg._warn;
+        else if (result && typeof result === 'object') result = { ...result, warning: msg._warn };
+      }
       s.send(JSON.stringify({ id: msg.id, ok: true, result }));
     } catch (err) {
       failed = true;
@@ -1313,6 +1319,11 @@ function waitForLoad(tabId, timeout = 8000, recheck = false) {
 
 // --- Commands ---------------------------------------------------------------
 
+// Commands that act as the user or run code in the page — these auto-mark an
+// unmarked tab (see findTab). Pure reads (snap/measure/console/net/shot/…)
+// stay unmarked, so glancing at a tab doesn't stick a pill on it.
+const MUTATING = new Set(['click', 'fill', 'type', 'press', 'upload', 'eval']);
+
 // Takes the whole msg: records _tabId so the onmessage finally can flip a
 // driven tab's favicon to ✅, and marks a driven tab busy (⏳) for the command
 // about to run. `open` sets msg._tabId itself — it creates rather than finds.
@@ -1325,12 +1336,40 @@ async function findTab(msg) {
   if (!matches.length) {
     throw new Error(`no tab matching "${msg.urlMatch}"`);
   }
-  matches.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
+  // Driven tabs first (the bridge already touched them), then most recently
+  // active. A substring match can land on a lookalike tab — a malicious page
+  // can stuff its URL path with bait like "github.com"
+  // (evil.com/github.com/login matches 'github.com') — so on ambiguity, name
+  // the competition: the warning rides the result (see onmessage) and the
+  // agent can re-run with a longer match instead of acting blind.
+  matches.sort((a, b) => (drivenTabs.has(b.id) ? 1 : 0) - (drivenTabs.has(a.id) ? 1 : 0) || (b.lastAccessed || 0) - (a.lastAccessed || 0));
   msg._tabId = matches[0].id;
+  if (matches.length > 1) {
+    const host = (t) => {
+      try {
+        return new URL(t.url).host;
+      } catch {
+        return String(t.url).slice(0, 40);
+      }
+    };
+    msg._warn =
+      `⚠ ${matches.length} tabs match "${msg.urlMatch}" — acting on ${host(matches[0])}; also matched: ` +
+      matches.slice(1, 4).map(host).join(', ') +
+      (matches.length > 4 ? ` (+${matches.length - 4} more)` : '') +
+      '. To pick another, re-run with a longer <match>.';
+  }
+  // Mutating commands auto-mark: acting on an unmarked tab used to be
+  // invisible (no pill, no favicon) — worst exactly when the match landed on
+  // a stranger's tab. Fire-and-forget like open(): the banner injection can
+  // hang on an uncommitted navigation, and drivenTabs updates synchronously,
+  // so the block below already sees the tab as driven.
+  if (MUTATING.has(msg.type) && !drivenTabs.has(matches[0].id)) markTab(matches[0].id).catch(() => {});
   // Not `release`: it would flash ⏳ on the still-driven tab right before
-  // releaseTab restores the site's own favicon.
+  // releaseTab restores the site's own favicon. Fire-and-forget for the same
+  // uncommitted-nav reason as open() — an awaited executeScript there can
+  // pend forever and eat the whole command timeout.
   if (msg.type !== 'release' && drivenTabs.has(matches[0].id)) {
-    await setFavicon(matches[0].id, '⏳');
+    setFavicon(matches[0].id, '⏳').catch(() => {});
     recordActivity(matches[0].id, msg);
   }
   return matches[0];

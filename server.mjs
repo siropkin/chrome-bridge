@@ -10,6 +10,11 @@ import crypto from 'node:crypto';
 const PORT = Number(process.env.BRIDGE_PORT || 9333);
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const CMD_TIMEOUT_MS = 70_000; // `wait` supports up to 60s
+// DNS-rebinding guard for both faces: a page served from evil.com:9333 whose
+// DNS flips to 127.0.0.1 becomes "same-origin" with the bridge — the Origin/
+// Sec-Fetch guards still block its POSTs, but GET /log would read fine. Fetch
+// can't forge Host, so requiring a loopback Host closes every route at once.
+const LOOPBACK_HOST = /^(127\.0\.0\.1|localhost)(:\d+)?$/;
 
 let extSocket = null;
 let nextId = 1;
@@ -37,11 +42,15 @@ function summarize(msg) {
 }
 function pushAct(msg, out, ms) {
   if (!msg?.type) return; // unparseable body — sendToExt already returned its error
-  const line =
+  const line = (
     new Date().toTimeString().slice(0, 8) +
     ' ' +
     summarize(msg) +
-    (out.ok ? ` · ok ${(ms / 1000).toFixed(1)}s` : ` · ✗ ${String(out.error).slice(0, 80)}`);
+    (out.ok ? ` · ok ${(ms / 1000).toFixed(1)}s` : ` · ✗ ${String(out.error).slice(0, 80)}`)
+    // Page text reaches the line via error messages (click-overlay text,
+    // select option values) — strip control chars so a page can't inject ANSI
+    // escapes or forged newlines into server.log / the `watch` terminal.
+  ).replace(/[\x00-\x1f\x7f\x9b]/g, ' ');
   activity.push({ seq: ++actSeq, line });
   if (activity.length > 300) activity.shift();
   console.log('[act] ' + line); // server.log gets a durable copy for post-mortems
@@ -157,6 +166,11 @@ function sendToExt(msg) {
 }
 
 const server = http.createServer((req, res) => {
+  if (!LOOPBACK_HOST.test(req.headers.host || '')) {
+    res.writeHead(403);
+    res.end();
+    return;
+  }
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ ok: true, extension: !!(extSocket && !extSocket.destroyed) }));
@@ -190,7 +204,8 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === 'GET' && req.url.startsWith('/log')) {
     // Read-only feed for `cli.mjs watch`; a page can't read the response
-    // cross-origin (no CORS headers), so no drive-by guard is needed.
+    // cross-origin (no CORS headers), and the Host guard above covers the
+    // DNS-rebinding route to reading it same-origin.
     const since = Number(new URL(req.url, 'http://x').searchParams.get('since') || 0);
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ boot: bootId, lines: activity.filter((a) => a.seq > since) }));
@@ -218,9 +233,10 @@ const server = http.createServer((req, res) => {
 server.on('upgrade', (req, socket) => {
   const key = req.headers['sec-websocket-key'];
   // Only the extension (chrome-extension:// origin) or non-browser clients
-  // (no Origin header) may take the WS seat — never a web page.
+  // (no Origin header) may take the WS seat — never a web page. The Host
+  // check is the same anti-rebinding guard as the HTTP face.
   const origin = req.headers.origin;
-  if (!key || (origin && !origin.startsWith('chrome-extension://'))) {
+  if (!key || (origin && !origin.startsWith('chrome-extension://')) || !LOOPBACK_HOST.test(req.headers.host || '')) {
     socket.destroy();
     return;
   }
