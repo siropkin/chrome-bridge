@@ -243,6 +243,10 @@ try {
     assert(bg.split('chrome.debugger.attach(').length === 2, 'ext: one debugger-attach site (the refcount helper)');
     assert(bg.split('chrome.debugger.detach(').length === 2, 'ext: one debugger-detach site (the refcount helper)');
     assert(bg.split('await attachDbg(').length >= 5 && bg.split('await detachDbg(').length >= 5, 'ext: all 5 CDP call sites refcounted');
+    // CDP commands serialize per tab — an unemulate racing a sibling's
+    // sendCommand tore the shared session mid-flight (5.5% of interleaved
+    // CDP commands in stress).
+    assert(bg.split('withCdp(').length === 7, 'ext: CDP handlers serialize per tab (helper + 5 wrap sites)');
     // open must not await the favicon/banner marking — executeScript sits
     // pending forever on an uncommitted navigation (unreachable URL), which
     // hung open past its 8s cap to the server's 70s timeout. The response

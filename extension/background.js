@@ -390,6 +390,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   tabActivity.delete(tabId);
   worldCache.delete(tabId);
   cdpRefs.delete(tabId); // debugger auto-detaches on close
+  cdpQ.delete(tabId);
   emulatedTabs.delete(tabId);
 });
 
@@ -437,6 +438,22 @@ chrome.debugger.onDetach.addListener((src) => {
   cdpRefs.delete(src.tabId);
   emulatedTabs.delete(src.tabId);
 });
+
+// Serialize the CDP-holding commands per tab. The refcount makes concurrent
+// owners SHARE a session; this makes the attach/clear/detach lifecycle ORDERED
+// — an unemulate racing a sibling used to tear the shared session out from its
+// in-flight sendCommand ("Detached while handling command"; 5.5% of
+// deliberately interleaved CDP commands in stress). The session outlives the
+// lock: net piggybacking an emulation still shares it, and unemulate's release
+// is the one that detaches. runEval's CDP fallback stays outside — upload's
+// cleanup runs eval right after (not inside) this lock, and runEval itself
+// must never queue behind a command waiting on it.
+const cdpQ = new Map(); // tabId -> in-flight CDP command chain
+function withCdp(tabId, fn) {
+  const run = (cdpQ.get(tabId) || Promise.resolve()).then(fn);
+  cdpQ.set(tabId, run.catch(() => {}));
+  return run;
+}
 
 // --- Device emulation (CDP) -------------------------------------------------
 // DevTools-device-toolbar behavior without resizing the window. Attaches
@@ -1344,16 +1361,21 @@ async function handle(msg) {
       throw new Error('input has no "multiple" attribute — pass one file');
     }
     try {
-      await attachDbg(tab.id);
-      const { root } = await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.getDocument', { depth: 1 });
+      await withCdp(tab.id, async () => {
+        try {
+          await attachDbg(tab.id);
+          const { root } = await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.getDocument', { depth: 1 });
       const { nodeId } = await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.querySelector', {
         nodeId: root.nodeId,
         selector: `[${TAG}]`,
       });
-      if (!nodeId) throw new Error('tagged input vanished mid-upload — re-snap and retry');
-      await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.setFileInputFiles', { nodeId, files: msg.files });
+          if (!nodeId) throw new Error('tagged input vanished mid-upload — re-snap and retry');
+          await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.setFileInputFiles', { nodeId, files: msg.files });
+        } finally {
+          await detachDbg(tab.id);
+        }
+      });
     } finally {
-      await detachDbg(tab.id);
       await runEval(tab.id, `document.querySelector('[${TAG}]')?.removeAttribute('${TAG}')`).catch(() => {});
     }
     const names = msg.files.map((f) => f.split('/').pop()).join(', ');
@@ -1368,7 +1390,7 @@ async function handle(msg) {
 
   if (msg.type === 'net') {
     const tab = await findTab(msg);
-    return await captureNetwork(tab.id, msg.duration, msg.filter, msg.body);
+    return await withCdp(tab.id, () => captureNetwork(tab.id, msg.duration, msg.filter, msg.body));
   }
 
   if (msg.type === 'wait') {
@@ -1392,7 +1414,7 @@ async function handle(msg) {
 
   if (msg.type === 'emulate') {
     const tab = await findTab(msg);
-    await setEmulation(tab.id, msg);
+    await withCdp(tab.id, () => setEmulation(tab.id, msg));
     return {
       id: tab.id,
       width: msg.width,
@@ -1403,7 +1425,7 @@ async function handle(msg) {
 
   if (msg.type === 'unemulate') {
     const tab = await findTab(msg);
-    await clearEmulation(tab.id);
+    await withCdp(tab.id, () => clearEmulation(tab.id));
     return { id: tab.id };
   }
 
@@ -1422,6 +1444,7 @@ async function handle(msg) {
     // No tab activation here: CDP captureScreenshot works on background tabs,
     // and activating would steal the user's view. Only the fallback below needs it.
     const format = msg.format === 'jpeg' ? 'jpeg' : 'png';
+    return await withCdp(tab.id, async () => {
     try {
       await attachDbg(tab.id);
       const params = { format };
@@ -1480,6 +1503,7 @@ async function handle(msg) {
     } finally {
       await detachDbg(tab.id);
     }
+    });
   }
 
   throw new Error(`unknown type "${msg.type}"`);
