@@ -281,7 +281,7 @@ async function run(cmdName, args) {
       // The truncation line sits at the end of the tree — a `snap | grep foo`
       // pipe filters it out and the agent concludes "not found" when the truth
       // is "not reached". Echo it to stderr, which survives the pipe.
-      const ti = out.lastIndexOf('… truncated at');
+      const ti = typeof out === 'string' ? out.lastIndexOf('… truncated at') : -1;
       if (ti >= 0) console.error(out.slice(ti).split('\n')[0]);
       break;
     }
