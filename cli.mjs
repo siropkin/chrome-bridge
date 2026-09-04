@@ -80,6 +80,9 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     shows what lazy-loaded in
                                     [--diff] on an action: settle (100ms DOM quiet, 3s cap), then
                                     append the snap-diff to the result — act + observe in one call
+  upload <match> <@ref|css> <file...> [--diff]
+                                    set a file input's files (CDP — works on hidden
+                                    inputs; target the input or an element wrapping it)
   ask <match> <question>            (experimental) answer from page text with Chrome's
                                     built-in Gemini Nano — local, no cloud tokens
   wait <match> [css|--text t] [--timeout ms]
@@ -239,6 +242,25 @@ async function run(cmdName, args) {
       const rest = args.filter((a) => a !== '--diff');
       if (!rest[0] || !rest[1]) fail('usage: scroll <match> <up|down|top|bottom|@ref|css> [--diff]');
       print(await cmd({ type: 'scroll', urlMatch: rest[0], target: rest[1], ...(args.includes('--diff') ? { diff: true } : {}) }));
+      break;
+    }
+
+    case 'upload': {
+      const rest = args.filter((a) => a !== '--diff');
+      if (!rest[0] || !rest[1] || !rest[2]) fail('usage: upload <match> <@ref|css> <file...> [--diff]');
+      // Resolve to absolute paths here — Chrome (not this process) opens them,
+      // so a relative path would mean nothing on the other side of the WS.
+      const files = rest.slice(2).map((f) => {
+        let p;
+        try {
+          p = fs.realpathSync(f);
+        } catch {
+          fail(`file not found: ${f}`);
+        }
+        if (!fs.statSync(p).isFile()) fail(`not a file: ${f}`);
+        return p;
+      });
+      print(await cmd({ type: 'upload', urlMatch: rest[0], target: rest[1], files, ...(args.includes('--diff') ? { diff: true } : {}) }));
       break;
     }
 

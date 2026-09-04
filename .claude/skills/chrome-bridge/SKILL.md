@@ -29,6 +29,7 @@ node <repo>/cli.mjs <command> …
 - `tabs` — list open tabs.
 - `snap <match> [css] [--diff]` — a11y tree with `@eN` refs. **Always snap before shooting**; it's ~10× cheaper than a screenshot and usually answers the question. `--diff` prints only what changed since the last snap.
 - `click <match> @e3` / `fill <match> @e2 "value"` / `type <match> @e2 "text"` — act by ref. Refs survive re-snaps, expire on navigation (re-snap after `nav`).
+- `upload <match> @e5 ./report.pdf` — set a file input's files (CDP — hidden inputs work; target the input or an element wrapping it).
 - `nav <match> <url>` / `open <url>` / `close <match>` — tab lifecycle.
 - `wait <match> --text "Saved"` — wait after actions that trigger loads.
 - `batch` — commands on stdin, one per line: `printf 'click m @e4\nwait m\nsnap m --diff\n' | node cli.mjs batch` — dependent chains in one process, one shell call.

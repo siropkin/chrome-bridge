@@ -121,7 +121,7 @@ try {
     if (msg.type === 'eval') return respond({ echo: msg.code.length });
     if (msg.type === 'big') return respond('x'.repeat(3 * 1024 * 1024)); // 3 MB — exercises 64-bit frames
     if (msg.type === 'shot') { lastShot = msg; return respond('data:image/png;base64,' + Buffer.from('fakepng').toString('base64')); }
-    if (['snap', 'press', 'type', 'hover', 'net', 'click', 'fill', 'navigate', 'scroll', 'ask'].includes(msg.type)) return respond(msg); // echo for flag-parsing checks
+    if (['snap', 'press', 'type', 'hover', 'net', 'click', 'fill', 'navigate', 'scroll', 'ask', 'upload'].includes(msg.type)) return respond(msg); // echo for flag-parsing checks
     return respond(null);
   });
   await new Promise((r) => setTimeout(r, 100));
@@ -183,6 +183,13 @@ try {
 
   const ask = await cli('ask', 'example.com', 'what', 'is', 'this page about?');
   assert(ask.status === 0 && ask.stdout.includes('"question":"what is this page about?"'), 'cli ask joins question args', ask.stdout + ask.stderr);
+
+  const up = await cli('upload', 'example.com', '@e5', `${ROOT}package.json`, `${ROOT}README.md`, '--diff');
+  assert(up.status === 0 && up.stdout.includes('"files":["') && up.stdout.includes(`${ROOT}package.json`) && up.stdout.includes('"diff":true'), 'cli upload resolves absolute paths + --diff', up.stdout + up.stderr);
+  const upMissing = await cli('upload', 'example.com', '@e5', '/nope/missing-file.txt');
+  assert(upMissing.status !== 0 && upMissing.stderr.includes('file not found'), 'cli upload rejects missing file before round trip', upMissing.stdout + upMissing.stderr);
+  const upNoArgs = await cli('upload', 'example.com');
+  assert(upNoArgs.status !== 0 && upNoArgs.stderr.includes('usage: upload'), 'cli upload usage error', upNoArgs.stdout + upNoArgs.stderr);
 
   // large frame extension→server (3 MB result)
   const bigRes = await fetch(`http://127.0.0.1:${PORT}/cmd`, {

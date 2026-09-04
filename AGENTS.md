@@ -44,6 +44,7 @@ snap <match> [css] [--diff] [--href]
 click <match> <@ref|css> [--diff]   click (fails loudly if an overlay covers the click point)
 fill <match> <@ref|css> <value> [--diff]   set input value (React-safe)
 type <match> <@ref|css> <text> [--diff]    per-char typing — triggers autocomplete/keystroke UIs
+upload <match> <@ref|css> <file...> [--diff]   set a file input's files (CDP; hidden inputs work)
 press <match> <key> [@ref|css] [--diff]   key press (Enter/Tab/Escape/…) on focused or given element
 hover <match> <@ref|css> [--diff]   hover (opens hover menus)
 scroll <match> <up|down|top|bottom|@ref|css> [--diff]

@@ -1,0 +1,22 @@
+<!doctype html>
+<title>bridge upload test</title>
+<body style="font:14px sans-serif;padding:24px">
+  <h1>upload test</h1>
+  <p>visible: <input id="plain" type="file"></p>
+  <p>
+    hidden pattern:
+    <label style="padding:6px 12px;background:#7c3aed;color:#fff;border-radius:6px;cursor:pointer">
+      Choose files
+      <input id="hidden" type="file" multiple style="display:none">
+    </label>
+  </p>
+  <pre id="out">(no files)</pre>
+  <script>
+    const out = document.getElementById('out');
+    for (const id of ['plain', 'hidden']) {
+      document.getElementById(id).addEventListener('change', (e) => {
+        out.textContent += `\n${id} change: ` + [...e.target.files].map((f) => f.name + ' ' + f.size + 'B').join(', ');
+      });
+    }
+  </script>
+</body>

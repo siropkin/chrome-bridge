@@ -230,6 +230,7 @@ const ACT_VERBS = {
   shot: ['taking screenshot', 'took screenshot'],
   click: ['clicking', 'clicked'],
   fill: ['filling in', 'filled in'],
+  upload: ['uploading file to', 'uploaded file to'],
   type: ['typing into', 'typed into'],
   press: ['pressing', 'pressed'],
   hover: ['hovering over', 'hovered over'],
@@ -1108,6 +1109,58 @@ async function handle(msg) {
     const result = await runEval(tab.id, scrollSrc(msg.target));
     // --diff shines here: lazy-loaded content is DOM mutations, so the
     // settle + snap-diff returns exactly what the scroll revealed.
+    return msg.diff ? await observeDiff(tab.id, result) : result;
+  }
+
+  // File upload: eval can't touch <input type=file> (JS-set values are ignored
+  // for security), but CDP DOM.setFileInputFiles is the DevTools path and fires
+  // real input/change events, so frameworks see a genuine selection. The target
+  // is tagged page-side (refs live in whatever world snap ran in, but the DOM
+  // is shared), found via CDP querySelector, then untagged. Hidden inputs work
+  // — the common "pretty label wrapping a display:none input" pattern is
+  // exactly why the descendant search below exists.
+  if (msg.type === 'upload') {
+    const tab = await findTab(msg);
+    const TAG = 'data-bridge-upload';
+    const mode = await runEval(
+      tab.id,
+      `(() => {
+        const sel = ${JSON.stringify(msg.target)};
+        const el = sel.startsWith('@') ? window.__bridgeRefs?.[sel.slice(1)] : document.querySelector(sel);
+        if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
+        const input = el.tagName === 'INPUT' && el.type === 'file' ? el : el.querySelector?.('input[type=file]');
+        // No parent-subtree fallback: from a stray target (a heading) it would
+        // silently pick some unrelated input on the page. Fail loud instead.
+        if (!input) throw new Error('no file input at or inside ' + sel + ' — target the <input type=file> or an element wrapping it');
+        input.setAttribute(${JSON.stringify(TAG)}, '');
+        return input.multiple ? 'multiple' : 'single';
+      })()`
+    );
+    if (mode === 'single' && msg.files.length > 1) {
+      await runEval(tab.id, `document.querySelector('[${TAG}]')?.removeAttribute('${TAG}')`).catch(() => {});
+      throw new Error('input has no "multiple" attribute — pass one file');
+    }
+    let attachedByUs = true;
+    try {
+      try {
+        await chrome.debugger.attach({ tabId: tab.id }, '1.3');
+      } catch (e) {
+        if (!/already attached/i.test(String(e))) throw e;
+        attachedByUs = false; // emulate/shot is holding it — don't detach.
+      }
+      const { root } = await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.getDocument', { depth: 1 });
+      const { nodeId } = await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.querySelector', {
+        nodeId: root.nodeId,
+        selector: `[${TAG}]`,
+      });
+      if (!nodeId) throw new Error('tagged input vanished mid-upload — re-snap and retry');
+      await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.setFileInputFiles', { nodeId, files: msg.files });
+    } finally {
+      if (attachedByUs) await chrome.debugger.detach({ tabId: tab.id }).catch(() => {});
+      await runEval(tab.id, `document.querySelector('[${TAG}]')?.removeAttribute('${TAG}')`).catch(() => {});
+    }
+    const names = msg.files.map((f) => f.split('/').pop()).join(', ');
+    const result = `uploaded ${msg.files.length} file(s) to ${msg.target}: ${names}`;
     return msg.diff ? await observeDiff(tab.id, result) : result;
   }
 
