@@ -161,9 +161,11 @@ const server = http.createServer((req, res) => {
       return;
     }
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ ok: true }));
     console.log('[bridge] stop requested — exiting');
-    setTimeout(() => process.exit(0), 50); // let the response flush first
+    // Exit the moment the response is handed to the kernel, not 50ms later —
+    // holding the port any longer races a `start` right behind us (the new
+    // server hits EADDRINUSE while we're still bound).
+    res.end(JSON.stringify({ ok: true }), () => process.exit(0));
     return;
   }
   res.writeHead(404);
@@ -214,3 +216,19 @@ server.on('upgrade', (req, socket) => {
 });
 
 server.listen(PORT, '127.0.0.1', () => console.log(`[bridge] ws + control on 127.0.0.1:${PORT}`));
+
+// Heartbeat: app-level ping every 20s. A socket can be open at TCP level with
+// a dead service worker behind it (health says "connected" while commands rot
+// to the 70s timeout) — no pong in 5s means the seat is deaf, free it. The
+// ping traffic also wakes/extends the MV3 service worker, so this doubles as
+// the keepalive.
+setInterval(() => {
+  if (!extSocket || extSocket.destroyed) return;
+  const sock = extSocket;
+  const id = nextId++;
+  const t = setTimeout(() => {
+    if (pending.delete(id)) sock.destroy();
+  }, 5000);
+  pending.set(id, () => clearTimeout(t));
+  sock.write(encodeFrame(JSON.stringify({ type: 'ping', id })));
+}, 20_000);

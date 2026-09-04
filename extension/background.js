@@ -20,18 +20,27 @@ for (const lvl of ['error', 'warn']) {
 }
 
 function connect() {
+  // Two connects in flight (reconnect timer + keepalive alarm) means two
+  // sockets; the server seats the first and rejects the second. Reply on the
+  // socket that received the message (s), never the global ws — after a race
+  // those differ, and replying on the rejected socket leaves every command
+  // unanswered while health still says "connected".
   try {
-    ws = new WebSocket(WS_URL);
+    ws?.close();
+  } catch {}
+  let s;
+  try {
+    s = ws = new WebSocket(WS_URL);
   } catch {
     return;
   }
-  ws.onmessage = async (e) => {
+  s.onmessage = async (e) => {
     const msg = JSON.parse(e.data);
     try {
       const result = await handle(msg);
-      ws.send(JSON.stringify({ id: msg.id, ok: true, result }));
+      s.send(JSON.stringify({ id: msg.id, ok: true, result }));
     } catch (err) {
-      ws.send(JSON.stringify({ id: msg.id, ok: false, error: String(err) }));
+      s.send(JSON.stringify({ id: msg.id, ok: false, error: String(err) }));
     } finally {
       // ✅ when a command on a driven tab lands. Non-driven tabs are left
       // alone — otherwise any stray command would stick a ✅ on them with
@@ -52,7 +61,8 @@ function connect() {
       }
     }
   };
-  ws.onclose = () => {
+  s.onclose = () => {
+    if (ws !== s) return; // a newer socket already took over — don't double-reconnect
     ws = null;
     // Reconnect immediately; the alarm is only a backstop for a killed SW.
     setTimeout(connect, 500);
@@ -736,6 +746,12 @@ const scrollSrc = (what) => `(() => {
 // Mutation-driven wait (puppeteer `polling: 'mutation'` style): the predicate
 // re-runs on every mutation batch (microtask latency) instead of a fixed
 // 150ms sleep; a slow interval backstops changes that mutate nothing.
+// Page text minus the pill: the banner narrates commands ('waiting for X'),
+// so a naive body.innerText read self-matches 'wait --text X' instantly and
+// feeds Nano bridge UI instead of page content. String subtraction is
+// bulletproof-enough here — worst case is a no-op replace (old behavior).
+const PAGE_TEXT = `(()=>{const b=document.getElementById('bridge-banner');const t=document.body?.innerText||'';return b?t.replace(b.innerText,''):t})()`;
+
 const waitSrc = ({ selector, text, timeout }) => `(async () => {
   const sel = ${JSON.stringify(selector || null)}, text = ${JSON.stringify(text || null)}, timeout = ${Number(timeout) || 10000};
   const t0 = Date.now();
@@ -744,7 +760,7 @@ const waitSrc = ({ selector, text, timeout }) => `(async () => {
       const el = document.querySelector(sel);
       if (el) { const r = el.getBoundingClientRect(); if (r.width > 0 && r.height > 0) return 'found ' + sel; }
     }
-    if (text && (document.body?.innerText || '').includes(text)) return 'found text ' + JSON.stringify(text);
+    if (text && (${PAGE_TEXT}).includes(text)) return 'found text ' + JSON.stringify(text);
     return null;
   };
   const first = check();
@@ -791,7 +807,7 @@ const askSrc = (question) => `(async () => {
   if (typeof LanguageModel === 'undefined') throw new Error('no Prompt API in this Chrome (needs 138+) — developer.chrome.com/docs/ai/get-started');
   const avail = await LanguageModel.availability();
   if (avail !== 'available') throw new Error('Gemini Nano not ready (availability: ' + avail + ') — the first LanguageModel.create() downloads it (~2GB), then ask works');
-  const text = (document.body?.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 3000);
+  const text = (${PAGE_TEXT}).replace(/\\s+/g, ' ').trim().slice(0, 3000);
   const session = await LanguageModel.create();
   try {
     return await session.prompt('Answer from this page text. Page ' + location.href + ':\\n' + text + '\\n\\nQuestion: ' + ${JSON.stringify(question)});
