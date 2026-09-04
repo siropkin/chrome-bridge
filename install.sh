@@ -25,8 +25,22 @@ echo "  2. enable Developer mode (top right)"
 echo "  3. Load unpacked → $ROOT/extension/"
 [ "$(uname)" = "Darwin" ] && open -a "Google Chrome" "chrome://extensions" || true
 
+# Don't leave the user guessing whether the manual step worked — the server
+# already knows (health.extension); poll until the extension says hello.
+printf "waiting for extension to connect"
+for _ in $(seq 45); do
+  curl -sf -m 2 localhost:9333/health 2>/dev/null | grep -q '"extension":true' && break
+  printf "."; sleep 2
+done
 echo
-echo "Then give your AI agent this one line (CLAUDE.md, .cursorrules, AGENTS.md, system prompt, …):"
+if curl -sf -m 2 localhost:9333/health 2>/dev/null | grep -q '"extension":true'; then
+  echo "✓ extension connected — setup complete"
+else
+  echo "⚠ extension not connected yet — finish the steps above (or reload the extension) and this will light up; the server keeps waiting either way"
+fi
+
+echo
+echo "Last: give your AI agent this one line (CLAUDE.md, .cursorrules, AGENTS.md, system prompt, …):"
 echo
 echo "  To drive my Chrome browser (real logged-in tabs), read $ROOT/AGENTS.md and run \`node $ROOT/cli.mjs <command>\`. If the health check fails, run \`node $ROOT/cli.mjs start\`; if the extension is disconnected, tell me to reload it."
 echo
