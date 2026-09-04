@@ -107,6 +107,8 @@ The HTTP API is one endpoint: `POST /cmd` with `{"type": "snap", "urlMatch": "�
 | `resize <match> <w> <h>` | Resize the window |
 | `batch` | Run commands from stdin, one per line — one process for a whole sequence; stops on the first error |
 | `mark <match>` · `release <match>` | Add/remove the driven-tab corner tag + 🟣 tab group |
+| `note <match> <text>` | Narrate to the human — the text appears in the driven tab's pill and its history (the pill already shows *what* runs; notes add *why*) |
+| `watch` | Live feed of every bridge command in your terminal — the twin of the in-page pill. Run it next to your agent session and follow along; Ctrl-C to exit |
 | `swlogs` | Service-worker console tail (errors/warnings) |
 | `start` · `stop` | Server lifecycle — `start` spawns it detached if down (agents can self-heal a dead server) |
 

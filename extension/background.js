@@ -240,12 +240,21 @@ const ACT_VERBS = {
   eval: ['running a script', 'ran a script'],
   net: ['watching network', 'watched network'],
   console: ['reading page logs', 'read page logs'],
-  measure: ['measuring layout', 'measured layout'],
-  grid: ['toggling grid', 'toggled grid'],
   emulate: ['emulating device', 'emulated device'],
+  unemulate: ['clearing device emulation', 'cleared device emulation'],
   resize: ['resizing window', 'resized window'],
 };
 function activityPhrases(msg) {
+  if (msg.type === 'note') {
+    const t = msg.text.length > 90 ? msg.text.slice(0, 87) + '…' : msg.text;
+    return { ing: '💬 ' + t, done: '💬 ' + t };
+  }
+  // Eval sugar (measure, grid) arrives as type eval; `label` keeps the pill
+  // honest about what the human is watching.
+  if (msg.label) {
+    const t = msg.label.length > 36 ? msg.label.slice(0, 33) + '…' : msg.label;
+    return { ing: t, done: t };
+  }
   let v = ACT_VERBS[msg.type] || [msg.type, msg.type];
   const detail = msg.target || msg.key || msg.selector || msg.text || msg.question || msg.url || '';
   if (msg.type === 'scroll' && detail && !['up', 'down', 'top', 'bottom'].includes(detail)) v = ['scrolling to', 'scrolled to'];
@@ -1137,6 +1146,15 @@ async function handle(msg) {
   if (msg.type === 'close') {
     const tab = await findTab(msg);
     await chrome.tabs.remove(tab.id);
+    return { id: tab.id };
+  }
+
+  // Agent → human narration: the pill label becomes the note text for its
+  // duration, and it lands in the history ring like any action. Driven tabs
+  // only — a note nobody can see is wasted agent tokens, so fail loudly.
+  if (msg.type === 'note') {
+    const tab = await findTab(msg);
+    if (!drivenTabs.has(tab.id)) throw new Error('tab not marked — notes show in the pill on driven tabs (mark it first)');
     return { id: tab.id };
   }
 

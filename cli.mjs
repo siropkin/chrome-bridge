@@ -101,6 +101,10 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     the verdict costs cloud tokens, not the noise
   grid <match>                      toggle 8px alignment grid
   mark|release <match>              add/remove driven-tab markers
+  note <match> <text>              narrate to the human — shows in the driven tab's pill + history
+                                    (use sparingly: before a risky/long sequence, or to explain why)
+  watch                            live feed of every bridge command — the terminal twin of the pill;
+                                    for the human watching you, not for you (Ctrl-C to exit)
   swlogs                            service-worker console tail (errors/warnings)
   emulate <match> <w> <h> [mobile]  CDP device view (no window resize)
   unemulate <match>                 clear emulation + detach debugger
@@ -170,6 +174,32 @@ async function run(cmdName, args) {
     case 'swlogs':
       print((await cmd({ type: 'swlogs' })).join('\n') || '(no errors or warnings logged)');
       break;
+
+    // Live feed of every command the bridge runs — the terminal twin of the
+    // pill in the driven tab. For the human watching the session, not for you
+    // (you already see command results). Ctrl-C to exit.
+    case 'watch': {
+      let since = 0;
+      const first = await fetch(`${BASE}/log`).then((r) => r.json()).catch(() => null);
+      if (!first) fail('bridge server not running — start it: node cli.mjs start');
+      for (const a of first.slice(-15)) console.log(a.line);
+      if (first.length) since = first[first.length - 1].seq;
+      console.log('— watching (Ctrl-C to exit) —');
+      // ponytail: 500ms poll — SSE would be push-perfect, but this is 5 lines
+      // and survives server restarts; switch if latency ever matters
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 500));
+        const rows = await fetch(`${BASE}/log?since=${since}`).then((r) => r.json()).catch(() => []);
+        for (const a of rows) console.log(a.line);
+        if (rows.length) since = rows[rows.length - 1].seq;
+      }
+    }
+
+    case 'note': {
+      if (args.length < 2) fail('usage: note <match> <text>');
+      print(await cmd({ type: 'note', urlMatch: args[0], text: args.slice(1).join(' ') }));
+      break;
+    }
 
     case 'batch': {
       // One node process for N commands — CLI startup (~60ms) is the biggest
@@ -357,7 +387,8 @@ async function run(cmdName, args) {
 
     case 'measure':
       if (!args[0] || !args[1]) fail('usage: measure <match> <css>');
-      print(await cmd({ type: 'eval', urlMatch: args[0], code: measureSrc(args[1]) }));
+      // label → the driven tab's pill says what it's doing, not 'eval'
+      print(await cmd({ type: 'eval', urlMatch: args[0], code: measureSrc(args[1]), label: 'measuring layout' }));
       break;
 
     case 'console': {
@@ -374,7 +405,7 @@ async function run(cmdName, args) {
 
     case 'grid':
       if (!args[0]) fail('usage: grid <match>');
-      print(await cmd({ type: 'eval', urlMatch: args[0], code: GRID_SRC }));
+      print(await cmd({ type: 'eval', urlMatch: args[0], code: GRID_SRC, label: 'toggling alignment grid' }));
       break;
 
     case 'emulate':

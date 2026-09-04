@@ -118,10 +118,10 @@ try {
     if (msg.type === 'ping') return respond('pong');
     if (msg.type === 'tabs')
       return respond([{ id: 1, url: 'https://example.com/', title: 'Example', active: true, driven: false }]);
-    if (msg.type === 'eval') return respond({ echo: msg.code.length, world: msg.world, match: msg.urlMatch });
+    if (msg.type === 'eval') return respond({ echo: msg.code.length, world: msg.world, match: msg.urlMatch, label: msg.label || null });
     if (msg.type === 'big') return respond('x'.repeat(3 * 1024 * 1024)); // 3 MB — exercises 64-bit frames
     if (msg.type === 'shot') { lastShot = msg; return respond('data:image/png;base64,' + Buffer.from('fakepng').toString('base64')); }
-    if (['snap', 'press', 'type', 'hover', 'net', 'click', 'fill', 'navigate', 'scroll', 'ask', 'upload', 'console'].includes(msg.type)) return respond(msg); // echo for flag-parsing checks
+    if (['snap', 'press', 'type', 'hover', 'net', 'click', 'fill', 'navigate', 'scroll', 'ask', 'upload', 'console', 'note'].includes(msg.type)) return respond(msg); // echo for flag-parsing checks
     return respond(null);
   });
   await new Promise((r) => setTimeout(r, 100));
@@ -212,6 +212,28 @@ try {
   });
   const big = await bigRes.json();
   assert(big.ok && big.result.length === 3 * 1024 * 1024, 'server: 3MB frame round-trip');
+
+  const nt = await cli('note', 'example.com', 'saving', 'the', 'draft');
+  assert(nt.status === 0 && nt.stdout.includes('"text":"saving the draft"'), 'cli note joins text args', nt.stdout + nt.stderr);
+  const ntNoArgs = await cli('note', 'example.com');
+  assert(ntNoArgs.status !== 0 && ntNoArgs.stderr.includes('usage: note'), 'cli note usage error', ntNoArgs.stdout + ntNoArgs.stderr);
+
+  // measure/grid are eval sugar — they must still carry their own pill label
+  const meas = await cli('measure', 'example.com', '.btn');
+  assert(meas.status === 0 && meas.stdout.includes('"label":"measuring layout"'), 'cli measure carries its pill label', meas.stdout + meas.stderr);
+  const gr = await cli('grid', 'example.com');
+  assert(gr.status === 0 && gr.stdout.includes('"label":"toggling alignment grid"'), 'cli grid carries its pill label', gr.stdout + gr.stderr);
+
+  // activity feed (watch): every relayed command lands in /log; since= yields a delta
+  const logAll = await fetch(`http://127.0.0.1:${PORT}/log`).then((r) => r.json());
+  assert(
+    logAll.some((a) => a.line.includes('eval example.com') && a.line.includes('· ok')) &&
+      logAll.some((a) => a.line.includes('note example.com saving the draft')),
+    'server /log records commands',
+    JSON.stringify(logAll.slice(-3))
+  );
+  const logDelta = await fetch(`http://127.0.0.1:${PORT}/log?since=${logAll[logAll.length - 1].seq - 1}`).then((r) => r.json());
+  assert(logDelta.length === 1, 'server /log since= delta filtering', JSON.stringify(logDelta));
 
   // unknown command surfaces the extension's error
   const bad = await (await fetch(`http://127.0.0.1:${PORT}/cmd`, {

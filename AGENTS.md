@@ -61,12 +61,20 @@ wait <match> [css|--text t] [--timeout ms]
 eval <match> <js|-> [--world main|isolated]     '-' reads JS from stdin
 shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full]
                                   --max caps the long edge (default 1280, 0 = native res)
-net <match> [--dur ms] [--filter s]   capture network for N ms (CDP; one line per request)
+net <match> [--dur ms] [--filter s] [--body s]
+                                  capture network for N ms (CDP; one line per request);
+                                  --body s appends response bodies for URLs containing s (≤8)
 measure <match> <css>             rect + computed styles as JSON
 console <match> [--clear] [--ask [q]]   page console + errors (hook installs on first call);
                                   --ask triages the log with local Nano — only the verdict costs cloud tokens
 grid <match>                      toggle 8px alignment grid
 mark|release <match>              add/remove driven-tab markers
+note <match> <text>               narrate to the human: text shows in the driven tab's pill + history.
+                                  Use sparingly — before a risky/long sequence ("saving the draft,
+                                  then verifying the toast"), or to explain a surprising step.
+                                  The user sees every command in the pill anyway; note adds intent.
+watch                            live feed of every bridge command (terminal twin of the pill) —
+                                  for the human watching you; you already see command results
 swlogs                            service-worker console tail (errors/warnings)
 emulate <match> <w> <h> [mobile]  CDP device view (no window resize)
 unemulate <match>                 clear emulation + detach debugger

@@ -15,6 +15,30 @@ let extSocket = null;
 let nextId = 1;
 const pending = new Map();
 
+// --- activity feed (`cli.mjs watch`) ----------------------------------------
+// One line per relayed command: what ran, where, ok or the error, how long.
+// Ring of 300; `since` in GET /log picks up only the new lines.
+const activity = [];
+let actSeq = 0;
+function summarize(msg) {
+  const s = [msg.type];
+  if (msg.urlMatch) s.push(msg.urlMatch);
+  const extra = msg.target || msg.url || msg.key || msg.label || msg.text || msg.question || '';
+  if (extra) s.push(String(extra).slice(0, 40));
+  return s.join(' ');
+}
+function pushAct(msg, out, ms) {
+  if (!msg?.type) return; // unparseable body — sendToExt already returned its error
+  const line =
+    new Date().toTimeString().slice(0, 8) +
+    ' ' +
+    summarize(msg) +
+    (out.ok ? ` · ok ${(ms / 1000).toFixed(1)}s` : ` · ✗ ${String(out.error).slice(0, 80)}`);
+  activity.push({ seq: ++actSeq, line });
+  if (activity.length > 300) activity.shift();
+  console.log('[act] ' + line); // server.log gets a durable copy for post-mortems
+}
+
 // --- minimal RFC 6455 server (text frames) -----------------------------------
 function encodeFrame(data, op = 0x1) {
   const payload = Buffer.from(data);
@@ -142,15 +166,26 @@ const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', (c) => (body += c));
     req.on('end', async () => {
-      let out;
+      let msg, out;
+      const t0 = Date.now();
       try {
-        out = await sendToExt(JSON.parse(body));
+        msg = JSON.parse(body);
+        out = await sendToExt(msg);
       } catch (e) {
         out = { ok: false, error: String(e) };
       }
+      pushAct(msg, out, Date.now() - t0);
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify(out));
     });
+    return;
+  }
+  if (req.method === 'GET' && req.url.startsWith('/log')) {
+    // Read-only feed for `cli.mjs watch`; a page can't read the response
+    // cross-origin (no CORS headers), so no drive-by guard is needed.
+    const since = Number(new URL(req.url, 'http://x').searchParams.get('since') || 0);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(activity.filter((a) => a.seq > since)));
     return;
   }
   if (req.method === 'POST' && req.url === '/stop') {
