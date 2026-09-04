@@ -232,6 +232,22 @@ try {
   const gr = await cli('grid', 'example.com');
   assert(gr.status === 0 && gr.stdout.includes('"label":"toggling alignment grid"'), 'cli grid carries its pill label', gr.stdout + gr.stderr);
 
+  // Stress-fix tripwires: selftest drives a FAKE extension, so the service
+  // worker's own guards can't be executed here — assert them at source level.
+  {
+    const bg = fs.readFileSync(`${ROOT}extension/background.js`, 'utf8');
+    // CDP debugger refcount: every attach/detach must route through the two
+    // helpers. A raw chrome.debugger.attach/detach elsewhere races under
+    // concurrent commands on one tab (stress-measured: 13% failures, 70s
+    // lost-callback hangs, debugger sessions leaked onto later commands).
+    assert(bg.split('chrome.debugger.attach(').length === 2, 'ext: one debugger-attach site (the refcount helper)');
+    assert(bg.split('chrome.debugger.detach(').length === 2, 'ext: one debugger-detach site (the refcount helper)');
+    assert(bg.split('await attachDbg(').length >= 5 && bg.split('await detachDbg(').length >= 5, 'ext: all 5 CDP call sites refcounted');
+    // open's 8s cap must bound chrome.tabs.create too — create only resolves
+    // once the navigation commits, and an unreachable URL never commits.
+    assert(bg.includes('setTimeout(r, 8000, null)') && bg.includes('no committed navigation in 8s'), 'ext: open bounds tabs.create at the 8s cap');
+  }
+
   // activity feed (watch): every relayed command lands in /log; since= yields a delta
   const logAll = await fetch(`http://127.0.0.1:${PORT}/log`).then((r) => r.json());
   assert(

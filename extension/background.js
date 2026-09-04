@@ -385,8 +385,36 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   tabStatus.delete(tabId);
   tabActivity.delete(tabId);
   worldCache.delete(tabId);
-  emulatedTabs.delete(tabId); // debugger auto-detaches on close
+  cdpRefs.delete(tabId); // debugger auto-detaches on close
+  emulatedTabs.delete(tabId);
 });
+
+// --- CDP debugger refcount ---------------------------------------------------
+// Concurrent debugger commands on one tab (parallel agent calls: emulate + net
+// on the same tab) used to race attach against detach — one attach failed
+// "already attached", a detach mid-capture killed the other's in-flight
+// sendCommand ("Detached while handling command", and Chrome occasionally
+// dropped the callback entirely, hanging the command to the server's 70s cap
+// with the debugger left attached). Owners now share the session; the last one
+// out detaches. One pair of helpers replaces the per-call-site attachedByUs
+// dance that only covered two of the five CDP users.
+const cdpRefs = new Map(); // tabId -> active owners
+async function attachDbg(tabId) {
+  try {
+    await chrome.debugger.attach({ tabId }, '1.3');
+  } catch (e) {
+    if (!/already attached/i.test(String(e))) throw e; // ours from a sibling command — share it
+  }
+  cdpRefs.set(tabId, (cdpRefs.get(tabId) || 0) + 1);
+}
+async function detachDbg(tabId) {
+  const n = (cdpRefs.get(tabId) || 1) - 1;
+  if (n > 0) return cdpRefs.set(tabId, n);
+  cdpRefs.delete(tabId);
+  try {
+    await chrome.debugger.detach({ tabId });
+  } catch {} // tab already closed — debugger auto-detaches
+}
 
 // --- Device emulation (CDP) -------------------------------------------------
 // DevTools-device-toolbar behavior without resizing the window. Attaches
@@ -397,23 +425,30 @@ const MOBILE_UA =
 const emulatedTabs = new Set();
 
 async function setEmulation(tabId, { width, height, mobile }) {
-  await chrome.debugger.attach({ tabId }, '1.3');
-  await chrome.debugger.sendCommand(
-    { tabId },
-    'Emulation.setDeviceMetricsOverride',
-    { width, height, deviceScaleFactor: mobile ? 2 : 1, mobile: !!mobile }
-  );
-  await chrome.debugger.sendCommand(
-    { tabId },
-    'Emulation.setTouchEmulationEnabled',
-    { enabled: !!mobile }
-  );
-  if (mobile) {
+  await attachDbg(tabId);
+  try {
     await chrome.debugger.sendCommand(
       { tabId },
-      'Network.setUserAgentOverride',
-      { userAgent: MOBILE_UA }
+      'Emulation.setDeviceMetricsOverride',
+      { width, height, deviceScaleFactor: mobile ? 2 : 1, mobile: !!mobile }
     );
+    await chrome.debugger.sendCommand(
+      { tabId },
+      'Emulation.setTouchEmulationEnabled',
+      { enabled: !!mobile }
+    );
+    if (mobile) {
+      await chrome.debugger.sendCommand(
+        { tabId },
+        'Network.setUserAgentOverride',
+        { userAgent: MOBILE_UA }
+      );
+    }
+  } catch (e) {
+    // Failed mid-setup: drop our share now — a leaked count would make a later
+    // unemulate's detach a no-op and leave the debugger silently attached.
+    await detachDbg(tabId);
+    throw e;
   }
   emulatedTabs.add(tabId);
 }
@@ -425,9 +460,7 @@ async function clearEmulation(tabId) {
       'Emulation.clearDeviceMetricsOverride'
     );
   } catch {}
-  try {
-    await chrome.debugger.detach({ tabId });
-  } catch {}
+  await detachDbg(tabId);
   emulatedTabs.delete(tabId);
 }
 
@@ -462,13 +495,7 @@ chrome.debugger.onEvent.addListener((src, method, params) => {
 });
 
 async function captureNetwork(tabId, duration, filter, bodyFilter) {
-  let attachedByUs = true;
-  try {
-    await chrome.debugger.attach({ tabId }, '1.3');
-  } catch (e) {
-    if (!/already attached/i.test(String(e))) throw e;
-    attachedByUs = false; // emulate/shot is holding it — don't detach.
-  }
+  await attachDbg(tabId);
   const c = new Map();
   c.bodyFilter = bodyFilter;
   netCollectors.set(tabId, c);
@@ -488,7 +515,7 @@ async function captureNetwork(tabId, duration, filter, bodyFilter) {
     await chrome.debugger.sendCommand({ tabId }, 'Network.disable').catch(() => {});
   } finally {
     netCollectors.delete(tabId);
-    if (attachedByUs) await chrome.debugger.detach({ tabId }).catch(() => {});
+    await detachDbg(tabId);
   }
   const lines = [];
   for (const r of c.values()) {
@@ -1056,13 +1083,7 @@ async function runEval(tabId, code, world = 'auto') {
   // CDP runs in the page's MAIN world — fine for 'auto'/'MAIN', but a caller who
   // asked for ISOLATED must not silently get page-context execution.
   if (world === 'ISOLATED') throw new Error('ISOLATED world blocked by page CSP — refusing CDP fallback (it would run in the main world)');
-  let attachedByUs = true;
-  try {
-    await chrome.debugger.attach({ tabId }, '1.3');
-  } catch (e) {
-    if (!/already attached/i.test(String(e))) throw e;
-    attachedByUs = false; // e.g. emulate is holding it — don't detach.
-  }
+  await attachDbg(tabId);
   try {
     const res = await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
       expression: code,
@@ -1075,9 +1096,7 @@ async function runEval(tabId, code, world = 'auto') {
     }
     return res.result.value === undefined ? null : res.result.value;
   } finally {
-    if (attachedByUs) {
-      await chrome.debugger.detach({ tabId }).catch(() => {});
-    }
+    await detachDbg(tabId);
   }
 }
 
@@ -1161,7 +1180,15 @@ async function handle(msg) {
   }
 
   if (msg.type === 'open') {
-    const tab = await chrome.tabs.create({ url: msg.url, active: false });
+    // chrome.tabs.create resolves only once the navigation commits — an
+    // unreachable URL never does, so create hangs past the documented 8s cap
+    // and the server's 70s timeout, silently leaving a marked tab behind.
+    // Bound it at the same 8s; a late-committing tab may still appear (unmarked,
+    // visible in `tabs`) — the abandoned create's rejection is silenced.
+    const creating = chrome.tabs.create({ url: msg.url, active: false });
+    const tab = await Promise.race([creating, new Promise((r) => setTimeout(r, 8000, null))]);
+    if (!tab) throw new Error('no committed navigation in 8s — unreachable or blocked URL? (a tab may still appear later; check `tabs`)');
+    creating.catch(() => {});
     msg._tabId = tab.id;
     // Listener before the favicon/banner work: those are two executeScript
     // round trips, and a fast page can hit 'complete' inside that window
@@ -1273,14 +1300,8 @@ async function handle(msg) {
       await runEval(tab.id, `document.querySelector('[${TAG}]')?.removeAttribute('${TAG}')`).catch(() => {});
       throw new Error('input has no "multiple" attribute — pass one file');
     }
-    let attachedByUs = true;
     try {
-      try {
-        await chrome.debugger.attach({ tabId: tab.id }, '1.3');
-      } catch (e) {
-        if (!/already attached/i.test(String(e))) throw e;
-        attachedByUs = false; // emulate/shot is holding it — don't detach.
-      }
+      await attachDbg(tab.id);
       const { root } = await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.getDocument', { depth: 1 });
       const { nodeId } = await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.querySelector', {
         nodeId: root.nodeId,
@@ -1289,7 +1310,7 @@ async function handle(msg) {
       if (!nodeId) throw new Error('tagged input vanished mid-upload — re-snap and retry');
       await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.setFileInputFiles', { nodeId, files: msg.files });
     } finally {
-      if (attachedByUs) await chrome.debugger.detach({ tabId: tab.id }).catch(() => {});
+      await detachDbg(tab.id);
       await runEval(tab.id, `document.querySelector('[${TAG}]')?.removeAttribute('${TAG}')`).catch(() => {});
     }
     const names = msg.files.map((f) => f.split('/').pop()).join(', ');
@@ -1358,14 +1379,8 @@ async function handle(msg) {
     // No tab activation here: CDP captureScreenshot works on background tabs,
     // and activating would steal the user's view. Only the fallback below needs it.
     const format = msg.format === 'jpeg' ? 'jpeg' : 'png';
-    let attachedByUs = true;
     try {
-      try {
-        await chrome.debugger.attach({ tabId: tab.id }, '1.3');
-      } catch (e) {
-        if (!/already attached/i.test(String(e))) throw e;
-        attachedByUs = false; // emulate is holding the debugger — don't detach.
-      }
+      await attachDbg(tab.id);
       const params = { format };
       if (format === 'jpeg') params.quality = msg.quality ?? 80;
       // Downscale to a long edge of `max` px (0 = native). Claude resizes
@@ -1420,9 +1435,7 @@ async function handle(msg) {
       await new Promise((r) => setTimeout(r, 400));
       return await chrome.tabs.captureVisibleTab(tab.windowId, { format, ...(format === 'jpeg' ? { quality: msg.quality ?? 80 } : {}) });
     } finally {
-      if (attachedByUs) {
-        await chrome.debugger.detach({ tabId: tab.id }).catch(() => {});
-      }
+      await detachDbg(tab.id);
     }
   }
 
