@@ -1181,7 +1181,12 @@ const FIND_SRC = (scope, find) => `(async () => {
       const line = lines.find((l) => l.includes(ref + ' ') || l.trimEnd().endsWith(ref));
       if (line && !picked.includes(line)) picked.push(line);
     }
-    const tail = listed < lines.length ? ' (tree capped at 48KB — scope the snap to reach the rest)' : '';
+    let tail = listed < lines.length ? ' (tree capped at 48KB — scope the snap to reach the rest)' : '';
+    // The 300-node snap cap drops the tail of big pages before Nano ever sees
+    // them — without this note, 'no matches' reads as 'not on the page' when
+    // the truth is 'not reached'. (The truncation line itself has no @eN ref,
+    // so the lines filter above already removed it from the listing.)
+    if (tree.includes('truncated at')) tail += ' (tree truncated at 300 nodes — the target may be past the cut; scope: snap <match> <css>)';
     if (!picked.length) return 'no matches in ' + listed + ' ref lines — nano said: ' + out.slice(0, 120) + tail;
     return picked.map((l) => l.trim()).join('\\n') +
       '\\n(' + listed + ' ref lines scanned · nano pre-filter — verify before acting)' + tail;
@@ -1334,7 +1339,7 @@ async function findTab(msg) {
   const tabs = await chrome.tabs.query({});
   const matches = tabs.filter((t) => t.url && t.url.includes(msg.urlMatch));
   if (!matches.length) {
-    throw new Error(`no tab matching "${msg.urlMatch}"`);
+    throw new Error(`no tab matching "${msg.urlMatch}" — the tab may have navigated (the match is a URL substring); run tabs to re-find it`);
   }
   // Driven tabs first (the bridge already touched them), then most recently
   // active. A substring match can land on a lookalike tab — a malicious page

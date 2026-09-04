@@ -9,7 +9,9 @@ const PORT = process.env.BRIDGE_PORT || 9333;
 const BASE = `http://127.0.0.1:${PORT}`;
 
 const fail = (msg) => {
-  console.error(`ERROR: ${msg}`);
+  // Server/extension errors arrive pre-wrapped ("Error: Error: …") — strip
+  // the nesting so the agent sees one clean prefix.
+  console.error(`ERROR: ${String(msg).replace(/^(Error:\s*)+/, '')}`);
   process.exit(1);
 };
 const print = (v) => console.log(typeof v === 'string' ? v : JSON.stringify(v));
@@ -56,7 +58,7 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
 
   batch                             read commands from stdin, one per line ('#' = comment,
                                     quotes honored) — one process for N commands; stops on first error
-  tabs                              list tabs (compact JSON)
+  tabs [match]                      list tabs (compact JSON); [match] filters by URL/title substring
   open <url>                        open + mark a new tab (waits for load, 8s cap)
   nav <match> <url> [--diff]        navigate matching tab (waits for load, 8s cap)
   close <match>                     close matching tab
@@ -68,7 +70,8 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     natural-language query — a ~2s shortlist to VERIFY, not ground
                                     truth (~2/3 accurate in testing); lines prefixed '* ' are new
                                     since the previous snap; lines seen 3+ times collapse to
-                                    '… N more · <line> → @refs'
+                                    '… N more · <line> → @refs'; trees truncate at 300 nodes —
+                                    scope big pages with [css] or grep/--find can miss the rest
   click <match> <@ref|css> [--diff]  click an element (fails loudly if an overlay covers it)
   fill <match> <@ref|css> <value> [--diff]   set input value (React-safe)
   type <match> <@ref|css> <text> [--diff]    per-char typing — triggers autocomplete/keystroke UIs
@@ -173,9 +176,15 @@ async function run(cmdName, args) {
       break;
     }
 
-    case 'tabs':
-      print(await cmd({ type: 'tabs' }));
+    case 'tabs': {
+      // Optional substring filter — a real browser's full tab list is ~2KB of
+      // titles the agent usually doesn't need; `tabs <match>` returns the rows
+      // it's actually looking for.
+      const t = await cmd({ type: 'tabs' });
+      const m = args[0];
+      print(m ? t.filter((x) => x.url.includes(m) || (x.title || '').includes(m)) : t);
       break;
+    }
 
     case 'swlogs':
       print((await cmd({ type: 'swlogs' })).join('\n') || '(no errors or warnings logged)');
@@ -267,7 +276,13 @@ async function run(cmdName, args) {
       // token right after --find is its query — excluded by INDEX, not value,
       // so a scope that happens to equal the query still works)
       const scope = args.slice(1).find((a, i) => !a.startsWith('--') && i !== fi) || null;
-      print(await cmd({ type: 'snap', urlMatch: args[0], scope, diff, href, ...(find ? { find } : {}) }));
+      const out = await cmd({ type: 'snap', urlMatch: args[0], scope, diff, href, ...(find ? { find } : {}) });
+      print(out);
+      // The truncation line sits at the end of the tree — a `snap | grep foo`
+      // pipe filters it out and the agent concludes "not found" when the truth
+      // is "not reached". Echo it to stderr, which survives the pipe.
+      const ti = out.lastIndexOf('… truncated at');
+      if (ti >= 0) console.error(out.slice(ti).split('\n')[0]);
       break;
     }
 
