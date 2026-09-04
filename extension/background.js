@@ -106,16 +106,51 @@ chrome.alarms.onAlarm.addListener(() => {
 const drivenTabs = new Set();
 let drivenGroupId = null;
 
-// SW restarts wipe drivenTabs while the visuals (group, banner, favicon)
-// persist in the pages — rehydrate from the 🟣 Bridge tab group, else after a
-// reload the bridge treats still-bannered tabs as strangers (no favicon
-// status, no pill updates, release won't clean them up).
-(async () => {
+// Per-tab bridge state lives in chrome.storage.session: it survives the MV3
+// service-worker cycle and dies with the browser — exactly the lifetime these
+// visuals have. Without it an SW restart wiped the maps while the pages kept
+// their banners/favicons/emulation: driven tabs became strangers (no pill
+// updates, release wouldn't clean up) and unemulate no-op'd on a still-live
+// override. The in-memory maps stay the fast path; persist() writes through.
+// (tabStatus/tabActivity are declared below; persist() only runs after them.)
+function persist() {
+  chrome.storage.session
+    .set({
+      drivenTabs: [...drivenTabs],
+      emulatedTabs: [...emulatedTabs],
+      tabStatus: Object.fromEntries(tabStatus),
+      tabActivity: Object.fromEntries(tabActivity),
+    })
+    .catch(() => {});
+}
+
+// SW restarts wipe the in-memory maps — rehydrate from storage.session, merge
+// the 🟣 Bridge tab group (belt-and-braces: covers state written before this
+// mechanism existed), and prune ids of tabs that no longer exist. handle()
+// awaits `ready` so no command can observe a half-empty map.
+const ready = (async () => {
+  try {
+    const s = await chrome.storage.session.get(['drivenTabs', 'emulatedTabs', 'tabStatus', 'tabActivity']);
+    for (const id of s.drivenTabs || []) drivenTabs.add(id);
+    for (const id of s.emulatedTabs || []) emulatedTabs.add(id);
+    for (const [k, v] of Object.entries(s.tabStatus || {})) tabStatus.set(Number(k), v);
+    for (const [k, v] of Object.entries(s.tabActivity || {})) tabActivity.set(Number(k), v);
+  } catch {}
   try {
     for (const g of await chrome.tabGroups.query({ title: '🟣 Bridge' })) {
       for (const t of await chrome.tabs.query({ groupId: g.id })) drivenTabs.add(t.id);
     }
   } catch {}
+  try {
+    const live = new Set((await chrome.tabs.query({})).map((t) => t.id));
+    for (const id of [...drivenTabs]) if (!live.has(id)) drivenTabs.delete(id);
+    for (const id of [...emulatedTabs]) if (!live.has(id)) emulatedTabs.delete(id);
+    for (const id of [...tabStatus.keys()]) if (!live.has(id)) tabStatus.delete(id);
+    for (const id of [...tabActivity.keys()]) if (!live.has(id)) tabActivity.delete(id);
+  } catch {}
+  // What survived the restart is THE diagnostic question after reload trouble
+  // (storage.session dies on extension reload; only the group fallback then).
+  logLine(`hydrated driven=${drivenTabs.size} emulated=${emulatedTabs.size}`);
 })();
 
 // Runs in the page; must be self-contained.
@@ -221,6 +256,7 @@ function pushActivity(tabId, line) {
   lines.push(new Date().toISOString().slice(11, 19) + ' ' + line);
   if (lines.length > 30) lines.shift();
   tabActivity.set(tabId, lines);
+  persist();
   return lines;
 }
 
@@ -257,6 +293,8 @@ const ACT_VERBS = {
   wait: ['waiting for', 'waited for'],
   ask: ['asking Nano', 'asked Nano'],
   eval: ['running a script', 'ran a script'],
+  measure: ['measuring layout', 'measured layout'],
+  grid: ['toggling alignment grid', 'toggled alignment grid'],
   net: ['watching network', 'watched network'],
   console: ['reading page logs', 'read page logs'],
   emulate: ['emulating device', 'emulated device'],
@@ -267,12 +305,6 @@ function activityPhrases(msg) {
   if (msg.type === 'note') {
     const t = msg.text.length > 90 ? msg.text.slice(0, 87) + '…' : msg.text;
     return { ing: '💬 ' + t, done: '💬 ' + t };
-  }
-  // Eval sugar (measure, grid) arrives as type eval; `label` keeps the pill
-  // honest about what the human is watching.
-  if (msg.label) {
-    const t = msg.label.length > 36 ? msg.label.slice(0, 33) + '…' : msg.label;
-    return { ing: t, done: t };
   }
   let v = ACT_VERBS[msg.type] || [msg.type, msg.type];
   const detail = msg.target || msg.key || msg.selector || msg.find || msg.text || msg.question || msg.url || '';
@@ -347,6 +379,7 @@ function faviconInject(emoji) {
 async function setFavicon(tabId, emoji) {
   if (emoji === null) tabStatus.delete(tabId);
   else tabStatus.set(tabId, emoji);
+  persist();
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
@@ -358,6 +391,7 @@ async function setFavicon(tabId, emoji) {
 
 async function markTab(tabId) {
   drivenTabs.add(tabId);
+  persist();
   await groupTab(tabId);
   try {
     await chrome.scripting.executeScript({
@@ -375,6 +409,7 @@ async function releaseTab(tabId) {
   pillSeq.delete(tabId);
   inflight.delete(tabId);
   await setFavicon(tabId, null); // restore the site's own favicon
+  persist();
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
@@ -412,6 +447,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   cdpRefs.delete(tabId); // debugger auto-detaches on close
   cdpQ.delete(tabId);
   emulatedTabs.delete(tabId);
+  persist();
 });
 
 // --- CDP debugger refcount ---------------------------------------------------
@@ -466,6 +502,7 @@ chrome.debugger.onDetach.addListener((src) => {
   if (cdpRefs.delete(src.tabId) || emulatedTabs.has(src.tabId)) logLine('dbg DETACHED EXTERNALLY ' + src.tabId);
   cdpRefs.delete(src.tabId);
   emulatedTabs.delete(src.tabId);
+  persist();
   // A detach can drop an in-flight sendCommand's callback entirely — the
   // queued chain behind it would never advance, wedging every later CDP
   // command on this tab. Drop the chain; the stuck command itself still
@@ -516,10 +553,12 @@ async function setEmulation(tabId, { width, height, mobile }) {
   const fresh = !emulatedTabs.has(tabId);
   if (fresh) {
     emulatedTabs.add(tabId);
+    persist();
     try {
       await attachDbg(tabId);
     } catch (e) {
       emulatedTabs.delete(tabId);
+      persist();
       throw e;
     }
   }
@@ -546,6 +585,7 @@ async function setEmulation(tabId, { width, height, mobile }) {
     // re-emulation's failure leaves the previous emulation in effect.
     if (fresh) {
       emulatedTabs.delete(tabId);
+      persist();
       await detachDbg(tabId);
     }
     throw e;
@@ -572,6 +612,7 @@ async function clearEmulation(tabId) {
     logLine('emulation clear ' + tabId + ' FAILED: ' + String(e).slice(0, 80));
   }
   emulatedTabs.delete(tabId);
+  persist();
   await detachDbg(tabId);
 }
 
@@ -1143,6 +1184,13 @@ const FIND_SRC = (scope, find) => `(async () => {
   }
 })()`;
 
+// measure/grid: small evals that used to live in the CLI as page-JS strings
+// with a `label` back-channel for the pill — they're commands, so the source
+// lives here with every other page script and ACT_VERBS carries the label.
+const measureSrc = (sel) =>
+  `JSON.stringify([...document.querySelectorAll(${JSON.stringify(sel)})].map(e=>{const r=e.getBoundingClientRect();const c=getComputedStyle(e);return{text:(e.textContent||'').trim().slice(0,30),x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height),display:c.display,alignItems:c.alignItems,justifyContent:c.justifyContent,textAlign:c.textAlign,gap:c.gap,padding:c.padding,radius:c.borderRadius,bg:c.backgroundColor,color:c.color,font:c.fontSize+'/'+c.fontWeight}}))`;
+const GRID_SRC = `(()=>{const g=document.getElementById('bridge-grid');if(g){g.remove();return 'grid off'}const d=document.createElement('div');d.id='bridge-grid';d.style.cssText='position:fixed;inset:0;z-index:2147483647;pointer-events:none;background-image:repeating-linear-gradient(0deg,rgba(255,0,0,.25) 0 1px,transparent 1px 8px),repeating-linear-gradient(90deg,rgba(255,0,0,.25) 0 1px,transparent 1px 8px)';document.body.appendChild(d);return 'grid on'})()`;
+
 // Console hook must run in the MAIN world — isolated worlds get their own console.
 const consoleSrc = (clear) => `(() => {
   if (!window.__bridgeLog) {
@@ -1289,6 +1337,9 @@ async function findTab(msg) {
 }
 
 async function handle(msg) {
+  // State maps hydrate from storage.session — no command may run against
+  // half-empty maps (cheap: storage read is sub-ms once warm).
+  await ready;
   // open/nav with a non-URL: tabs.create resolves it RELATIVE TO THE EXTENSION
   // (stress: open "::x" created a driven chrome-extension://… tab and reported
   // ok, unmatchable until it committed). Validate before any tab exists — one
@@ -1388,6 +1439,16 @@ async function handle(msg) {
   if (msg.type === 'eval') {
     const tab = await findTab(msg);
     return await runEval(tab.id, msg.code, msg.world || 'auto');
+  }
+
+  if (msg.type === 'measure') {
+    const tab = await findTab(msg);
+    return await runEval(tab.id, measureSrc(msg.selector));
+  }
+
+  if (msg.type === 'grid') {
+    const tab = await findTab(msg);
+    return await runEval(tab.id, GRID_SRC);
   }
 
   if (msg.type === 'snap') {

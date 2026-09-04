@@ -15,7 +15,7 @@ const fail = (msg) => {
 const print = (v) => console.log(typeof v === 'string' ? v : JSON.stringify(v));
 
 // Image dimensions from the buffer header (PNG IHDR / JPEG SOF) — agents map
-// shot pixels back to CSS px, and --max rescales server-side, so print them.
+// shot pixels back to CSS px, and --max rescales extension-side, so print them.
 const imgDims = (b) => {
   if (b.length > 24 && b.readUInt32BE(0) === 0x89504e47) return `${b.readUInt32BE(16)}x${b.readUInt32BE(20)}`;
   for (let i = 2; i + 9 < b.length && b[i] === 0xff; i += 2 + b.readUInt16BE(i + 2))
@@ -52,11 +52,6 @@ async function stdin() {
 const tokenize = (line) =>
   (line.match(/(?:[^\s'"]+|"[^"]*"|'[^']*')+/g) || []).map((t) => t.replace(/"([^"]*)"|'([^']*)'/g, (_, d, s) => d ?? s));
 
-// Page-side helpers (eval-based).
-const measureSrc = (sel) =>
-  `JSON.stringify([...document.querySelectorAll(${JSON.stringify(sel)})].map(e=>{const r=e.getBoundingClientRect();const c=getComputedStyle(e);return{text:(e.textContent||'').trim().slice(0,30),x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height),display:c.display,alignItems:c.alignItems,justifyContent:c.justifyContent,textAlign:c.textAlign,gap:c.gap,padding:c.padding,radius:c.borderRadius,bg:c.backgroundColor,color:c.color,font:c.fontSize+'/'+c.fontWeight}}))`;
-const GRID_SRC = `(()=>{const g=document.getElementById('bridge-grid');if(g){g.remove();return 'grid off'}const d=document.createElement('div');d.id='bridge-grid';d.style.cssText='position:fixed;inset:0;z-index:2147483647;pointer-events:none;background-image:repeating-linear-gradient(0deg,rgba(255,0,0,.25) 0 1px,transparent 1px 8px),repeating-linear-gradient(90deg,rgba(255,0,0,.25) 0 1px,transparent 1px 8px)';document.body.appendChild(d);return 'grid on'})()`;
-
 const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
 
   batch                             read commands from stdin, one per line ('#' = comment,
@@ -77,7 +72,7 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
   click <match> <@ref|css> [--diff]  click an element (fails loudly if an overlay covers it)
   fill <match> <@ref|css> <value> [--diff]   set input value (React-safe)
   type <match> <@ref|css> <text> [--diff]    per-char typing — triggers autocomplete/keystroke UIs
-  press <match> <key> [@ref|css>] [--diff]  key press (Enter/Tab/Escape/…) on focused or given element
+  press <match> <key> [@ref|css] [--diff]  key press (Enter/Tab/Escape/…) on focused or given element
   hover <match> <@ref|css> [--diff]  hover an element (opens hover menus)
   scroll <match> <up|down|top|bottom|@ref|css> [--diff]
                                     scroll the page (or an element into view); --diff
@@ -422,8 +417,7 @@ async function run(cmdName, args) {
 
     case 'measure':
       if (!args[0] || !args[1]) fail('usage: measure <match> <css>');
-      // label → the driven tab's pill says what it's doing, not 'eval'
-      print(await cmd({ type: 'eval', urlMatch: args[0], code: measureSrc(args[1]), label: 'measuring layout' }));
+      print(await cmd({ type: 'measure', urlMatch: args[0], selector: args[1] }));
       break;
 
     case 'console': {
@@ -440,7 +434,7 @@ async function run(cmdName, args) {
 
     case 'grid':
       if (!args[0]) fail('usage: grid <match>');
-      print(await cmd({ type: 'eval', urlMatch: args[0], code: GRID_SRC, label: 'toggling alignment grid' }));
+      print(await cmd({ type: 'grid', urlMatch: args[0] }));
       break;
 
     case 'emulate':

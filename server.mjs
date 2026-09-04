@@ -27,7 +27,11 @@ const bootId = Date.now();
 function summarize(msg) {
   const s = [msg.type];
   if (msg.urlMatch) s.push(msg.urlMatch);
-  const extra = msg.target || msg.url || msg.key || msg.label || msg.find || msg.text || msg.question || '';
+  // value stays out on purpose: fill values can be secrets, and this line is
+  // persisted to server.log.
+  const extra =
+    msg.target || msg.url || msg.key || msg.selector || msg.find || msg.text || msg.question ||
+    (msg.files || []).map((f) => String(f).split('/').pop()).join(', ') || '';
   if (extra) s.push(String(extra).slice(0, 40));
   return s.join(' ');
 }

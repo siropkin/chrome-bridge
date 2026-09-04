@@ -121,7 +121,7 @@ try {
     if (msg.type === 'eval') return respond({ echo: msg.code.length, world: msg.world, match: msg.urlMatch, label: msg.label || null });
     if (msg.type === 'big') return respond('x'.repeat(3 * 1024 * 1024)); // 3 MB — exercises 64-bit frames
     if (msg.type === 'shot') { lastShot = msg; return respond('data:image/png;base64,' + Buffer.from('fakepng').toString('base64')); }
-    if (['snap', 'press', 'type', 'hover', 'net', 'click', 'fill', 'navigate', 'scroll', 'ask', 'upload', 'console', 'note'].includes(msg.type)) return respond(msg); // echo for flag-parsing checks
+    if (['snap', 'press', 'type', 'hover', 'net', 'click', 'fill', 'navigate', 'scroll', 'ask', 'upload', 'console', 'note', 'measure', 'grid'].includes(msg.type)) return respond(msg); // echo for flag-parsing checks
     return respond(null);
   });
   await new Promise((r) => setTimeout(r, 100));
@@ -226,16 +226,18 @@ try {
   const ntNoArgs = await cli('note', 'example.com');
   assert(ntNoArgs.status !== 0 && ntNoArgs.stderr.includes('usage: note'), 'cli note usage error', ntNoArgs.stdout + ntNoArgs.stderr);
 
-  // measure/grid are eval sugar — they must still carry their own pill label
+  // measure/grid are real command types (their page-JS lives in the extension
+  // with every other page script; ACT_VERBS carries the pill label)
   const meas = await cli('measure', 'example.com', '.btn');
-  assert(meas.status === 0 && meas.stdout.includes('"label":"measuring layout"'), 'cli measure carries its pill label', meas.stdout + meas.stderr);
+  assert(meas.status === 0 && meas.stdout.includes('"type":"measure"') && meas.stdout.includes('"selector":".btn"'), 'cli measure sends its own type + selector', meas.stdout + meas.stderr);
   const gr = await cli('grid', 'example.com');
-  assert(gr.status === 0 && gr.stdout.includes('"label":"toggling alignment grid"'), 'cli grid carries its pill label', gr.stdout + gr.stderr);
+  assert(gr.status === 0 && gr.stdout.includes('"type":"grid"'), 'cli grid sends its own type', gr.stdout + gr.stderr);
 
   // Stress-fix tripwires: selftest drives a FAKE extension, so the service
   // worker's own guards can't be executed here — assert them at source level.
   {
     const bg = fs.readFileSync(`${ROOT}extension/background.js`, 'utf8');
+    const cliSrc = fs.readFileSync(`${ROOT}cli.mjs`, 'utf8');
     // CDP debugger refcount: every attach/detach must route through the two
     // helpers. A raw chrome.debugger.attach/detach elsewhere races under
     // concurrent commands on one tab (stress-measured: 13% failures, 70s
@@ -266,6 +268,36 @@ try {
     // A stray unemulate (nothing emulated) must no-op cleanly — the CDP clear
     // at an unattached debugger logged a swlogs FAILED while the caller got ok.
     assert(bg.includes('if (!emulatedTabs.has(tabId)) return;'), 'ext: stray unemulate no-ops instead of logging a FAILED clear');
+
+    // Contract drift tripwires: the command list lives in 3 places (cli USAGE,
+    // handle() dispatch, ACT_VERBS) kept in sync by hand — fail here when they
+    // drift instead of shipping a command with a wrong/missing pill label.
+    const handleTypes = new Set([...bg.matchAll(/msg\.type === '(\w+)'/g)].map((m) => m[1]));
+    for (const m of bg.matchAll(/\[([^\]]+)\]\.includes\(msg\.type\)/g))
+      for (const q of m[1].matchAll(/'(\w+)'/g)) handleTypes.add(q[1]);
+    const verbBlock = bg.slice(bg.indexOf('const ACT_VERBS'), bg.indexOf('};', bg.indexOf('const ACT_VERBS')));
+    const verbKeys = new Set([...verbBlock.matchAll(/^  (\w+): \[/gm)].map((m) => m[1]));
+    // ping/swlogs/tabs never reach findTab (no pill); note is special-cased in activityPhrases.
+    const NO_VERBS = ['ping', 'swlogs', 'tabs', 'note'];
+    assert(
+      [...handleTypes].filter((t) => !NO_VERBS.includes(t)).sort().join() === [...verbKeys].sort().join(),
+      'drift: ACT_VERBS keys vs handle() types',
+      `handle: ${[...handleTypes].sort()} verbs: ${[...verbKeys].sort()}`
+    );
+    const usageBlock = cliSrc.slice(cliSrc.indexOf('const USAGE'), cliSrc.indexOf('`;', cliSrc.indexOf('const USAGE')));
+    const usageCmds = new Set(
+      [...usageBlock.matchAll(/^  (\S+)/gm)].flatMap((m) => m[1].split('|')).filter((c) => /^[a-z]+$/.test(c))
+    );
+    // CLI-local commands (no wire type) and the nav→navigate alias.
+    const CLI_LOCAL = ['batch', 'health', 'start', 'stop', 'watch'];
+    const usageWire = new Set([...usageCmds].filter((c) => !CLI_LOCAL.includes(c)).map((c) => (c === 'nav' ? 'navigate' : c)));
+    assert(
+      [...usageWire].sort().join() === [...handleTypes].filter((t) => t !== 'ping').sort().join(),
+      'drift: cli USAGE commands vs handle() types',
+      `usage: ${[...usageWire].sort()} handle: ${[...handleTypes].sort()}`
+    );
+    // The label back-channel is gone — pill labels come from ACT_VERBS only.
+    assert(!bg.includes('msg.label'), 'ext: no msg.label special-case (measure/grid are real types now)');
   }
 
   // activity feed (watch): every relayed command lands in /log; since= yields a delta
