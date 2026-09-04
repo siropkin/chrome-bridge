@@ -308,13 +308,17 @@ async function run(cmdName, args) {
     }
 
     case 'eval': {
-      const [match, ...rest] = args;
+      // --world is extracted from the whole arg list first: flags must work in
+      // any position ('eval --world main <match> …' and '<match> … --world main'
+      // both parse), or an improvising agent eats 'no tab matching "--world"'.
+      const rest = [...args];
       let world = 'auto';
       const wi = rest.indexOf('--world');
       if (wi >= 0) {
         world = rest[wi + 1]?.toUpperCase() === 'MAIN' ? 'MAIN' : rest[wi + 1]?.toUpperCase() === 'ISOLATED' ? 'ISOLATED' : 'auto';
         rest.splice(wi, 2);
       }
+      const match = rest.shift();
       let code = rest.join(' ');
       if (code === '-') code = await stdin();
       if (!match || !code) fail('usage: eval <match> <js|-> [--world main|isolated]');

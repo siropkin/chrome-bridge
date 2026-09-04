@@ -198,6 +198,9 @@ try {
   const conPlain = await cli('console', 'example.com');
   assert(conPlain.status === 0 && !conPlain.stdout.includes('"ask"'), 'cli console plain sends no ask', conPlain.stdout + conPlain.stderr);
 
+  const evWorld = await cli('eval', '--world', 'main', 'example.com', 'document.title');
+  assert(evWorld.status === 0 && evWorld.stdout.includes('"echo"'), 'cli eval --world before match parses', evWorld.stdout + evWorld.stderr);
+
   // large frame extension→server (3 MB result)
   const bigRes = await fetch(`http://127.0.0.1:${PORT}/cmd`, {
     method: 'POST',
