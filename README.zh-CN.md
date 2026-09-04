@@ -49,7 +49,7 @@ MCP 桥接工具(mcp-chrome、BrowserMCP、playwriter)同样可以驱动你真�
 git clone https://github.com/siropkin/chrome-bridge && cd chrome-bridge && ./install.sh
 ```
 
-`install.sh` 会检查 Node ≥ 18、启动服务器、打开 `chrome://extensions`,并打印下方的智能体接入语句。唯一的手动步骤:点击 **加载已解压的扩展程序(Load unpacked)** → 选择 `extension/` 文件夹(Chrome 要求必须手动点击)。
+`install.sh` 会检查 Node ≥ 18、启动服务器、打开 `chrome://extensions`,等待扩展连接(最长约 90 秒),并打印下方的智能体接入语句。唯一的手动步骤:点击 **加载已解压的扩展程序(Load unpacked)** → 选择 `extension/` 文件夹(Chrome 要求必须手动点击)。
 
 验证:`node cli.mjs health` → `{"ok":true,"extension":true}`
 
