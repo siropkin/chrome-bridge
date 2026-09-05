@@ -879,7 +879,7 @@ const SNAP_SRC = (scope, diff, href) => `(() => {
     }
     for (const c of el.children) walk(c, childDepth);
     if (el.shadowRoot) for (const c of el.shadowRoot.children) walk(c, childDepth);
-    if (el.tagName === 'IFRAME') {
+    if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') { // FRAME: old <frameset> pages — walk them too, else the tree is silently empty
       try { if (el.contentDocument?.body) walk(el.contentDocument.body, childDepth); } catch {} // cross-origin
     }
   }
