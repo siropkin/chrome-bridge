@@ -177,7 +177,7 @@ async function run(cmdName, args) {
           } catch {}
           for (const p of h.profiles) {
             if (mine && p.v && p.v !== mine)
-              console.error(`⚠ extension ${p.v} is loaded (profile ${p.id.slice(0, 4)}), the repo has ${mine} — reload the extension at chrome://extensions`);
+              console.error(`⚠ extension ${p.v} is loaded (profile ${p.name || p.id.slice(0, 4)}), the repo has ${mine} — reload the extension at chrome://extensions`);
           }
         }
       } catch {

@@ -5,11 +5,21 @@ let ws = null;
 // WHICH Chrome holds the seat — with two profiles loaded, a silent seat
 // migration would start driving the browser the human isn't watching.
 let PROFILE_ID = '';
+let PROFILE_NAME = '';
+// Short stable human-readable profile name (e.g. 'birch'), derived once from
+// the profile id: '@4371' in the watch feed means nothing to a human, and
+// Chrome never exposes the profile's display name to an extension. Collision
+// between two profiles is possible (20 words) but harmless — ids stay the
+// identity for --profile and /health.
+const NAME_WORDS = ['ash', 'birch', 'cedar', 'cypress', 'elm', 'fir', 'hazel', 'ironwood', 'juniper', 'larch', 'maple', 'oak', 'pine', 'poplar', 'rowan', 'spruce', 'sumac', 'walnut', 'willow', 'yew'];
 const idReady = chrome.storage.local
   .get('profileId')
   .then(({ profileId }) => {
     PROFILE_ID = profileId || crypto.randomUUID();
     if (!profileId) chrome.storage.local.set({ profileId: PROFILE_ID }).catch(() => {});
+    // Stable pick from the id — same id always gets the same word, across SW
+    // restarts, without a second storage key.
+    PROFILE_NAME = NAME_WORDS[[...PROFILE_ID].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7) % NAME_WORDS.length];
   })
   .catch(() => {});
 
@@ -48,10 +58,24 @@ function connect() {
   try {
     // ?v= lets `cli health` catch a stale extension after git pull; ?id= names
     // which profile holds the seat in the server log and /health.
-    s = ws = new WebSocket(WS_URL + '?v=' + chrome.runtime.getManifest().version + (PROFILE_ID ? '&id=' + PROFILE_ID : ''));
+    s = ws = new WebSocket(
+      WS_URL + '?v=' + chrome.runtime.getManifest().version + (PROFILE_ID ? '&id=' + PROFILE_ID : '') + (PROFILE_NAME ? '&name=' + PROFILE_NAME : '')
+    );
   } catch {
     return;
   }
+  s.onopen = () => {
+    // Back online after a server outage: every driven tab's pill said
+    // "offline" — put them back to the honest current state.
+    if (wasOffline) {
+      wasOffline = false;
+      for (const tabId of drivenTabs) {
+        chrome.scripting
+          .executeScript({ target: { tabId }, func: pillInject, args: [idleLabel(tabId), tabActivity.get(tabId) || [], null, false] })
+          .catch(() => {});
+      }
+    }
+  };
   s.onmessage = async (e) => {
     const msg = JSON.parse(e.data);
     if (msg.type === 'seat-taken') {
@@ -82,7 +106,9 @@ function connect() {
       // the pill log, not just an error back to the agent.
       if (msg._tabId != null && drivenTabs.has(msg._tabId)) {
         const { done } = activityPhrases(msg);
-        const lines = pushActivity(msg._tabId, '✗ ' + done + ' — ' + String(err).slice(0, 60));
+        // Same 'Error: Error:' dedup the CLI and the watch feed got (756df17)
+        // — the pill history is the third place this line lands.
+        const lines = pushActivity(msg._tabId, '✗ ' + done + ' — ' + String(err).replace(/^(Error:\s*)+/, '').slice(0, 60));
         chrome.scripting
           .executeScript({
             target: { tabId: msg._tabId },
@@ -104,9 +130,18 @@ function connect() {
       const tabId = msg._tabId;
       if (msg._pill) inflight.set(tabId, (inflight.get(tabId) || 1) - 1);
       if (tabId != null && drivenTabs.has(tabId)) {
+        // Consecutive failures since the last ok: the durable "something
+        // failed" glance — ✗ in the favicon is 16px in the strip, but the
+        // pill itself must not read 'AI idle' like nothing happened.
+        if (failed) failedSinceOk.set(tabId, (failedSinceOk.get(tabId) || 0) + 1);
+        else failedSinceOk.delete(tabId);
         setFavicon(tabId, failed ? '✗' : '✅');
+        if (!(inflight.get(tabId) > 0)) stopTick(tabId); // a still-running sibling keeps the ticker going
         // Pill back to neutral after a beat — the in-flight label needs
         // ~800ms to be glanceable, and the tooltip ring keeps the history.
+        // A note holds ~4s instead: its label IS the message, and the note
+        // command itself runs in ~100ms — the standard beat would flash it
+        // too briefly to ever be seen (found live in v1.5.0 testing).
         // The seq guard skips the reset if a newer command already started;
         // the inflight guard skips it if a sibling command is STILL running
         // (its own reset will fire when it finishes).
@@ -115,9 +150,9 @@ function connect() {
           if ((pillSeq.get(tabId) || 0) !== seq) return;
           if ((inflight.get(tabId) || 0) > 0) return;
           chrome.scripting
-            .executeScript({ target: { tabId }, func: pillInject, args: ['AI idle', tabActivity.get(tabId) || [], null, false] })
+            .executeScript({ target: { tabId }, func: pillInject, args: [idleLabel(tabId), tabActivity.get(tabId) || [], null, false] })
             .catch(() => {});
-        }, 800);
+        }, msg.type === 'note' ? 4000 : 800);
       }
     }
   };
@@ -125,11 +160,24 @@ function connect() {
     if (ws !== s) return; // a newer socket already took over — don't double-reconnect
     ws = null;
     if (s._seatTaken) return; // lost the seat race — the 24s keepalive alarm re-probes
+    // Say so in the pill: 'AI idle' during a bridge outage reads as "done,
+    // waiting" — the human can't tell a dead server from a resting agent.
+    // Injected once per outage (wasOffline), restored by s.onopen.
+    if (!wasOffline) {
+      wasOffline = true;
+      for (const tabId of drivenTabs) {
+        chrome.scripting
+          .executeScript({ target: { tabId }, func: pillInject, args: ['⚠ bridge offline — reconnecting…', tabActivity.get(tabId) || [], null, false] })
+          .catch(() => {});
+      }
+    }
     // Reconnect immediately; the alarm is only a backstop for a killed SW.
     setTimeout(connect, 500);
   };
 }
 
+// True while the WS is down — onopen clears it and restores the idle label.
+let wasOffline = false;
 // Wait for the profile id before the first dial — otherwise this connect
 // races the storage read and the seat is held with extId=null until the next
 // SW cycle (days, on a healthy server). Reconnects run after idReady settled.
@@ -306,7 +354,10 @@ function pillInject(label, lines, target, active) {
   pill.dataset.log = log;
   pill.title = log + '\n(click for history · ✕ hides)';
   const p = document.getElementById('bridge-log');
-  if (p) p.textContent = log || '(no activity yet)'; // panel open → live-update it
+  if (p) {
+    p.textContent = log || '(no activity yet)'; // panel open → live-update it
+    p.scrollTop = p.scrollHeight; // newest last — an opened panel shows what just happened, not the oldest lines
+  }
 }
 
 // Per-tab command counter: the idle-reset in onmessage is delayed ~800ms so a
@@ -317,6 +368,40 @@ const pillSeq = new Map();
 // command started" from "a sibling started during this one and is still
 // running" — both bump seq — so the idle-reset also checks this.
 const inflight = new Map();
+// tabId -> consecutive failures since the last ok (cleared by a success,
+// release, or tab close). Drives the failure-aware idle label.
+const failedSinceOk = new Map();
+const idleLabel = (tabId) => {
+  const n = failedSinceOk.get(tabId) || 0;
+  return n ? `AI idle — ⚠ ${n} failed since last ok` : 'AI idle';
+};
+// tabId -> interval re-labeling the pill with elapsed seconds while a command
+// runs. One 5s tick per tab (not per command): a 30s net capture stops
+// reading as "stuck" — the human sees honest progress without the DOM being
+// touched at animation frequency. Stopped the moment inflight hits 0.
+const pillTick = new Map();
+function startTick(tabId, msg, t0) {
+  if (pillTick.has(tabId)) return; // a sibling command is already ticking
+  const { ing } = activityPhrases(msg);
+  pillTick.set(
+    tabId,
+    setInterval(() => {
+      if (!inflight.get(tabId)) return stopTick(tabId);
+      chrome.scripting
+        .executeScript({
+          target: { tabId },
+          func: pillInject,
+          args: [`${ing}… ${Math.round((Date.now() - t0) / 1000)}s`, tabActivity.get(tabId) || [], msg.target || null, true],
+          world: worldCache.get(tabId) || 'MAIN',
+        })
+        .catch(() => {});
+    }, 5000)
+  );
+}
+function stopTick(tabId) {
+  clearInterval(pillTick.get(tabId));
+  pillTick.delete(tabId);
+}
 
 function pushActivity(tabId, line) {
   const lines = tabActivity.get(tabId) || [];
@@ -333,6 +418,7 @@ function recordActivity(tabId, msg) {
   pillSeq.set(tabId, (pillSeq.get(tabId) || 0) + 1);
   msg._pill = true; // onmessage's finally decrements inflight only for commands that recorded
   inflight.set(tabId, (inflight.get(tabId) || 0) + 1);
+  startTick(tabId, msg, Date.now());
   chrome.scripting
     .executeScript({
       target: { tabId },
@@ -484,6 +570,8 @@ async function releaseTab(tabId) {
   tabActivity.delete(tabId); // else a re-mark resurrects the stale history ring
   pillSeq.delete(tabId);
   inflight.delete(tabId);
+  failedSinceOk.delete(tabId);
+  stopTick(tabId);
   await setFavicon(tabId, null); // restore the site's own favicon
   persist();
   try {
@@ -959,11 +1047,26 @@ const CURSOR_SRC = `
     c.style.cssText =
       'position:fixed;z-index:2147483647;pointer-events:none;left:' + x + 'px;top:' + y +
       'px;animation:bridge-cursor-fade .3s .9s forwards';
-    c.innerHTML =
-      (ripple
-        ? '<div style="position:absolute;left:-14px;top:-14px;width:28px;height:28px;border:3px solid rgba(168,85,247,.9);border-radius:50%;animation:bridge-ripple .6s ease-out forwards"></div>'
-        : '') +
-      '<svg width="20" height="20" viewBox="0 0 20 20" style="filter:drop-shadow(0 1px 1px rgba(0,0,0,.4))"><path d="M3 1v16l3.9-3.7 2.3 5.5 2.8-1.2-2.4-5.4 5.6-.6z" fill="#a855f7" stroke="#fff" stroke-width="1.3"/></svg>';
+    // ponytail: DOM-built nodes, not innerHTML — Trusted-Types CSPs (Gmail)
+    // make innerHTML assignments throw and kill the whole click.
+    if (ripple) {
+      const r = document.createElement('div');
+      r.style.cssText =
+        'position:absolute;left:-14px;top:-14px;width:28px;height:28px;border:3px solid rgba(168,85,247,.9);border-radius:50%;animation:bridge-ripple .6s ease-out forwards';
+      c.appendChild(r);
+    }
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('width', '20');
+    svg.setAttribute('height', '20');
+    svg.setAttribute('viewBox', '0 0 20 20');
+    svg.style.filter = 'drop-shadow(0 1px 1px rgba(0,0,0,.4))';
+    const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    p.setAttribute('d', 'M3 1v16l3.9-3.7 2.3 5.5 2.8-1.2-2.4-5.4 5.6-.6z');
+    p.setAttribute('fill', '#a855f7');
+    p.setAttribute('stroke', '#fff');
+    p.setAttribute('stroke-width', '1.3');
+    svg.appendChild(p);
+    c.appendChild(svg);
     (document.body || document.documentElement).appendChild(c);
     setTimeout(() => c.remove(), 1300);
   };

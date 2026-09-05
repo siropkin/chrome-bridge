@@ -32,7 +32,7 @@ function assert(cond, name, detail) {
 }
 
 // --- tiny WS client (client frames must be masked) ---------------------------
-function wsClient(port, id = 'alpha-test') {
+function wsClient(port, id = 'alpha-test', name) {
   return new Promise((resolve, reject) => {
     const key = crypto.randomBytes(16).toString('base64');
     const socket = net.connect(port, '127.0.0.1');
@@ -64,7 +64,7 @@ function wsClient(port, id = 'alpha-test') {
       // ?v=/?id= mirror the real extension's handshake (cli health compares
       // versions against the repo manifest; --profile prefix-matches the id).
       socket.write(
-        `GET /ws?v=${MANIFEST_V}&id=${id} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`
+        `GET /ws?v=${MANIFEST_V}&id=${id}${name ? `&name=${name}` : ''} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`
       );
     });
     socket.on('data', (chunk) => {
@@ -405,6 +405,17 @@ try {
     // A stray unemulate (nothing emulated) must no-op cleanly — the CDP clear
     // at an unattached debugger logged a swlogs FAILED while the caller got ok.
     assert(bg.includes('if (!emulatedTabs.has(tabId)) return;'), 'ext: stray unemulate no-ops instead of logging a FAILED clear');
+    // Pill surface tripwires — the states a human glances at. Same style as the
+    // ACT_VERBS drift checks: found live in v1.5.0 browser testing.
+    assert(
+      bg.includes('failedSinceOk') && bg.includes('idleLabel') && bg.includes('failed since last ok'),
+      'pill: idle label is failure-aware (consecutive-failure count, not bare AI idle)'
+    );
+    assert(bg.includes('pillTick') && bg.includes('startTick') && bg.includes('stopTick'), 'pill: elapsed-seconds ticker runs while a command is in flight');
+    assert(bg.includes('scrollTop = p.scrollHeight'), 'pill: open history panel auto-scrolls to the newest lines');
+    assert(bg.includes('⚠ bridge offline — reconnecting…'), 'pill: bridge outage shows as offline, not AI idle');
+    assert(bg.includes("msg.type === 'note' ? 4000 : 800"), 'pill: a note holds its label ~4s — a ~100ms note command must not flash unseen');
+    assert(bg.includes("replace(/^(Error:\\s*)+/, '')"), 'pill history: doubled Error: nesting deduped (the feed fix 756df17, third surface)');
     // Tab-match confusion: a lookalike URL path (evil.com/github.com matches
     // 'github.com') must not silently win — findTab warns on ambiguity (the
     // warning rides the result via onmessage), prefers driven tabs over MRU,
@@ -605,6 +616,27 @@ try {
     // the activity feed names who acted
     const feed = (await fetch(`http://127.0.0.1:${PORT}/log`).then((r) => r.json())).lines;
     assert(feed.some((a) => a.line.includes('snap sample.org @beta')), 'feed: routed command carries the profile tag', JSON.stringify(feed.slice(-3)));
+
+    // --- human-facing profile names -------------------------------------------
+    // The extension derives a stable word from its profile id (?name= in the WS
+    // handshake); the feed and /health show it — a uuid prefix (@4371) means
+    // nothing to the human reading the watch feed.
+    const ext4 = await wsClient(PORT, 'named-test', 'oak-test');
+    ext4.onMessage((msg) => {
+      if (msg.type === 'ping') return ext4.send({ id: msg.id, ok: true, result: 'pong' });
+      if (msg.type === 'probe') return ext4.send({ id: msg.id, ok: true, result: [{ id: 11, url: 'https://named.example/', lastAccessed: 1 }] });
+      return ext4.send({ id: msg.id, ok: true, result: msg });
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    const hvNamed = JSON.parse((await cli('health')).stdout);
+    const namedSeat = hvNamed.profiles?.find((p) => p.id === 'named-test');
+    assert(namedSeat?.name === 'oak-test', 'health carries the profile name from the WS handshake', JSON.stringify(hvNamed.profiles));
+    const namedSnap = await cli('snap', 'named.example');
+    assert(namedSnap.status === 0, 'named-profile seat routes a unique match', namedSnap.stdout + namedSnap.stderr);
+    const feedNamed = (await fetch(`http://127.0.0.1:${PORT}/log`).then((r) => r.json())).lines;
+    assert(feedNamed.some((a) => a.line.includes('snap named.example @oak-test')), 'feed: human-readable profile name replaces the uuid prefix', JSON.stringify(feedNamed.slice(-3)));
+    ext4.socket.destroy();
+    await new Promise((r) => setTimeout(r, 100));
 
     // an extension without probe support (pre-1.5.0) must fail routing loudly —
     // treating its ok:false probe reply as a dead seat silently bypassed the

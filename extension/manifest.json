@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Chrome Bridge",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "minimum_chrome_version": "117",
   "description": "Lets a local agent drive this browser via the chrome-bridge server (127.0.0.1 only). Load while testing; unload when done.",
   "icons": { "128": "icons/icon128.png", "48": "icons/icon48.png", "32": "icons/icon32.png", "16": "icons/icon16.png" },

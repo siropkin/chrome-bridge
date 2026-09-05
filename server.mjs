@@ -36,7 +36,7 @@ try {
 //                 (never silently act in the personal browser when the agent
 //                 meant the work one), msg.profile overrides with an explicit
 //                 id (prefix match — first chars of the uuid are enough).
-const seats = new Map(); // profileId -> { socket, v, pending: Map, nextId }
+const seats = new Map(); // profileId -> { socket, v, name, pending: Map, nextId }
 
 function dropSeatPending(seat, error) {
   for (const resolve of seat.pending.values()) resolve({ ok: false, error });
@@ -72,6 +72,10 @@ function ask(seat, msg, timeoutMs = CMD_TIMEOUT_MS) {
 }
 
 const idShort = (pid) => String(pid).slice(0, 4);
+// Human-readable seat tag ('birch'), falling back to the id prefix: the watch
+// feed is for humans, and a uuid fragment means nothing to one. The word is
+// derived from the profile id by the extension — stable across restarts.
+const seatTag = (pid) => seats.get(pid)?.name || idShort(pid);
 function seatByProfile(want) {
   const pids = [...seats.keys()].filter((p) => p.startsWith(want));
   if (pids.length > 1) throw new Error(`--profile '${want}' matches ${pids.length} profiles — a few more characters disambiguate`);
@@ -92,10 +96,10 @@ async function route(msg) {
       const reply = await ask(seat, msg).catch(() => null);
       const tabs = reply?.ok ? reply.result : null;
       if (!tabs) {
-        rows.push({ profile: idShort(pid), error: 'unresponsive' });
+        rows.push({ profile: seatTag(pid), error: 'unresponsive' });
         continue;
       }
-      for (const t of tabs) rows.push({ ...t, profile: idShort(pid) });
+      for (const t of tabs) rows.push({ ...t, profile: seatTag(pid) });
     }
     return { ok: true, result: rows };
   }
@@ -127,7 +131,7 @@ async function route(msg) {
     if (stale.length)
       throw new Error(
         `⚠ ${stale.length} profile(s) can't be probed — an extension without multi-profile support is loaded (${stale
-          .map((p) => idShort(p.pid))
+          .map((p) => seatTag(p.pid))
           .join(', ')}): reload it at chrome://extensions, or name a profile: --profile <id> (see: cli profiles)`
       );
     if (!live.length) throw new Error('no profile answered — extensions disconnected?');
@@ -135,7 +139,7 @@ async function route(msg) {
       throw new Error(`no tab matching "${msg.urlMatch}" in any connected profile — run tabs to find it`);
     if (matching.length > 1)
       throw new Error(
-        `⚠ "${msg.urlMatch}" matches tabs in ${matching.length} profiles (${matching.map((p) => idShort(p.pid)).join(', ')}) — name one: --profile <id> (see: cli profiles)`
+        `⚠ "${msg.urlMatch}" matches tabs in ${matching.length} profiles (${matching.map((p) => seatTag(p.pid)).join(', ')}) — name one: --profile <id> (see: cli profiles)`
       );
     seat = seats.get(matching[0].pid);
     if (!seat) throw new Error('the matching profile disconnected during routing — retry the command');
@@ -160,7 +164,7 @@ const bootId = Date.now();
 function summarize(msg) {
   const s = [msg.type];
   if (msg.urlMatch) s.push(msg.urlMatch);
-  if (msg.profile) s.push('@' + idShort(msg.profile)); // multi-profile: who acted
+  if (msg.profile) s.push('@' + seatTag(msg.profile)); // multi-profile: who acted
   // value stays out on purpose: fill values can be secrets, and this line is
   // persisted to server.log.
   const extra =
@@ -264,7 +268,7 @@ const server = http.createServer((req, res) => {
       JSON.stringify({
         ok: true,
         extension: !![...seats.values()].find((s) => s.socket && !s.socket.destroyed),
-        profiles: [...seats.entries()].map(([pid, s]) => ({ id: pid, v: s.v })),
+        profiles: [...seats.entries()].map(([pid, s]) => ({ id: pid, v: s.v, ...(s.name ? { name: s.name } : {}) })),
       })
     );
     return;
@@ -338,6 +342,9 @@ server.on('upgrade', (req, socket) => {
   // trap after git pull) and lists every connected profile.
   const u = new URL(req.url, 'http://x');
   const v = u.searchParams.get('v');
+  // Human-readable profile word (see seatTag) — display only; the id stays
+  // the identity everywhere.
+  const name = u.searchParams.get('name');
   // All id-less clients (old extensions, raw test sockets) share one 'anon'
   // seat: a second id-less connection is the same legacy browser reconnecting
   // (SW race) — it gets the seat-taken bounce, not a second seat posing as a
@@ -364,6 +371,7 @@ server.on('upgrade', (req, socket) => {
   const seat = {
     pid: id,
     v,
+    name,
     socket,
     nextId: 1,
     pending: new Map(),
