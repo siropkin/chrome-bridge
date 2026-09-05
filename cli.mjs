@@ -20,14 +20,14 @@ const print = (v) => console.log(typeof v === 'string' ? v : JSON.stringify(v));
 // would misreport "server not running" while the real cause is the runtime.
 if (typeof fetch !== 'function') fail('Node >= 18 required — you have ' + process.version);
 
-// --profile <id>: multi-profile routing. Extracted once at argv level (works
-// before or after the command word) and rides on every command; a prefix of
-// the profile id is enough (see: cli profiles).
+// --profile: multi-profile routing. Extracted once at argv level (works
+// before or after the command word) and rides on every command; an id prefix
+// or the exact profile name is enough (see: cli profiles).
 let PROFILE = null;
 {
   const i = process.argv.indexOf('--profile');
   if (i >= 0) {
-    if (!process.argv[i + 1] || process.argv[i + 1].startsWith('--')) fail('--profile needs an id (see: cli profiles)');
+    if (!process.argv[i + 1] || process.argv[i + 1].startsWith('--')) fail('--profile needs an id or name (see: cli profiles)');
     PROFILE = process.argv[i + 1];
     process.argv.splice(i, 2);
   }
@@ -151,7 +151,7 @@ Refs (@eN) come from snap; they survive re-snaps but expire on navigation.
 
 Multiple Chrome profiles can be connected at once (one seat each). A <match>
 routes to the only profile that has a matching tab; a match in SEVERAL profiles
-is refused — name one with --profile <id> (a prefix is enough; see: profiles).`;
+is refused — name one with --profile <id or name> (an id prefix is enough; see: profiles).`;
 
 async function run(cmdName, args) {
   switch (cmdName) {

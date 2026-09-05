@@ -21,7 +21,7 @@ node <repo>/cli.mjs <command> …
 Several Chrome profiles can have the extension loaded at once — each keeps its own connection, and `tabs` merges them (rows carry a `profile` tag). One command always routes to exactly ONE profile:
 
 - a `<match>` that exists in only one connected profile routes there automatically;
-- a `<match>` present in SEVERAL profiles is **refused** — the error names the profiles; re-run with `--profile <id>` (an id prefix is enough; `cli profiles` lists ids);
+- a `<match>` present in SEVERAL profiles is **refused** — the error names the profiles; re-run with `--profile <id or name>` (an id prefix or the exact profile name works; `cli profiles` lists both);
 - commands without a `<match>` (`open`, `swlogs`) need `--profile` when several profiles are connected.
 
 Parallel work across profiles is fine: two agent sessions can drive two profiles at the same time. Route explicitly when it matters — a wrong-profile action (clicking in the personal browser when you meant the work one) is the failure the refusal rule exists to prevent. A profile running an extension older than multi-profile support makes auto-routing refuse ("can't be probed") — pass `--profile` or have the user reload that extension.
@@ -45,7 +45,7 @@ batch                             read commands from stdin, one per line ('#' = 
                                   quotes honored) — one process for N commands; stops on first error
 tabs [match]                      list tabs (compact JSON); [match] filters by URL/title substring;
                                   several profiles connected → merged, rows carry a profile tag
-profiles                          list connected Chrome profiles — id (for --profile) + version
+profiles                          list connected Chrome profiles — id and name (for --profile) + version
 open <url>                        open + mark a new tab (waits for load, 8s cap)
 nav <match> <url> [--diff]        navigate matching tab (waits for load, 8s cap)
 close <match>                     close matching tab
@@ -184,3 +184,13 @@ Follow [design-eye.md](design-eye.md): measure numbers on both sides, crop to th
 - Driven tabs show a 🟣 pill in the bottom-right corner (click it for the action history; ✕ hides it until the next navigation) and join a 🟣 tab group; that's the bridge working, not a bug in the page. The pill narrates what you're doing right now (`🟣 taking screenshot…`, `🟣 waiting for .foo…`, elapsed seconds while a command runs, `🟣 AI idle` when nothing's running — with `⚠ N failed since last ok` after failures, `⚠ bridge offline` while the server is unreachable) and its history panel lists the last actions scrolled to the newest; while a command runs, a purple viewport frame lights up, the favicon shows ⏳ (✅ when it lands, ✗ when it fails, kept until the next command), and clicks/hovers flash a purple pointer where the agent acted. `release` restores all of it.
 - `health` proves a WebSocket seat, not the extension — any local process can hold the seat and fabricate results. If results look synthetic or commands silently misbehave while health says `extension:true`, tell the user to reload the extension and re-check.
 - The port is 9333 everywhere. `BRIDGE_PORT` moves the server and CLI but the extension always dials 9333 — if you must change the port, edit `extension/background.js` too.
+
+## Developing (for agent sessions that change this repo)
+
+- Run `node test/selftest.mjs` before pushing — hermetic (spawns its own server on a test port, needs no Chrome). To make it a hard gate, enable the pre-push hook once per clone: `git config core.hooksPath .githooks`.
+- The selftest is also the drift gate: it parses `extension/background.js` with `node --check` (the fake extension never executes it, so nothing else would catch a syntax error), asserts package.json and extension/manifest.json versions match, and compares this file's Commands block against the cli USAGE.
+- Docs are load-bearing — agents read them as the operating manual, and doc drift is a real bug class here (the `--profile` name shipped without a single doc update). A command or behavior change ships with ALL doc updates in the same commit: README.md, README.zh-CN.md, AGENTS.md, `.claude/skills/chrome-bridge/SKILL.md` — plus any error string that teaches usage.
+- Extension change → bump the version in BOTH `extension/manifest.json` AND `package.json` (same value): `cli health` uses it to warn agents about a stale loaded extension, and same-version code drift is invisible to it. Then tag: `git tag -a vX.Y.Z -m "one-line summary"` — annotated, because the tag message is the release record (there is no CHANGELOG; the log is it). Never move a pushed tag.
+- Commits: `area: what — why`; the body carries what it risked and where it was found live.
+- Style: 2-space indent, single quotes, semicolons; long lines are fine — enforced by `.editorconfig` and habit, not a linter (there is none, on purpose: no config-free formatter is idempotent on this codebase).
+- Manual fixture: `test/upload.html` (visible + hidden file inputs) for hand-checking `upload` against the real extension — the selftest's fake can't drive CDP file inputs.

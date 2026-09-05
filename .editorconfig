@@ -1,0 +1,13 @@
+# Declarative only — locks in the existing house style (measured: 0 tabs,
+# 0 CRLF, 0 trailing whitespace), no tool to install. No linter/formatter on
+# purpose: no config-free tool is idempotent on this codebase (prettier ≈300
+# lines even tuned; biome 53 errors), and every shipped bug was logic a
+# linter can't see — the selftest is the gate.
+root = true
+
+[*]
+charset = utf-8
+indent_style = space
+indent_size = 2
+insert_final_newline = true
+trim_trailing_whitespace = true

@@ -74,13 +74,13 @@ MCP 桥(mcp-chrome、BrowserMCP)要求客户端支持 MCP,还需要配置长期�
 node cli.mjs stop && node cli.mjs start
 ```
 
-**端口**:桥接器固定使用 127.0.0.1:9333。`BRIDGE_PORT` 可以移动服务器、CLI 和安装器——但扩展始终拨打 9333;如果必须换端口,需要同时修改 `extension/background.js`。
+**端口**:桥接器固定使用 127.0.0.1:9333。`BRIDGE_PORT` 可以移动服务器和 CLI(安装器强制要求 9333)——但扩展始终拨打 9333;如果必须换端口,需要同时修改 `extension/background.js`。
 
 **Windows**:`install.sh` 是 bash(macOS/Linux,或 Git Bash)。桥接器本身是纯 Node——任何平台都能在终端里运行 `node server.mjs`,所有 `cli.mjs` 命令都是跨平台的。
 
 被桥接驱动的标签页会在右下角显示 🟣 小标签(点击查看完整操作历史;✕ 可隐藏,下次导航前不再显示)并加入 🟣 标签页分组,你随时知道哪些页面正在被自动化。小标签实时播报智能体正在做什么(`🟣 taking screenshot…`、`🟣 reading page…`,长命令会显示已耗时秒数),历史面板列出最近的操作并自动滚动到最新一行;空闲时显示 `🟣 AI idle`(连续失败后显示 `⚠ N failed since last ok`,桥接服务器不可达时显示 `⚠ bridge offline`);命令执行期间,紫色边框亮起,标签页 favicon 显示 ⏳(完成 ✅,失败 ✗,✗ 会保留到下一条命令),点击/悬停处会闪现紫色指针标记智能体的操作位置。`release`(或 `close`)即可全部还原。
 
-**多个 Chrome 配置**:扩展可以同时加载在多个配置中——每个配置保持独立连接,智能体可以并行驱动它们。命令会自动路由到唯一拥有匹配标签页的配置;当多个配置都有匹配时**拒绝执行**,要求智能体用 `--profile <id>` 指明(`cli profiles` 列出 id)——智能体绝不会在你以为操作工作浏览器时悄悄点进个人浏览器。每个配置还有一个稳定的短名字(`birch`、`oak` 等),显示在 `watch` 输出和标签里——对正在观看的人类来说,uuid 前缀毫无意义。
+**多个 Chrome 配置**:扩展可以同时加载在多个配置中——每个配置保持独立连接,智能体可以并行驱动它们。命令会自动路由到唯一拥有匹配标签页的配置;当多个配置都有匹配时**拒绝执行**,要求智能体用 `--profile <id 或 name>` 指明(`cli profiles` 同时列出两者)——智能体绝不会在你以为操作工作浏览器时悄悄点进个人浏览器。每个配置还有一个稳定的短名字(`birch`、`oak` 等),`--profile` 直接接受该名字,显示在 `watch` 输出和标签里——对正在观看的人类来说,uuid 前缀毫无意义。
 
 ## 支持任何 AI 智能体——不限于 Claude
 
@@ -114,7 +114,7 @@ HTTP API 只有一个命令端点:`POST /cmd`,Body 如 `{"type": "snap", "urlMat
 | 命令 | 作用 |
 |---|---|
 | `tabs` | 列出标签页(id、url、标题、是否被驱动);多个 Chrome 配置同时连接时合并输出,带 `profile` 标记 |
-| `profiles` | 列出已连接的 Chrome 配置——id(用于 `--profile`)+ 版本 |
+| `profiles` | 列出已连接的 Chrome 配置——id 和 name(用于 `--profile`)+ 版本 |
 | `open <url>` · `nav <match> <url> [--diff]` · `close <match>` | 标签页生命周期——`open`/`nav` 等待页面加载完成(8 秒上限) |
 | `snap <match> [css] [--diff] [--href] [--find "nl"]` | 无障碍树快照,带 `@eN` 引用——**便宜,优先于截图使用**。可限定子树、与上一次快照对比,`--href` 输出全部链接 URL。`--find "取消按钮"` 由本地 Gemini Nano 挑出匹配行(~2 秒,无云端 token)——是待验证的候选清单,不是绝对正确。`*` 前缀标记上次快照后新增的元素 |
 | `click <match> <@ref\|css> [--dbl] [--diff]` | 点击(自动滚动到可见位置,完整 pointer/mouse 事件序列,遮挡检测);`--dbl` 双击 |
@@ -174,9 +174,9 @@ node cli.mjs unemulate news.ycombinator.com                # 恢复正常
 
 ## 开发
 
-`node test/selftest.mjs`——用模拟扩展做端到端检查(不需要 Chrome);每次 push 由 GitHub Actions 自动运行(Node 18/20/22)。
+`node test/selftest.mjs`——用模拟扩展做端到端检查(不需要 Chrome);每次 push 由 GitHub Actions 自动运行(Node 18/20/22)。如何提交变更(自测门禁、版本号、标签、风格)见 [AGENTS.md](AGENTS.md) 的 *Developing* 一节。
 
-chrome-bridge **不在 npm 上**——唯一的安装途径就是本仓库(`npm install chrome-bridge` 装到的是无关的同名包)。要固定智能体运行的代码,请签出标签:`git checkout v1.4.1`。
+chrome-bridge **不在 npm 上**——唯一的安装途径就是本仓库(`npm install chrome-bridge` 装到的是无关的同名包)。要固定智能体运行的代码,请签出标签——例如 `git checkout v1.4.1`;`git tag -l` 列出最新标签。
 
 ## 许可证
 

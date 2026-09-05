@@ -12,6 +12,7 @@ const env = { ...process.env, BRIDGE_PORT: String(PORT) };
 // The fake extension's handshake version mirrors the repo manifest — cli
 // health compares the two, and a hardcode here would trip its warning.
 const MANIFEST_V = JSON.parse(fs.readFileSync(`${ROOT}extension/manifest.json`, 'utf8')).version;
+const PKG_V = JSON.parse(fs.readFileSync(`${ROOT}package.json`, 'utf8')).version;
 
 let passed = 0;
 let server;
@@ -135,6 +136,11 @@ await Promise.race([
 ]);
 
 try {
+  // The version lives in TWO files (package.json, extension/manifest.json) and
+  // nothing but this check compares them — the v1.6.0 eager-clear bug shipped
+  // precisely because same-version drift was invisible everywhere else.
+  assert(PKG_V === MANIFEST_V, 'drift: package.json version matches extension/manifest.json', `package.json ${PKG_V} vs manifest ${MANIFEST_V}`);
+
   // health before extension connects
   let h = await cli('health');
   assert(h.status === 0 && JSON.parse(h.stdout).extension === false, 'health: extension false before connect');
@@ -472,6 +478,28 @@ try {
     // watch's boot-reset: actSeq resets on restart — without this check every
     // new line is filtered out after a server restart.
     assert(cliSrc.includes('res.boot !== boot'), 'cli: watch resets its cursor on server restart');
+
+    // The service worker is never executed here (the fake extension plays it)
+    // — a syntax error in it would otherwise ship green, as would one in
+    // install.sh (the first file a new user runs; nothing else even bash -ns it).
+    assert(spawnSync('node', ['--check', `${ROOT}extension/background.js`]).status === 0, 'ext: background.js parses (node --check)');
+    assert(spawnSync('bash', ['-n', `${ROOT}install.sh`]).status === 0, 'install.sh parses (bash -n)');
+
+    // AGENTS.md's fenced Commands block is the agent-facing command list —
+    // doc drift is a real bug class here (the --profile name landed without
+    // touching any doc), so it must name exactly the cli USAGE commands.
+    const agentsMd = fs.readFileSync(`${ROOT}AGENTS.md`, 'utf8');
+    const cmdSec = agentsMd.slice(agentsMd.indexOf('## Commands'));
+    const fenceStart = cmdSec.indexOf('```');
+    const cmdFence = cmdSec.slice(fenceStart + 3, cmdSec.indexOf('```', fenceStart + 3));
+    const docCmds = new Set(
+      [...cmdFence.matchAll(/^(\S+)/gm)].flatMap((m) => m[1].split('|')).filter((c) => /^[a-z]+$/.test(c))
+    );
+    assert(
+      [...usageCmds].sort().join() === [...docCmds].sort().join(),
+      'drift: AGENTS.md Commands block vs cli USAGE commands',
+      `usage: ${[...usageCmds].sort()} docs: ${[...docCmds].sort()}`
+    );
   }
 
   // activity feed (watch): every relayed command lands in /log; since= yields a delta
@@ -663,6 +691,20 @@ try {
     ext3.socket.destroy();
   }
 
+  // watch runs for real against the live server — until now it was the only
+  // command whose loop no check executed (a silent no-output regression kept
+  // 122 checks green). Header + a recorded feed line must reach stdout, and
+  // SIGTERM must end it.
+  {
+    const w = spawn('node', [`${ROOT}/cli.mjs`, 'watch'], { env });
+    let out = '';
+    w.stdout.on('data', (c) => (out += c));
+    await new Promise((r) => setTimeout(r, 1200));
+    w.kill('SIGTERM');
+    await new Promise((r) => w.once('close', r));
+    assert(out.includes('— watching (Ctrl-C to exit) —') && out.includes('example.com'), 'cli watch prints the feed header + recorded lines', out.slice(0, 300));
+  }
+
   // extension disconnect → health flips (both fake profiles gone; ext2 leaves
   // via a proper WS close frame — the 0x8 path must stay covered, it once
   // crashed the server)
@@ -688,6 +730,8 @@ try {
     'cli tabs fails cleanly with the server down, advises cli start',
     tDown.stdout + tDown.stderr
   );
+  const wDown = await cli('watch');
+  assert(wDown.status !== 0 && wDown.stderr.includes('not running'), 'cli watch fails cleanly with the server down', wDown.stdout + wDown.stderr);
   const start = await cli('start');
   assert(start.status === 0 && start.stdout.includes('started'), 'cli start brings the server up', start.stdout + start.stderr);
   const hUp = await cli('health');

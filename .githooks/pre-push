@@ -1,0 +1,5 @@
+#!/bin/sh
+# The only pre-landing gate: CI runs on push (after landing), and agents
+# commit straight to master. Enable once per clone:
+#   git config core.hooksPath .githooks
+exec node test/selftest.mjs

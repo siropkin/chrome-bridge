@@ -3,6 +3,7 @@
   "version": "1.6.1",
   "description": "Let AI agents drive your real Chrome browser — logged-in tabs, no relaunch, zero dependencies",
   "type": "module",
+  "private": true,
   "scripts": {
     "start": "node server.mjs",
     "test": "node test/selftest.mjs"

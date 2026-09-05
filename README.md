@@ -74,13 +74,13 @@ MCP bridges (mcp-chrome, BrowserMCP) need an MCP-capable client and a configured
 node cli.mjs stop && node cli.mjs start
 ```
 
-**Port**: the bridge lives on 127.0.0.1:9333 everywhere. `BRIDGE_PORT` moves the server, CLI, and installer — but the extension always dials 9333; if you must change the port, edit `extension/background.js` too.
+**Port**: the bridge lives on 127.0.0.1:9333 everywhere. `BRIDGE_PORT` moves the server and CLI (the installer insists on 9333) — but the extension always dials 9333; if you must change the port, edit `extension/background.js` too.
 
 **Windows**: `install.sh` is bash (macOS/Linux, or Git Bash). The bridge itself is plain Node — `node server.mjs` in a terminal works everywhere, and every `cli.mjs` command is cross-platform.
 
 Tabs the bridge drives get a 🟣 pill in the bottom-right corner (click it for the full action history; ✕ hides it until the next navigation) and join a 🟣 tab group so you always know what's being automated. The pill narrates what the agent is doing right now (`🟣 taking screenshot…`, `🟣 reading page…`, with elapsed seconds while a command runs) and its history panel lists the last actions, scrolled to the newest; when nothing's running it reads `🟣 AI idle` — plus `⚠ N failed since last ok` until a command lands again, and `⚠ bridge offline` while the server is unreachable. While a command runs, a purple viewport frame lights up, the tab's favicon shows ⏳ (✅ when it lands, ✗ when it fails — the ✗ stays until the next command), and clicks/hovers flash a purple pointer where the agent acts. `release` (or `close`) gives them back.
 
-**Multiple Chrome profiles**: the extension can be loaded in several profiles at once — each keeps its own connection, and agents can drive them in parallel. A command routes to the only profile with a matching tab; a match in several profiles is **refused** until the agent names one with `--profile <id>` (`cli profiles` lists ids) — the agent never silently acts in your personal browser when it meant the work one. Each profile also gets a stable short name (`birch`, `oak`, …) shown in `watch` lines and profile tags — a uuid prefix means nothing to the human watching. (The refusal is a safety net for honest CLI use, not a security boundary: any local process can set `profile` in a `/cmd` body and route anywhere — the same local trust model as before.)
+**Multiple Chrome profiles**: the extension can be loaded in several profiles at once — each keeps its own connection, and agents can drive them in parallel. A command routes to the only profile with a matching tab; a match in several profiles is **refused** until the agent names one with `--profile <id or name>` (`cli profiles` lists both) — the agent never silently acts in your personal browser when it meant the work one. Each profile also gets a stable short name (`birch`, `oak`, …) accepted by `--profile` and shown in `watch` lines and profile tags — a uuid prefix means nothing to the human watching. (The refusal is a safety net for honest CLI use, not a security boundary: any local process can set `profile` in a `/cmd` body and route anywhere — the same local trust model as before.)
 
 ## Works with any AI agent — not just Claude
 
@@ -114,7 +114,7 @@ You're handing an agent your logged-in browser — the design assumes you want t
 | Command | What it does |
 |---|---|
 | `tabs` | List tabs (id, url, title, driven flag); with several Chrome profiles connected, merged with a `profile` tag |
-| `profiles` | List connected Chrome profiles — id (for `--profile`) + version |
+| `profiles` | List connected Chrome profiles — id and name (for `--profile`) + version |
 | `open <url>` · `nav <match> <url> [--diff]` · `close <match>` | Tab lifecycle — `open`/`nav` wait for the page to load (8s cap) |
 | `snap <match> [css] [--diff] [--href] [--find "nl"]` | Accessibility-tree snapshot with `@eN` refs — **cheap; use it before screenshots**. Scope to a subtree, diff against the last snap, or include all link URLs with `--href`. `--find "the cancel button"` has local Gemini Nano (~2s, no cloud tokens) pick the matching lines — a shortlist to verify, not ground truth. Lines prefixed `*` are elements new since the previous snap |
 | `click <match> <@ref\|css> [--dbl] [--diff]` | Click (scrolls into view, full pointer/mouse event sequence, overlay-coverage check); `--dbl` double-clicks |
@@ -125,7 +125,7 @@ You're handing an agent your logged-in browser — the design assumes you want t
 | `scroll <match> <up\|down\|top\|bottom\|@ref\|css> [--diff]` | Scroll — finds the real scroller on app-shell pages (Linear, Gmail) that scroll an inner panel, not the window |
 | `upload <match> <@ref\|css> <file...> [--diff]` | Set a file input's files via CDP — works on hidden inputs; target the input or an element wrapping it |
 | `ask <match> <question>` | *(experimental)* Local Gemini Nano answers from page text — no cloud tokens, pre-filter quality |
-| `wait <match> [css\|--text t] [--timeout ms]` | Wait for element or visible text — MutationObserver-driven, resolves as soon as the page changes |
+| `wait <match> [css\|--text t] [--timeout ms]` | Wait for element or visible text — MutationObserver-driven, resolves as soon as the page changes (timeout default 10s, max 60s) |
 | `eval <match> <js\|-> [--world main|isolated]` | Run JS in the page; `-` reads from stdin |
 | `shot <match> <out> [--max px] [--scale N] [--format jpeg] [--quality N] [--crop x,y,w,h] [--full]` | Screenshot via CDP. Long edge capped at `--max` px (default 1280, `0` = native res) — models downscale big images on read anyway, so native res buys file size, not detail. `--full` = whole page height |
 | `net <match> [--dur ms] [--filter s] [--body s]` | Capture network traffic via CDP (≤30s per run) — one compact line per request; `--body s` appends matching JSON/text response bodies |
@@ -141,7 +141,7 @@ You're handing an agent your logged-in browser — the design assumes you want t
 | `swlogs` | Service-worker console tail (errors/warnings) |
 | `start` · `stop` | Server lifecycle — `start` spawns it detached if down (agents can self-heal a dead server) |
 
-`<match>` is a substring of the tab URL; the most recently active matching tab wins. Refs survive re-`snap`s (an element keeps its `@eN` while its role+name are unchanged) and expire on navigation — re-`snap` after `nav`.
+`<match>` is a substring of the tab URL; a driven tab wins, then the most recently active. If several match, the result warns and names them — re-run with a longer match. Refs survive re-`snap`s (an element keeps its `@eN` while its role+name are unchanged) and expire on navigation — re-`snap` after `nav`.
 
 </details>
 
@@ -174,9 +174,9 @@ node cli.mjs unemulate news.ycombinator.com                # back to normal
 
 ## Development
 
-`node test/selftest.mjs` — end-to-end check with a fake extension (no Chrome needed); runs on every push via GitHub Actions (Node 18/20/22).
+`node test/selftest.mjs` — end-to-end check with a fake extension (no Chrome needed); runs on every push via GitHub Actions (Node 18/20/22). How to land changes (selftest gate, version bump, tags, style): see *Developing* in [AGENTS.md](AGENTS.md).
 
-chrome-bridge is **not on npm** — the only install path is this repo (anything `npm install chrome-bridge` gives you is an unrelated package). To pin what an agent will run, check out a tag: `git checkout v1.4.1`.
+chrome-bridge is **not on npm** — the only install path is this repo (anything `npm install chrome-bridge` gives you is an unrelated package). To pin what an agent will run, check out a tag — e.g. `git checkout v1.4.1`; `git tag -l` lists the latest.
 
 ## License
 

@@ -20,6 +20,9 @@ const LOOPBACK_HOST = /^(127\.0\.0\.1|localhost)(:\d+)?$/;
 
 // server.log gets one durable line per command — cap it here, at boot, so all
 // three start paths (install.sh, cli start, manual) are covered by one guard.
+// ponytail: boot-time cap only — between restarts the log grows unbounded;
+// the pathological writer is the 24s rejected-seat probe (~200KB/day). Add a
+// daily re-check if a long-lived server's log size ever actually matters.
 try {
   const p = fileURLToPath(new URL('./server.log', import.meta.url));
   if (fs.statSync(p).size > 5_000_000) fs.truncateSync(p);
@@ -35,7 +38,7 @@ try {
 //                 automatically, several matches refuse with a --profile hint
 //                 (never silently act in the personal browser when the agent
 //                 meant the work one), msg.profile overrides with an explicit
-//                 id (prefix match — first chars of the uuid are enough).
+//                 id (prefix match) or the exact profile name.
 const seats = new Map(); // profileId -> { socket, v, name, pending: Map, nextId }
 
 function dropSeatPending(seat, error) {
@@ -116,7 +119,7 @@ async function route(msg) {
   } else {
     // Multi-seat: probe every profile for matching tabs. Commands without a
     // <match> (open, ping, swlogs) can't be probed — refuse with the hint.
-    if (!msg.urlMatch) throw new Error(`multiple profiles are connected — name one: --profile <id> (see: cli profiles)`);
+    if (!msg.urlMatch) throw new Error(`multiple profiles are connected — name one: --profile <name or id> (see: cli profiles)`);
     const probes = await Promise.all(
       [...seats.entries()].map(async ([pid, s]) => {
         const reply = await ask(s, { type: 'probe', urlMatch: msg.urlMatch }, 5_000).catch(() => null);
@@ -134,14 +137,14 @@ async function route(msg) {
       throw new Error(
         `⚠ ${stale.length} profile(s) can't be probed — an extension without multi-profile support is loaded (${stale
           .map((p) => seatTag(p.pid))
-          .join(', ')}): reload it at chrome://extensions, or name a profile: --profile <id> (see: cli profiles)`
+          .join(', ')}): reload it at chrome://extensions, or name a profile: --profile <name or id> (see: cli profiles)`
       );
     if (!live.length) throw new Error('no profile answered — extensions disconnected?');
     if (!matching.length)
       throw new Error(`no tab matching "${msg.urlMatch}" in any connected profile — run tabs to find it`);
     if (matching.length > 1)
       throw new Error(
-        `⚠ "${msg.urlMatch}" matches tabs in ${matching.length} profiles (${matching.map((p) => seatTag(p.pid)).join(', ')}) — name one: --profile <id> (see: cli profiles)`
+        `⚠ "${msg.urlMatch}" matches tabs in ${matching.length} profiles (${matching.map((p) => seatTag(p.pid)).join(', ')}) — name one: --profile <name or id> (see: cli profiles)`
       );
     seat = seats.get(matching[0].pid);
     if (!seat) throw new Error('the matching profile disconnected during routing — retry the command');
