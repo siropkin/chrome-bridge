@@ -77,7 +77,9 @@ const idShort = (pid) => String(pid).slice(0, 4);
 // derived from the profile id by the extension — stable across restarts.
 const seatTag = (pid) => seats.get(pid)?.name || idShort(pid);
 function seatByProfile(want) {
-  const pids = [...seats.keys()].filter((p) => p.startsWith(want));
+  // id prefix OR exact profile name: the feed and tabs rows show the human-readable
+  // name ('@poplar'), so that's what a human (or agent) will reach for first.
+  const pids = [...seats.keys()].filter((p) => p.startsWith(want) || seats.get(p)?.name === want);
   if (pids.length > 1) throw new Error(`--profile '${want}' matches ${pids.length} profiles — a few more characters disambiguate`);
   if (!pids.length) throw new Error(`no connected profile matching '${want}' — run: cli profiles`);
   return seats.get(pids[0]);

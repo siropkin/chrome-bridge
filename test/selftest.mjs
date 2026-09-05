@@ -411,6 +411,10 @@ try {
       bg.includes('failedSinceOk') && bg.includes('idleLabel') && bg.includes('failed since last ok'),
       'pill: idle label is failure-aware (consecutive-failure count, not bare AI idle)'
     );
+    assert(
+      bg.includes("MUTATING.has(msg.type) && msg.type !== 'eval'"),
+      'pill: only a successful mutating command clears the failure count — reads are inspection, not recovery'
+    );
     assert(bg.includes('pillTick') && bg.includes('startTick') && bg.includes('stopTick'), 'pill: elapsed-seconds ticker runs while a command is in flight');
     assert(bg.includes('scrollTop = p.scrollHeight'), 'pill: open history panel auto-scrolls to the newest lines');
     assert(bg.includes('⚠ bridge offline — reconnecting…'), 'pill: bridge outage shows as offline, not AI idle');
@@ -635,6 +639,11 @@ try {
     assert(namedSnap.status === 0, 'named-profile seat routes a unique match', namedSnap.stdout + namedSnap.stderr);
     const feedNamed = (await fetch(`http://127.0.0.1:${PORT}/log`).then((r) => r.json())).lines;
     assert(feedNamed.some((a) => a.line.includes('snap named.example @oak-test')), 'feed: human-readable profile name replaces the uuid prefix', JSON.stringify(feedNamed.slice(-3)));
+    // --profile takes the id prefix OR the exact profile name — the feed shows
+    // names, so the name is what a human reaches for first (found live: the
+    // v1.6.0 name tag taught a selector the id never would).
+    const byName = await cli('--profile', 'oak-test', 'snap', 'named.example');
+    assert(byName.status === 0 && byName.stdout.includes('"urlMatch":"named.example"'), 'multi-seat: --profile accepts the profile name as well as the id', byName.stdout + byName.stderr);
     ext4.socket.destroy();
     await new Promise((r) => setTimeout(r, 100));
 

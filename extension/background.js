@@ -132,9 +132,13 @@ function connect() {
       if (tabId != null && drivenTabs.has(tabId)) {
         // Consecutive failures since the last ok: the durable "something
         // failed" glance — ✗ in the favicon is 16px in the strip, but the
-        // pill itself must not read 'AI idle' like nothing happened.
+        // pill itself must not read 'AI idle' like nothing happened. Only a
+        // successful MUTATING command clears it — a read-only success (snap,
+        // measure, eval…) is the agent inspecting the wreckage, not the
+        // recovery; found live when an observer eval wiped the ⚠ a click
+        // had earned.
         if (failed) failedSinceOk.set(tabId, (failedSinceOk.get(tabId) || 0) + 1);
-        else failedSinceOk.delete(tabId);
+        else if (MUTATING.has(msg.type) && msg.type !== 'eval') failedSinceOk.delete(tabId);
         setFavicon(tabId, failed ? '✗' : '✅');
         if (!(inflight.get(tabId) > 0)) stopTick(tabId); // a still-running sibling keeps the ticker going
         // Pill back to neutral after a beat — the in-flight label needs
