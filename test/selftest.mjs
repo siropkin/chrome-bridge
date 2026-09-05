@@ -180,6 +180,14 @@ try {
     assert(hv.profiles?.length === 1 && hv.profiles[0].id === 'alpha-test' && hv.profiles[0].v === MANIFEST_V, 'health reports connected profiles + versions from the WS handshake', h.stdout);
   }
 
+  // WS control frames must not kill the server: the close/ping handlers once
+  // referenced a bare `socket` after a refactor — one frame crashed the process
+  // and took every in-flight command with it.
+  ext.socket.write(Buffer.from([0x89, 0x80, 0, 0, 0, 0])); // masked ping
+  await new Promise((r) => setTimeout(r, 200));
+  h = await cli('health');
+  assert(JSON.parse(h.stdout).ok === true, 'server survives a WS ping frame', h.stdout + h.stderr);
+
   const tabs = await cli('tabs');
   assert(tabs.status === 0 && tabs.stdout.includes('example.com'), 'cli tabs', `status=${tabs.status}\nstdout=${tabs.stdout}\nstderr=${tabs.stderr}`);
 
@@ -597,11 +605,28 @@ try {
     // the activity feed names who acted
     const feed = (await fetch(`http://127.0.0.1:${PORT}/log`).then((r) => r.json())).lines;
     assert(feed.some((a) => a.line.includes('snap sample.org @beta')), 'feed: routed command carries the profile tag', JSON.stringify(feed.slice(-3)));
+
+    // an extension without probe support (pre-1.5.0) must fail routing loudly —
+    // treating its ok:false probe reply as a dead seat silently bypassed the
+    // ambiguity refusal and reported real tabs as nonexistent
+    const ext3 = await wsClient(PORT, 'gamma-old');
+    ext3.onMessage((msg) => {
+      if (msg.type === 'ping') return ext3.send({ id: msg.id, ok: true, result: 'pong' });
+      if (msg.type === 'probe') return ext3.send({ id: msg.id, ok: false, error: 'Error: unknown type "probe"' });
+      if (msg.type === 'tabs') return ext3.send({ id: msg.id, ok: true, result: [] });
+      return ext3.send({ id: msg.id, ok: true, result: msg });
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    const stale = await cli('snap', 'dupe.example');
+    assert(stale.status !== 0 && stale.stderr.includes("can't be probed") && stale.stderr.includes('reload it at chrome://extensions'), 'multi-seat: unprobeable extension fails routing loudly', stale.stdout + stale.stderr);
+    ext3.socket.destroy();
   }
 
-  // extension disconnect → health flips (both fake profiles gone)
+  // extension disconnect → health flips (both fake profiles gone; ext2 leaves
+  // via a proper WS close frame — the 0x8 path must stay covered, it once
+  // crashed the server)
+  ext2.socket.write(Buffer.from([0x88, 0x80, 0, 0, 0, 0])); // masked close
   ext.socket.destroy();
-  ext2.socket.destroy();
   await new Promise((r) => setTimeout(r, 500));
   h = await cli('health');
   assert(JSON.parse(h.stdout).extension === false, 'health: extension false after disconnect', h.stdout + h.stderr);

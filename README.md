@@ -80,7 +80,7 @@ node cli.mjs stop && node cli.mjs start
 
 Tabs the bridge drives get a 🟣 pill in the bottom-right corner (click it for the full action history; ✕ hides it until the next navigation) and join a 🟣 tab group so you always know what's being automated. The pill narrates what the agent is doing right now (`🟣 taking screenshot…`, `🟣 reading page…`, `🟣 AI idle` when nothing's running) and its history panel lists the last actions; while a command runs, a purple viewport frame lights up, the tab's favicon shows ⏳ (✅ when it lands, ✗ when it fails), and clicks/hovers flash a purple pointer where the agent acts. `release` (or `close`) gives them back.
 
-**Multiple Chrome profiles**: the extension can be loaded in several profiles at once — each keeps its own connection, and agents can drive them in parallel. A command routes to the only profile with a matching tab; a match in several profiles is **refused** until the agent names one with `--profile <id>` (`cli profiles` lists ids) — the agent never silently acts in your personal browser when it meant the work one.
+**Multiple Chrome profiles**: the extension can be loaded in several profiles at once — each keeps its own connection, and agents can drive them in parallel. A command routes to the only profile with a matching tab; a match in several profiles is **refused** until the agent names one with `--profile <id>` (`cli profiles` lists ids) — the agent never silently acts in your personal browser when it meant the work one. (The refusal is a safety net for honest CLI use, not a security boundary: any local process can set `profile` in a `/cmd` body and route anywhere — the same local trust model as before.)
 
 ## Works with any AI agent — not just Claude
 

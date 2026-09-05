@@ -24,7 +24,7 @@ Several Chrome profiles can have the extension loaded at once — each keeps its
 - a `<match>` present in SEVERAL profiles is **refused** — the error names the profiles; re-run with `--profile <id>` (an id prefix is enough; `cli profiles` lists ids);
 - commands without a `<match>` (`open`, `swlogs`) need `--profile` when several profiles are connected.
 
-Parallel work across profiles is fine: two agent sessions can drive two profiles at the same time. Route explicitly when it matters — a wrong-profile action (clicking in the personal browser when you meant the work one) is the failure the refusal rule exists to prevent.
+Parallel work across profiles is fine: two agent sessions can drive two profiles at the same time. Route explicitly when it matters — a wrong-profile action (clicking in the personal browser when you meant the work one) is the failure the refusal rule exists to prevent. A profile running an extension older than multi-profile support makes auto-routing refuse ("can't be probed") — pass `--profile` or have the user reload that extension.
 
 ## Core loop
 

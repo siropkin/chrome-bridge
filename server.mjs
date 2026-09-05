@@ -37,7 +37,6 @@ try {
 //                 meant the work one), msg.profile overrides with an explicit
 //                 id (prefix match — first chars of the uuid are enough).
 const seats = new Map(); // profileId -> { socket, v, pending: Map, nextId }
-let anonSeatN = 0; // id-less clients (old extensions, raw test sockets) get synthetic ids
 
 function dropSeatPending(seat, error) {
   for (const resolve of seat.pending.values()) resolve({ ok: false, error });
@@ -49,12 +48,16 @@ function dropSeatPending(seat, error) {
 function ask(seat, msg, timeoutMs = CMD_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     const attempt = (triesLeft) => {
-      if (seat.socket && !seat.socket.destroyed) {
-        const id = seat.nextId++;
-        seat.pending.set(id, resolve);
-        seat.socket.write(encodeFrame(JSON.stringify({ ...msg, id })));
+      // Re-resolve each try: an SW-restart reconnect replaces the seat entry —
+      // retrying against the captured one would retry a dead object while a
+      // fresh seat sits in the map.
+      const s = seats.get(seat.pid) ?? seat;
+      if (s.socket && !s.socket.destroyed) {
+        const id = s.nextId++;
+        s.pending.set(id, resolve);
+        s.socket.write(encodeFrame(JSON.stringify({ ...msg, id })));
         setTimeout(() => {
-          if (seat.pending.delete(id)) reject(new Error('extension timeout'));
+          if (s.pending.delete(id)) reject(new Error('extension timeout'));
         }, timeoutMs);
         return;
       }
@@ -81,6 +84,7 @@ async function route(msg) {
   if (msg.type === 'tabs') {
     // Read-only: merged across profiles. Single profile keeps today's output
     // byte-identical (no profile tags) — the common case stays the old shape.
+    if (msg.profile) return ask(seatByProfile(String(msg.profile)), msg); // pinned: that seat's rows, untagged
     if (!seats.size) throw new Error('extension not connected — load extension/ at chrome://extensions');
     if (seats.size === 1) return ask(seats.values().next().value, msg);
     const rows = [];
@@ -110,11 +114,22 @@ async function route(msg) {
     const probes = await Promise.all(
       [...seats.entries()].map(async ([pid, s]) => {
         const reply = await ask(s, { type: 'probe', urlMatch: msg.urlMatch }, 5_000).catch(() => null);
-        return { pid, tabs: reply?.ok ? reply.result : null };
+        // ok:false = the seat ANSWERED but can't probe (an extension older
+        // than multi-profile support). Distinct from null = never answered —
+        // treating a refused probe as dead would silently bypass the
+        // ambiguity refusal and report real tabs as nonexistent.
+        return { pid, tabs: reply?.ok ? reply.result : null, unsupported: !!reply && !reply.ok };
       })
     );
+    const stale = probes.filter((p) => p.unsupported);
     const live = probes.filter((p) => p.tabs !== null);
     const matching = live.filter((p) => p.tabs.length);
+    if (stale.length)
+      throw new Error(
+        `⚠ ${stale.length} profile(s) can't be probed — an extension without multi-profile support is loaded (${stale
+          .map((p) => idShort(p.pid))
+          .join(', ')}): reload it at chrome://extensions, or name a profile: --profile <id> (see: cli profiles)`
+      );
     if (!live.length) throw new Error('no profile answered — extensions disconnected?');
     if (!matching.length)
       throw new Error(`no tab matching "${msg.urlMatch}" in any connected profile — run tabs to find it`);
@@ -123,6 +138,7 @@ async function route(msg) {
         `⚠ "${msg.urlMatch}" matches tabs in ${matching.length} profiles (${matching.map((p) => idShort(p.pid)).join(', ')}) — name one: --profile <id> (see: cli profiles)`
       );
     seat = seats.get(matching[0].pid);
+    if (!seat) throw new Error('the matching profile disconnected during routing — retry the command');
   }
   // The activity feed names who acted — but only when profiles are actually
   // in play (multi-seat, or the caller named one): a lone profile keeps the
@@ -219,11 +235,11 @@ function handleWsData(seat, chunk, state) {
     }
     state.buf = buf.subarray(off + maskLen + len);
     if (op === 0x8) {
-      socket.end();
+      seat.socket.end();
       return;
     }
     if (op === 0x9) {
-      socket.write(encodeFrame(payload, 0xa));
+      seat.socket.write(encodeFrame(payload, 0xa));
       continue;
     }
     if (op === 0xa) continue;
@@ -322,7 +338,11 @@ server.on('upgrade', (req, socket) => {
   // trap after git pull) and lists every connected profile.
   const u = new URL(req.url, 'http://x');
   const v = u.searchParams.get('v');
-  const id = u.searchParams.get('id') || `anon-${++anonSeatN}`; // old extensions / raw sockets: synthetic id
+  // All id-less clients (old extensions, raw test sockets) share one 'anon'
+  // seat: a second id-less connection is the same legacy browser reconnecting
+  // (SW race) — it gets the seat-taken bounce, not a second seat posing as a
+  // second profile.
+  const id = u.searchParams.get('id') || 'anon';
   const accept = crypto.createHash('sha1').update(key + WS_GUID).digest('base64');
   socket.write(
     'HTTP/1.1 101 Switching Protocols\r\n' +

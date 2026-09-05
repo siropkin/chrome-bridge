@@ -240,7 +240,7 @@ async function run(cmdName, args) {
       // it's actually looking for.
       const t = await cmd({ type: 'tabs' });
       const m = args[0];
-      print(m ? t.filter((x) => x.url.includes(m) || (x.title || '').includes(m)) : t);
+      print(m ? t.filter((x) => (x.url || '').includes(m) || (x.title || '').includes(m)) : t); // url can be absent (unresponsive-profile row)
       break;
     }
 
