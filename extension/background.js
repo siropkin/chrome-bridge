@@ -1059,7 +1059,8 @@ const typeSrc = (target, text) => `(async () => {
       if ((a && /^(INPUT|TEXTAREA)$/.test(a.tagName)) || a?.isContentEditable) el = a;
       else throw new Error('element detached mid-typing and focus is not on a text field — re-snap and retry');
     }
-    const o = { bubbles: true, cancelable: true, composed: true, key: ch, code: /[a-z]/i.test(ch) ? 'Key' + ch.toUpperCase() : 'Digit' + ch };
+    const o = { bubbles: true, cancelable: true, composed: true, key: ch, code: /[a-z]/i.test(ch) ? 'Key' + ch.toUpperCase() : 'Digit' + ch,
+      keyCode: /[a-z]/i.test(ch) ? ch.toUpperCase().charCodeAt(0) : ch.charCodeAt(0) }; // legacy e.which readers (old jQuery)
     el.dispatchEvent(new KeyboardEvent('keydown', o));
     if (el.isContentEditable) {
       document.execCommand('insertText', false, ch); // deprecated, still the only CE path that fires beforeinput correctly
@@ -1100,8 +1101,13 @@ const pressSrc = (keyIn, target) => `(() => {
   }
   o.key = key;
   o.code = key.length === 1 ? (/[a-z]/i.test(key) ? 'Key' + key.toUpperCase() : 'Digit' + key) : key;
+  // Legacy listeners (old jQuery keymaps etc.) read e.which/e.keyCode — the
+  // constructor leaves them 0. Chrome derives which from keyCode in the dict;
+  // on keypress, which is the charCode.
+  const KEYCODE = { Enter:13, Tab:9, Escape:27, Backspace:8, Delete:46, Insert:45, ArrowUp:38, ArrowDown:40, ArrowLeft:37, ArrowRight:39, Home:36, End:35, PageUp:33, PageDown:34, ' ':32, Shift:16, Control:17, Alt:18, Meta:91, CapsLock:20 };
+  o.keyCode = key.length === 1 ? (/[a-z]/i.test(key) ? key.toUpperCase().charCodeAt(0) : key.charCodeAt(0)) : (KEYCODE[key] || 0);
   el.dispatchEvent(new KeyboardEvent('keydown', o));
-  el.dispatchEvent(new KeyboardEvent('keypress', o));
+  el.dispatchEvent(new KeyboardEvent('keypress', { ...o, charCode: key.length === 1 ? key.charCodeAt(0) : 0 }));
   el.dispatchEvent(new KeyboardEvent('keyup', o));
   return 'pressed ' + keyIn + ' on <' + el.tagName.toLowerCase() + '>';
 })()`;
