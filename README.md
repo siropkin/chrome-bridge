@@ -173,7 +173,7 @@ node cli.mjs unemulate news.ycombinator.com                # back to normal
 
 `node test/selftest.mjs` — end-to-end check with a fake extension (no Chrome needed); runs on every push via GitHub Actions (Node 18/20/22).
 
-chrome-bridge is **not on npm** — the only install path is this repo (anything `npm install chrome-bridge` gives you is an unrelated package). To pin what an agent will run, check out a tag: `git checkout v1.4.0`.
+chrome-bridge is **not on npm** — the only install path is this repo (anything `npm install chrome-bridge` gives you is an unrelated package). To pin what an agent will run, check out a tag: `git checkout v1.4.1`.
 
 ## License
 

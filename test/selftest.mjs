@@ -9,6 +9,9 @@ import fs from 'node:fs';
 const PORT = 9871;
 const ROOT = new URL('..', import.meta.url).pathname;
 const env = { ...process.env, BRIDGE_PORT: String(PORT) };
+// The fake extension's handshake version mirrors the repo manifest — cli
+// health compares the two, and a hardcode here would trip its warning.
+const MANIFEST_V = JSON.parse(fs.readFileSync(`${ROOT}extension/manifest.json`, 'utf8')).version;
 
 let passed = 0;
 let server;
@@ -61,7 +64,7 @@ function wsClient(port) {
       // ?v=/?id= mirror the real extension's handshake (cli health compares
       // extVersion against the repo manifest).
       socket.write(
-        `GET /ws?v=1.4.0&id=selftest HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`
+        `GET /ws?v=${MANIFEST_V}&id=selftest HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`
       );
     });
     socket.on('data', (chunk) => {
@@ -168,7 +171,7 @@ try {
   assert(JSON.parse(h.stdout).extension === true, 'health: extension true after connect');
   {
     const hv = JSON.parse(h.stdout);
-    assert(hv.extVersion === '1.4.0' && hv.extId === 'selftest', 'health reports the extension version + profile id from the WS handshake', h.stdout);
+    assert(hv.extVersion === MANIFEST_V && hv.extId === 'selftest', 'health reports the extension version + profile id from the WS handshake', h.stdout);
   }
 
   const tabs = await cli('tabs');

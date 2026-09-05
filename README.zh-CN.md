@@ -173,7 +173,7 @@ node cli.mjs unemulate news.ycombinator.com                # 恢复正常
 
 `node test/selftest.mjs`——用模拟扩展做端到端检查(不需要 Chrome);每次 push 由 GitHub Actions 自动运行(Node 18/20/22)。
 
-chrome-bridge **不在 npm 上**——唯一的安装途径就是本仓库(`npm install chrome-bridge` 装到的是无关的同名包)。要固定智能体运行的代码,请签出标签:`git checkout v1.4.0`。
+chrome-bridge **不在 npm 上**——唯一的安装途径就是本仓库(`npm install chrome-bridge` 装到的是无关的同名包)。要固定智能体运行的代码,请签出标签:`git checkout v1.4.1`。
 
 ## 许可证
 
