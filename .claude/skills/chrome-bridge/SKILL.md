@@ -7,17 +7,11 @@ chrome-bridge lets you drive the user's **real Chrome** — the tabs they alread
 
 ## Setup (one-time)
 
-```bash
-git clone https://github.com/siropkin/chrome-bridge && cd chrome-bridge && ./install.sh
-```
-
-Then load the extension: `chrome://extensions` → Developer mode → Load unpacked → pick the `extension/` folder.
-
-Verify: `node cli.mjs health` → `{"ok":true,"extension":true}`
+Usually already done: the canonical install is pasting `docs/agent-setup.md` from the repo (raw: `https://raw.githubusercontent.com/siropkin/chrome-bridge/master/docs/agent-setup.md`) into your agent — it clones the repo to `~/chrome-bridge`, starts the bridge, and installs this skill. If the bridge isn't set up yet, tell the user to do that; the only step you can't do yourself is the Load unpacked click at `chrome://extensions`.
 
 ## Operating manual
 
-`AGENTS.md` in the repo root is the full, self-contained manual — commands, recipes, gotchas. Read it for anything beyond the quick reference below. The `<repo>` path is the chrome-bridge checkout folder (the one containing `cli.mjs` and `AGENTS.md`); if you don't know it, ask the user — don't guess.
+`AGENTS.md` in the repo root is the full, self-contained manual — commands, recipes, gotchas. Read it for anything beyond the quick reference below. The `<repo>` path is the chrome-bridge checkout folder (the one containing `cli.mjs` and `AGENTS.md`); if you don't know it, check `~/chrome-bridge` (the standard setup location) first, then ask the user — don't guess.
 
 ## Quick reference
 

@@ -43,6 +43,9 @@ echo "  3. Load unpacked → $ROOT/extension/"
 [ "$(uname)" = "Darwin" ] && open -a "Google Chrome" "chrome://extensions" || true
 
 echo
+echo "Want the agent to install its own integration too (the Claude Code skill, or the one-liner below)?"
+echo "Paste docs/agent-setup.md into it — raw: https://raw.githubusercontent.com/siropkin/chrome-bridge/master/docs/agent-setup.md"
+echo
 echo "Last: give your AI agent this one line (CLAUDE.md, .cursorrules, AGENTS.md, system prompt, …):"
 echo
 echo "  To drive my Chrome browser (real logged-in tabs), read $ROOT/AGENTS.md and run \`node $ROOT/cli.mjs <command>\`. If the health check fails, run \`node $ROOT/cli.mjs start\`; if the extension is disconnected, tell me to reload it."

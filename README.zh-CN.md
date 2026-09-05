@@ -12,20 +12,68 @@
 
 需要 macOS/Linux(或 Windows 上的 Git Bash)、Chrome ≥ 117(ask / `snap --find` / `console --ask` 另需 Chrome ≥ 138 的内置 Nano 模型)和 Node ≥ 18。
 
+**一次粘贴,一次点击。** 把下面这段粘贴进你的 AI 智能体(Claude Code、Cursor、Qwen、GLM……)——它会克隆仓库、启动桥接服务、装好自己的接入端(Claude Code 的 skill,或写入其他智能体指令文件里的一行话),并在恰当时刻请你完成 Chrome 不允许脚本代劳的那一次点击:
+
+````text
+Set up chrome-bridge — the bridge that lets you drive my real, logged-in Chrome — and install your end of it. Do every step yourself and tell me the result of each. The only thing I do is the one-time extension load in Chrome (step 3).
+
+1. Pick the repo root `<repo>`:
+   - if your working directory is already a chrome-bridge checkout (it contains `cli.mjs` and `AGENTS.md`), use it;
+   - else if `~/chrome-bridge/cli.mjs` exists, run `git -C ~/chrome-bridge pull --ff-only` (if the pull fails, show me the error and keep the existing copy) and use `~/chrome-bridge`;
+   - else clone it and use `~/chrome-bridge`:
+
+     ```
+     git clone https://github.com/siropkin/chrome-bridge.git ~/chrome-bridge
+     ```
+
+     (if the clone fails — e.g. `~/chrome-bridge` exists with other content — show me the error and stop; don't delete or move anything)
+
+   Substitute `<repo>` with the real path everywhere below.
+
+2. Bring the bridge up on this checkout's code (needs Node ≥ 18 — if Node is missing or older, tell me and stop; don't install or upgrade anything yourself):
+
+   ```
+   node <repo>/cli.mjs stop
+   node <repo>/cli.mjs start
+   node <repo>/cli.mjs health
+   ```
+
+   (`stop` reporting "nothing was running" is fine; the stop-then-start pair guarantees the server runs the code you just fetched, not some older copy from another location — a loaded extension reconnects on its own.)
+
+   - health prints a ⚠ line saying the loaded extension's version differs from the repo → ask me to reload the extension at `chrome://extensions`, then re-run health.
+   - health reports `"extension":true` (with no ⚠) → jump to step 4.
+   - health reports `"extension":false` → step 3. But if the extension was connected before your restart, wait ~10s and re-run health once first — it reconnects on its own after a server restart.
+   - server won't start → show me the error and the last lines of `<repo>/server.log` (if it exists), then stop.
+
+3. The one click only I can do: ask me to open `chrome://extensions`, enable Developer mode, click Load unpacked, and select the `<repo>/extension` folder. On macOS you may run `open -a "Google Chrome" "chrome://extensions"` first. Then poll `node <repo>/cli.mjs health` every 5s (up to ~90s) until it reports `"extension":true`; if it doesn't, tell me what's still missing and stop — don't keep polling.
+
+4. Install your integration — pick the ONE that applies to you:
+   - Claude Code — copy the skill so it auto-loads on browser tasks in every project (use `./.claude/skills/` instead of `~/.claude/skills/` only if I told you to scope it to this project):
+
+     ```
+     rm -rf ~/.claude/skills/chrome-bridge && mkdir -p ~/.claude/skills && cp -r <repo>/.claude/skills/chrome-bridge ~/.claude/skills/
+     ```
+
+   - any other agent (Cursor, Qwen, GLM, Kimi, …) — append this line to the instructions file you read at session start (`CLAUDE.md`, `AGENTS.md`, `.cursorrules`, …; create it in the project you're working in if none exists), but only if it's not already there. If your instructions live somewhere you can't edit, print the line and tell me to paste it there:
+
+     ```
+     To drive my Chrome browser (real logged-in tabs), read <repo>/AGENTS.md and run `node <repo>/cli.mjs <command>`. If the health check fails, run `node <repo>/cli.mjs start`; if the extension is disconnected, tell me to reload it.
+     ```
+
+5. Tell me the bridge is up. From the next session your integration auto-loads; in this one, read `<repo>/AGENTS.md` when a browser task comes up.
+````
+
+那一手动步骤(智能体提出请求时):`chrome://extensions` → 开发者模式 → **加载已解压的扩展程序** → 选择 `extension/` 文件夹(Chrome 要求必须手动点击,脚本无法代劳)。无论哪种方式,验证:`node cli.mjs health` → `{"ok":true,"extension":true}`。
+
+有联网能力的智能体可以省去复制粘贴:告诉它 `read https://raw.githubusercontent.com/siropkin/chrome-bridge/master/docs/agent-setup.md and do what it says`。
+
+想自己动手?手动路径:
+
 ```bash
 git clone https://github.com/siropkin/chrome-bridge && cd chrome-bridge && ./install.sh
 ```
 
-然后加载扩展:`chrome://extensions` → 开发者模式 → **加载已解压的扩展程序** → 选择 `extension/` 文件夹(Chrome 要求必须手动点击,脚本无法代劳)。
-
-验证是否就绪:`node cli.mjs health` → `{"ok":true,"extension":true}`
-
-完成。把下面这段告诉你的智能体:
-
-- **Claude Code** — 把 `.claude/skills/chrome-bridge/` 复制进你项目的 `.claude/skills/`(或你的 `~/.claude/skills/`):`cp -r .claude/skills/chrome-bridge <your-project>/.claude/skills/`。遇到浏览器任务它会自动加载,并指向 `AGENTS.md` 获取完整手册。
-- **其他任何智能体**(Cursor、Qwen、GLM、Baseten、原生 curl)——把这一行粘贴到智能体指令中(`CLAUDE.md`、`.cursorrules`、`AGENTS.md`、系统提示词……):
-
-  > 驱动我的 Chrome 浏览器(真实的已登录标签页)时,阅读 `<path>/chrome-bridge/AGENTS.md` 并运行 `node <path>/chrome-bridge/cli.mjs <command>`。如果 health 检查失败,运行 `node <path>/chrome-bridge/cli.mjs start`;如果扩展未连接,告诉我重新加载它。
+`install.sh` 会启动服务器并打开 `chrome://extensions`(macOS;Linux 请自行打开);然后按上面方式加载扩展,细节见[安装细节](#安装细节)。
 
 这就是全部集成工作。`AGENTS.md` 是一份自包含的操作手册——命令、配方、注意事项——任何能读文件或联网的智能体都能阅读。有联网能力的智能体可以直接从 GitHub 读取:`https://raw.githubusercontent.com/siropkin/chrome-bridge/master/AGENTS.md`。
 

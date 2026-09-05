@@ -485,6 +485,18 @@ try {
     assert(spawnSync('node', ['--check', `${ROOT}extension/background.js`]).status === 0, 'ext: background.js parses (node --check)');
     assert(spawnSync('bash', ['-n', `${ROOT}install.sh`]).status === 0, 'install.sh parses (bash -n)');
 
+    // The agent-setup paste text is THE install interface (both READMEs embed it
+    // as the quick start) — same drift logic as AGENTS.md below: a stale copy
+    // ships broken install instructions to every new user.
+    const setupMd = fs.readFileSync(`${ROOT}docs/agent-setup.md`, 'utf8').trim();
+    for (const f of ['README.md', 'README.zh-CN.md']) {
+      assert(
+        fs.readFileSync(`${ROOT}${f}`, 'utf8').includes(setupMd),
+        `drift: ${f} embeds docs/agent-setup.md verbatim`,
+        're-copy docs/agent-setup.md into the README quick-start block'
+      );
+    }
+
     // AGENTS.md's fenced Commands block is the agent-facing command list —
     // doc drift is a real bug class here (the --profile name landed without
     // touching any doc), so it must name exactly the cli USAGE commands.
@@ -722,6 +734,11 @@ try {
   await new Promise((r) => setTimeout(r, 300));
   const hDown = await cli('health');
   assert(hDown.status !== 0 && hDown.stderr.includes('not running'), 'health fails after stop', hDown.stdout + hDown.stderr);
+  // stop with nothing running must SUCCEED — the agent-setup paste flow
+  // (docs/agent-setup.md) and install.sh's `stop && start` run it as the
+  // first command on fresh machines where nothing is up.
+  const stop2 = await cli('stop');
+  assert(stop2.status === 0 && stop2.stdout.includes('nothing was running'), 'cli stop with server down exits 0', stop2.stdout + stop2.stderr);
   // A command with the server down must fail cleanly through cmd()'s fetch
   // catch — and point at the DETACHED start, never a foreground server.mjs.
   const tDown = await cli('tabs');

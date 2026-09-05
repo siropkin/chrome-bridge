@@ -214,6 +214,7 @@ async function run(cmdName, args) {
       const log = fs.openSync(logPath, 'a');
       const child = spawn(process.execPath, [fileURLToPath(new URL('./server.mjs', import.meta.url))], {
         detached: true,
+        windowsHide: true, // else Windows gives the detached server its own console — closing it kills the server
         stdio: ['ignore', log, log],
       });
       child.unref();
@@ -229,8 +230,10 @@ async function run(cmdName, args) {
 
     case 'stop': {
       const res = await fetch(`${BASE}/stop`, { method: 'POST' }).catch(() => null);
-      if (!res?.ok) fail('bridge server not running');
-      print('stopped');
+      // Nothing-to-stop is success for the caller's purpose: setup texts tell
+      // agents (and install.sh tells humans) `stop && start`, and a fresh
+      // machine must not have the first half of that fail with exit 1.
+      print(res?.ok ? 'stopped' : 'stopped (nothing was running)');
       break;
     }
 
