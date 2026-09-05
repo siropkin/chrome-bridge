@@ -6,6 +6,8 @@
 //   GET  127.0.0.1:9333/health
 import http from 'node:http';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 const PORT = Number(process.env.BRIDGE_PORT || 9333);
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
@@ -16,7 +18,16 @@ const CMD_TIMEOUT_MS = 70_000; // `wait` supports up to 60s
 // can't forge Host, so requiring a loopback Host closes every route at once.
 const LOOPBACK_HOST = /^(127\.0\.0\.1|localhost)(:\d+)?$/;
 
+// server.log gets one durable line per command — cap it here, at boot, so all
+// three start paths (install.sh, cli start, manual) are covered by one guard.
+try {
+  const p = fileURLToPath(new URL('./server.log', import.meta.url));
+  if (fs.statSync(p).size > 5_000_000) fs.truncateSync(p);
+} catch {} // not started from the repo (spawned) or no log yet — the next writer creates it
+
 let extSocket = null;
+let extVersion = null; // seat holder's manifest version (?v= on the WS handshake)
+let extId = null; // seat holder's stable per-profile id (?id=) — which Chrome holds the seat
 let nextId = 1;
 const pending = new Map();
 
@@ -173,7 +184,7 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, extension: !!(extSocket && !extSocket.destroyed) }));
+    res.end(JSON.stringify({ ok: true, extension: !!(extSocket && !extSocket.destroyed), extVersion, extId }));
     return;
   }
   if (req.method === 'POST' && req.url === '/cmd') {
@@ -240,6 +251,13 @@ server.on('upgrade', (req, socket) => {
     socket.destroy();
     return;
   }
+  // The extension announces its manifest version and a stable per-profile id
+  // (?v=…&id=…) — /health lets `cli health` compare versions (stale-extension
+  // trap after git pull), and the id makes a seat migration between two
+  // Chrome profiles visible in the log instead of silent.
+  const u = new URL(req.url, 'http://x');
+  const v = u.searchParams.get('v');
+  const id = u.searchParams.get('id');
   const accept = crypto.createHash('sha1').update(key + WS_GUID).digest('base64');
   socket.write(
     'HTTP/1.1 101 Switching Protocols\r\n' +
@@ -253,16 +271,23 @@ server.on('upgrade', (req, socket) => {
   // freeing the seat) — a client stuck in a reconnect loop must not evict a
   // working connection.
   if (extSocket && !extSocket.destroyed) {
+    // Tell the loser why — a second profile's extension otherwise reconnects
+    // at 2Hz forever and, when the winner dies, silently takes the seat and
+    // every command starts driving the OTHER profile's browser.
+    socket.write(encodeFrame(JSON.stringify({ type: 'seat-taken' })));
     socket.destroy();
     return;
   }
   extSocket = socket;
-  console.log('[bridge] extension connected origin=' + (origin || 'none'));
+  extVersion = v;
+  extId = id;
+  console.log(`[bridge] extension connected origin=${origin || 'none'} v=${v || '?'} id=${id || '?'}`);
   const state = { buf: Buffer.alloc(0), fragments: [] };
   socket.on('data', (chunk) => handleWsData(socket, chunk, state));
   const onGone = () => {
     if (extSocket === socket) {
       extSocket = null;
+      extVersion = extId = null;
       dropPending('extension disconnected');
       console.log('[bridge] extension disconnected');
     }

@@ -13,6 +13,13 @@ command -v node >/dev/null || { echo "✗ Node.js >= 18 required: https://nodejs
 [ "$(node -p 'process.versions.node.split(".")[0]')" -ge 18 ] || { echo "✗ Node >= 18 required (you have $(node --version))"; exit 1; }
 echo "✓ Node $(node --version)"
 
+# The extension hardcodes port 9333 (extension/background.js WS_URL) — a custom
+# BRIDGE_PORT would split the stack and leave the extension dialing nothing.
+if [[ -n ${BRIDGE_PORT+x} && $PORT != 9333 ]]; then
+  echo "✗ BRIDGE_PORT=$PORT: the extension connects to 9333 only — unset BRIDGE_PORT or edit extension/background.js WS_URL to match"
+  exit 1
+fi
+
 if body=$(curl -sf -m 2 "$HEALTH") && [[ $body =~ $OK ]]; then
   echo "✓ server already running (localhost:$PORT)"
   # The running server is the one from when it was started — if the repo was

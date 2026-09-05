@@ -16,6 +16,10 @@ const fail = (msg) => {
 };
 const print = (v) => console.log(typeof v === 'string' ? v : JSON.stringify(v));
 
+// fetch is unflagged only since Node 18 — on older Node every command below
+// would misreport "server not running" while the real cause is the runtime.
+if (typeof fetch !== 'function') fail('Node >= 18 required — you have ' + process.version);
+
 // Image dimensions from the buffer header (PNG IHDR / JPEG SOF) — agents map
 // shot pixels back to CSS px, and --max rescales extension-side, so print them.
 const imgDims = (b) => {
@@ -35,9 +39,10 @@ async function cmd(msg) {
       body: JSON.stringify(msg),
     });
   } catch {
-    fail('bridge server not running — start it: node server.mjs');
+    fail('bridge server not running — start it: node cli.mjs start');
   }
-  const out = await res.json();
+  const out = await res.json().catch(() => null);
+  if (!out) fail(`unexpected response from bridge on port ${PORT} — is another server using it?`);
   if (!out.ok) fail(out.error);
   return out.result;
 }
@@ -72,10 +77,19 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     since the previous snap; lines seen 3+ times collapse to
                                     '… N more · <line> → @refs'; trees truncate at 300 nodes —
                                     scope big pages with [css] or grep/--find can miss the rest
-  click <match> <@ref|css> [--diff]  click an element (fails loudly if an overlay covers it)
-  fill <match> <@ref|css> <value> [--diff]   set input value (React-safe)
+  click <match> <@ref|css> [--dbl] [--diff]  click an element (fails loudly if an overlay covers it);
+                                    --dbl double-clicks (two click pairs + dblclick event)
+  drag <match> <@ref|css> <@ref|css> [--diff]
+                                    drag an element onto another (synthetic pointer sequence —
+                                    apps that check isTrusted ignore it)
+  dialog <match> accept|dismiss [--text s]
+                                    dismiss a stuck JS dialog — an open alert/confirm/prompt
+                                    wedges the tab until this or a human answers (--text answers a prompt)
+  fill <match> <@ref|css> <value> [--diff]   set input value (React-safe; on a native <select>
+                                    matches option value or label — error lists the options on a miss)
   type <match> <@ref|css> <text> [--diff]    per-char typing — triggers autocomplete/keystroke UIs
-  press <match> <key> [@ref|css] [--diff]  key press (Enter/Tab/Escape/…) on focused or given element
+  press <match> <key> [@ref|css] [--diff]  key press on focused or given element (Enter/Tab/…);
+                                    combos like Control+k / Shift+Enter / Meta+k set the modifier flags
   hover <match> <@ref|css> [--diff]  hover an element (opens hover menus)
   scroll <match> <up|down|top|bottom|@ref|css> [--diff]
                                     scroll the page (or an element into view); --diff
@@ -87,12 +101,12 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     inputs; target the input or an element wrapping it)
   ask <match> <question>            (experimental) answer from page text with Chrome's
                                     built-in Gemini Nano — local, no cloud tokens
-  wait <match> [css|--text t] [--timeout ms]
+  wait <match> <css|--text t> [--timeout ms]   (timeout default 10s, max 60s)
   eval <match> <js|-> [--world main|isolated]     '-' reads JS from stdin
   shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full]
                                     --max caps the long edge (default 1280, 0 = native res)
   net <match> [--dur ms] [--filter s] [--body s]
-                                    capture network for N ms (CDP, one line per request);
+                                    capture network for N ms, capped at 30s (CDP, one line per request);
                                     --body s also captures JSON/text response bodies for URLs
                                     containing s (≤8, 1500 chars each; implies --filter s)
   measure <match> <css>             rect + computed styles as JSON
@@ -116,21 +130,35 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
 
 <match> is a substring of the tab URL; a driven tab wins, then the most recently
 active. Ambiguous matches print a warning naming the other tabs — re-run with a
-longer match. Mutating commands (click/fill/type/press/upload/eval) auto-mark
-the tab (🟣 pill + tab group).
+longer match. Mutating commands (click/fill/type/press/upload/eval/hover/scroll/
+grid/emulate/resize/drag/dialog) auto-mark the tab (🟣 pill + tab group).
 Refs (@eN) come from snap; they survive re-snaps but expire on navigation.`;
 
 async function run(cmdName, args) {
   switch (cmdName) {
     case undefined:
     case 'help':
+    case '-h':
+    case '--help':
       console.log(USAGE);
       break;
 
     case 'health': {
       try {
         const res = await fetch(`${BASE}/health`);
-        print(await res.json());
+        const h = await res.json();
+        print(h);
+        // A loaded-but-stale extension still passes health (the SW seat is old
+        // code — README's upgrade trap). Its self-reported version rides the
+        // WS handshake; compare it with the manifest on disk and say so.
+        if (h.extension && h.extVersion) {
+          let mine = null;
+          try {
+            mine = JSON.parse(fs.readFileSync(fileURLToPath(new URL('./extension/manifest.json', import.meta.url)), 'utf8')).version;
+          } catch {}
+          if (mine && mine !== h.extVersion)
+            console.error(`⚠ extension ${h.extVersion} is loaded, the repo has ${mine} — reload the extension at chrome://extensions`);
+        }
       } catch {
         fail('bridge server not running — start it: node cli.mjs start');
       }
@@ -149,10 +177,7 @@ async function run(cmdName, args) {
         }
       } catch {}
       const logPath = fileURLToPath(new URL('./server.log', import.meta.url));
-      // Append-only forever would grow without bound — cap at 5MB per boot.
-      try {
-        if (fs.statSync(logPath).size > 5_000_000) fs.truncateSync(logPath);
-      } catch {}
+      // (size cap lives in server.mjs — it runs on every start path, not just this one)
       const log = fs.openSync(logPath, 'a');
       const child = spawn(process.execPath, [fileURLToPath(new URL('./server.mjs', import.meta.url))], {
         detached: true,
@@ -164,8 +189,8 @@ async function run(cmdName, args) {
         await new Promise((r) => setTimeout(r, 250));
         up = await fetch(`${BASE}/health`).then((r) => r.ok).catch(() => false);
       }
-      if (!up) fail('server did not come up in 5s — check server.log');
-      print('started (log: server.log) — a loaded extension reconnects on its own');
+      if (!up) fail('server did not come up in 5s — check ' + logPath);
+      print('started (log: ' + logPath + ') — a loaded extension reconnects on its own');
       break;
     }
 
@@ -234,7 +259,7 @@ async function run(cmdName, args) {
       // stdin here — batch owns it; inline the JS instead.
       const lines = (await stdin()).split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
       for (const line of lines) {
-        console.log('$ ' + line);
+        console.error('$ ' + line); // stderr: stdout stays pure concatenated results (machine-parseable)
         const [c, ...a] = tokenize(line);
         await run(c, a);
       }
@@ -269,13 +294,15 @@ async function run(cmdName, args) {
       const fi = args.indexOf('--find');
       let find = null;
       if (fi >= 0) {
-        if (!args[fi + 1] || args[fi + 1].startsWith('--')) fail('--find needs a query');
-        find = args[fi + 1];
+        // Greedy: everything after --find that isn't a flag is the query. A
+        // one-token reader turned `--find cancel button` into find='cancel' +
+        // scope='button' — silent wrong data on the most paraphrasable flag.
+        find = args.slice(fi + 1).filter((a) => !a.startsWith('--')).join(' ');
+        if (!find) fail('--find needs a query');
       }
-      // scope = the first leftover positional (--diff/--href are flags; the
-      // token right after --find is its query — excluded by INDEX, not value,
-      // so a scope that happens to equal the query still works)
-      const scope = args.slice(1).find((a, i) => !a.startsWith('--') && i !== fi) || null;
+      // scope = the first bare positional BEFORE --find (a scope can never
+      // follow a --find query — everything there is the query)
+      const scope = args.slice(1, fi < 1 ? args.length : fi).find((a) => !a.startsWith('--')) || null;
       const out = await cmd({ type: 'snap', urlMatch: args[0], scope, diff, href, ...(find ? { find } : {}) });
       print(out);
       // The truncation line sits at the end of the tree — a `snap | grep foo`
@@ -291,9 +318,34 @@ async function run(cmdName, args) {
     // shell calls (click → wait → snap --diff becomes one command).
     case 'click':
     case 'hover': {
+      const rest = args.filter((a) => a !== '--diff' && a !== '--dbl');
+      if (!rest[0] || !rest[1]) fail(`usage: ${cmdName} <match> <@ref|css>${cmdName === 'click' ? ' [--dbl]' : ''} [--diff]`);
+      const stray = rest.slice(2).find((a) => a.startsWith('--'));
+      if (stray) fail(`unknown flag ${stray} (flags:${cmdName === 'click' ? ' --dbl,' : ''} --diff)`);
+      print(await cmd({
+        type: cmdName,
+        urlMatch: rest[0],
+        target: rest[1],
+        ...(cmdName === 'click' && args.includes('--dbl') ? { dbl: true } : {}),
+        ...(args.includes('--diff') ? { diff: true } : {}),
+      }));
+      break;
+    }
+
+    case 'drag': {
       const rest = args.filter((a) => a !== '--diff');
-      if (!rest[0] || !rest[1]) fail(`usage: ${cmdName} <match> <@ref|css> [--diff]`);
-      print(await cmd({ type: cmdName, urlMatch: rest[0], target: rest[1], ...(args.includes('--diff') ? { diff: true } : {}) }));
+      if (!rest[0] || !rest[1] || !rest[2]) fail('usage: drag <match> <@ref|css> <@ref|css> [--diff]');
+      const stray = rest.slice(3).find((a) => a.startsWith('--'));
+      if (stray) fail(`unknown flag ${stray} (flags: --diff)`);
+      print(await cmd({ type: 'drag', urlMatch: rest[0], from: rest[1], to: rest[2], ...(args.includes('--diff') ? { diff: true } : {}) }));
+      break;
+    }
+
+    case 'dialog': {
+      if (!args[0] || !['accept', 'dismiss'].includes(args[1])) fail('usage: dialog <match> accept|dismiss [--text s]');
+      const ti = args.indexOf('--text');
+      const text = ti >= 0 ? args.slice(ti + 1).filter((a) => !a.startsWith('--')).join(' ') : null;
+      print(await cmd({ type: 'dialog', urlMatch: args[0], accept: args[1] === 'accept', ...(text ? { text } : {}) }));
       break;
     }
 
@@ -301,6 +353,10 @@ async function run(cmdName, args) {
     case 'type': {
       const rest = args.filter((a) => a !== '--diff');
       if (!rest[0] || !rest[1] || rest[2] === undefined) fail(`usage: ${cmdName} <match> <@ref|css> <value> [--diff]`);
+      // A '--'-prefixed token in the value is a fat-fingered flag, not data —
+      // without this guard it gets typed into the user's real form field.
+      const stray = rest.slice(2).find((a) => a.startsWith('--'));
+      if (stray) fail(`unknown flag ${stray} (flags: --diff)`);
       print(await cmd({ type: cmdName, urlMatch: rest[0], target: rest[1], value: rest.slice(2).join(' '), ...(args.includes('--diff') ? { diff: true } : {}) }));
       break;
     }
@@ -308,6 +364,8 @@ async function run(cmdName, args) {
     case 'press': {
       const rest = args.filter((a) => a !== '--diff');
       if (!rest[0] || !rest[1]) fail('usage: press <match> <key> [@ref|css] [--diff]');
+      const stray = rest.slice(3).find((a) => a.startsWith('--'));
+      if (stray) fail(`unknown flag ${stray} (flags: --diff)`);
       print(await cmd({ type: 'press', urlMatch: rest[0], key: rest[1], target: rest[2] || null, ...(args.includes('--diff') ? { diff: true } : {}) }));
       break;
     }
@@ -315,6 +373,8 @@ async function run(cmdName, args) {
     case 'scroll': {
       const rest = args.filter((a) => a !== '--diff');
       if (!rest[0] || !rest[1]) fail('usage: scroll <match> <up|down|top|bottom|@ref|css> [--diff]');
+      const stray = rest.slice(2).find((a) => a.startsWith('--'));
+      if (stray) fail(`unknown flag ${stray} (flags: --diff)`);
       print(await cmd({ type: 'scroll', urlMatch: rest[0], target: rest[1], ...(args.includes('--diff') ? { diff: true } : {}) }));
       break;
     }
@@ -353,6 +413,9 @@ async function run(cmdName, args) {
         if (rest[i] === '--dur') {
           duration = Number(rest[++i]);
           if (!Number.isFinite(duration) || duration < 0) fail('--dur needs a number (ms)');
+          // The extension silently clamps at 30s — fail here instead so the
+          // agent doesn't read "no requests" for a window it believes it watched.
+          if (duration > 30000) fail('--dur max is 30000 ms — run successive captures for longer windows');
         } else if (rest[i] === '--filter') filter = rest[++i];
         else if (rest[i] === '--body') body = rest[++i];
         else fail(`unknown flag ${rest[i]}`);
@@ -371,6 +434,7 @@ async function run(cmdName, args) {
       for (let i = 0; i < rest.length; i++) {
         if (rest[i] === '--text') text = rest[++i];
         else if (rest[i] === '--timeout') timeout = Number(rest[++i]);
+        else if (rest[i].startsWith('--')) fail(`unknown flag ${rest[i]} (flags: --text, --timeout)`);
         else pos.push(rest[i]);
       }
       const selector = pos[0] || null;
@@ -422,8 +486,14 @@ async function run(cmdName, args) {
       }
       if (msg.full && msg.crop) fail('--full and --crop are mutually exclusive');
       for (const k of ['max', 'scale', 'quality']) if (msg[k] !== undefined && !Number.isFinite(msg[k])) fail(`flag --${k} needs a number`);
+      // Ranges, mirroring emulate/wait/net: out-of-range values used to pass
+      // and silently degrade to a different screenshot on the CDP fallback path.
+      if (msg.max !== undefined && msg.max < 0) fail('--max must be >= 0 (0 = native res)');
+      if (msg.scale !== undefined && msg.scale <= 0) fail('--scale must be > 0');
+      if (msg.quality !== undefined && (msg.quality < 1 || msg.quality > 100)) fail('--quality must be 1..100');
       if (msg.format && !['png', 'jpeg'].includes(msg.format)) fail('--format must be png|jpeg');
       if (msg.crop && (msg.crop.length !== 4 || msg.crop.some((n) => !Number.isFinite(n)))) fail('--crop needs 4 numbers: x,y,w,h');
+      if (msg.crop && (msg.crop[0] < 0 || msg.crop[1] < 0 || msg.crop[2] < 1 || msg.crop[3] < 1)) fail('--crop needs x,y >= 0 and w,h >= 1');
       const dataUrl = await cmd(msg);
       const b64 = dataUrl.includes(',') ? dataUrl.split(',', 2)[1] : dataUrl;
       const buf = Buffer.from(b64, 'base64');

@@ -1,6 +1,18 @@
 const WS_URL = 'ws://127.0.0.1:9333/ws';
 let ws = null;
 
+// Stable per-profile id (uuid, persisted): the server logs and /health report
+// WHICH Chrome holds the seat — with two profiles loaded, a silent seat
+// migration would start driving the browser the human isn't watching.
+let PROFILE_ID = '';
+chrome.storage.local
+  .get('profileId')
+  .then(({ profileId }) => {
+    PROFILE_ID = profileId || crypto.randomUUID();
+    if (!profileId) chrome.storage.local.set({ profileId: PROFILE_ID }).catch(() => {});
+  })
+  .catch(() => {});
+
 // --- Service-worker log ring ------------------------------------------------
 // The SW console is invisible to the CLI (it's not a tab); keep the tail so
 // `swlogs` can read it. Cleared on SW restart, like everything else here.
@@ -34,12 +46,23 @@ function connect() {
   } catch {}
   let s;
   try {
-    s = ws = new WebSocket(WS_URL);
+    // ?v= lets `cli health` catch a stale extension after git pull; ?id= names
+    // which profile holds the seat in the server log and /health.
+    s = ws = new WebSocket(WS_URL + '?v=' + chrome.runtime.getManifest().version + (PROFILE_ID ? '&id=' + PROFILE_ID : ''));
   } catch {
     return;
   }
   s.onmessage = async (e) => {
     const msg = JSON.parse(e.data);
+    if (msg.type === 'seat-taken') {
+      // Another Chrome profile holds the seat. Intercept BEFORE handle() (an
+      // unknown type there throws) and mark the socket: the 500ms hot
+      // reconnect in onclose would churn the server at 2Hz forever — let the
+      // 24s keepalive alarm re-probe instead; when the winner dies, we take over.
+      s._seatTaken = true;
+      ws = null;
+      return;
+    }
     let failed = false;
     try {
       let result = await handle(msg);
@@ -47,7 +70,9 @@ function connect() {
       // shape — the agent must see that its <match> was contested.
       if (msg._warn) {
         if (typeof result === 'string') result += '\n' + msg._warn;
+        else if (Array.isArray(result)) result = { result, warning: msg._warn }; // spread would reshape the array into {0:…}
         else if (result && typeof result === 'object') result = { ...result, warning: msg._warn };
+        else if (result !== undefined && result !== null) result = [result, msg._warn]; // primitives (eval "1+1") — the warning must not vanish
       }
       s.send(JSON.stringify({ id: msg.id, ok: true, result }));
     } catch (err) {
@@ -58,7 +83,15 @@ function connect() {
         const { done } = activityPhrases(msg);
         const lines = pushActivity(msg._tabId, '✗ ' + done + ' — ' + String(err).slice(0, 60));
         chrome.scripting
-          .executeScript({ target: { tabId: msg._tabId }, func: pillInject, args: ['✗ ' + done, lines, null, false] })
+          .executeScript({
+            target: { tabId: msg._tabId },
+            func: pillInject,
+            args: ['✗ ' + done, lines, msg.target || null, false],
+            // Same world as the success path: refs live in the world snap ran
+            // in, so on CSP/MAIN-world pages this resolves the @ref to a name
+            // instead of narrating agent-speak ('✗ clicked @e4').
+            world: worldCache.get(msg._tabId) || 'MAIN',
+          })
           .catch(() => {});
       }
       s.send(JSON.stringify({ id: msg.id, ok: false, error: String(err) }));
@@ -90,6 +123,7 @@ function connect() {
   s.onclose = () => {
     if (ws !== s) return; // a newer socket already took over — don't double-reconnect
     ws = null;
+    if (s._seatTaken) return; // lost the seat race — the 24s keepalive alarm re-probes
     // Reconnect immediately; the alarm is only a backstop for a killed SW.
     setTimeout(connect, 500);
   };
@@ -177,15 +211,32 @@ function injectBanner() {
   const pill = document.createElement('div');
   pill.style.cssText =
     'position:fixed;bottom:8px;right:8px;background:#a855f7;color:#fff;font:12px sans-serif;padding:3px 10px;border-radius:11px;pointer-events:auto;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.4);user-select:none';
+  // The pill is the product's trust surface — make it reachable and announced
+  // for keyboard/screen-reader users (this tool's own pitch is an a11y tree).
+  pill.setAttribute('role', 'button');
+  pill.tabIndex = 0;
+  pill.setAttribute('aria-label', 'An AI agent is driving this tab (chrome-bridge) — click for action history');
   const label = document.createElement('span');
+  label.setAttribute('role', 'status'); // narration changes announced politely
+  label.setAttribute('aria-live', 'polite');
   label.textContent = '🟣 AI idle';
   const x = document.createElement('span');
   x.textContent = ' ✕';
   x.title = 'hide until next navigation';
+  x.setAttribute('role', 'button');
+  x.tabIndex = 0;
+  x.setAttribute('aria-label', 'hide agent pill until next navigation');
   x.style.opacity = '.75';
   x.onclick = (e) => {
     e.stopPropagation();
     d.remove();
+  };
+  x.onkeydown = (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      e.stopPropagation();
+      d.remove();
+    }
   };
   pill.append(label, x);
   pill.title = 'An AI agent is driving this tab (chrome-bridge) — click for action history';
@@ -203,6 +254,12 @@ function injectBanner() {
       'position:fixed;bottom:36px;right:8px;width:380px;max-height:50vh;overflow:auto;margin:0;background:rgba(24,12,40,.94);color:#e9d5ff;font:11px/1.6 monospace;padding:8px 10px;border-radius:8px;pointer-events:auto;white-space:pre-wrap;box-shadow:0 2px 12px rgba(0,0,0,.5)';
     p.textContent = pill.dataset.log || '(no activity yet)';
     d.appendChild(p);
+  };
+  pill.onkeydown = (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      pill.onclick(e);
+    }
   };
   d.appendChild(pill);
   (document.body || document.documentElement).appendChild(d);
@@ -273,7 +330,14 @@ function recordActivity(tabId, msg) {
   msg._pill = true; // onmessage's finally decrements inflight only for commands that recorded
   inflight.set(tabId, (inflight.get(tabId) || 0) + 1);
   chrome.scripting
-    .executeScript({ target: { tabId }, func: pillInject, args: [ing + '…', lines, msg.target || null, true] })
+    .executeScript({
+      target: { tabId },
+      func: pillInject,
+      args: [ing + '…', lines, msg.target || null, true],
+      // Refs live in the world snap ran in (worldCache); on CSP pages that's
+      // MAIN — inject there or the pill falls back to raw '@e4' agent-speak.
+      world: worldCache.get(tabId) || 'MAIN',
+    })
     .catch(() => {}); // banner absent (user hid it / chrome:// page) — fine
 }
 
@@ -290,6 +354,8 @@ const ACT_VERBS = {
   snap: ['reading page', 'read page'],
   shot: ['taking screenshot', 'took screenshot'],
   click: ['clicking', 'clicked'],
+  drag: ['dragging', 'dragged'],
+  dialog: ['answering a dialog', 'answered a dialog'],
   fill: ['filling in', 'filled in'],
   upload: ['uploading file to', 'uploaded file to'],
   type: ['typing into', 'typed into'],
@@ -727,7 +793,8 @@ const SNAP_SRC = (scope, diff, href) => `(() => {
   const ROLE_BY_TAG = { A:'link', BUTTON:'button', SELECT:'combobox', TEXTAREA:'textbox', SUMMARY:'button',
     H1:'heading', H2:'heading', H3:'heading', H4:'heading', H5:'heading', H6:'heading',
     IMG:'img', NAV:'navigation', MAIN:'main', HEADER:'banner', FOOTER:'contentinfo', ASIDE:'complementary',
-    FORM:'form', DIALOG:'dialog', TABLE:'table', UL:'list', OL:'list', LI:'listitem', LABEL:'label' };
+    FORM:'form', DIALOG:'dialog', TABLE:'table', UL:'list', OL:'list', LI:'listitem', LABEL:'label',
+    IFRAME:'frame' };
   const INPUT_ROLE = { checkbox:'checkbox', radio:'radio', range:'slider', button:'button', submit:'button', reset:'button', search:'searchbox', file:'file' };
   const hidden = (el) => { const s = getComputedStyle(el); return s.display === 'none' || s.visibility === 'hidden'; };
   const hasBox = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
@@ -746,6 +813,7 @@ const SNAP_SRC = (scope, diff, href) => `(() => {
       if (t) return t.slice(0, 60);
     }
     if (role === 'img') return el.alt || '';
+    if (el.tagName === 'IFRAME') return (el.getAttribute('src') || '').slice(0, 60); // a cross-origin frame is otherwise a black hole in the tree
     if (el.tagName === 'INPUT') return el.placeholder || el.name || '';
     const text = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
     if (text) return text.slice(0, 60);
@@ -759,8 +827,15 @@ const SNAP_SRC = (scope, diff, href) => `(() => {
     if (el.getAttribute('aria-expanded') === 'false') s.push('collapsed');
     if (el.getAttribute('aria-selected') === 'true' || el.selected) s.push('selected');
     if (['textbox', 'searchbox', 'combobox', 'slider', 'file'].includes(role)) {
-      const v = el.value ?? el.getAttribute('aria-valuenow');
-      if (v !== undefined && v !== null && v !== '') s.push('value=' + JSON.stringify(String(v).slice(0, 40)));
+      // Never print a password field's value — an autofilled credential is
+      // exactly what "your logged-in browser" means, and snap lines land in
+      // the agent's context and terminal scrollback.
+      if (el.type === 'password') {
+        if (el.value) s.push('value=•••');
+      } else {
+        const v = el.value ?? el.getAttribute('aria-valuenow');
+        if (v !== undefined && v !== null && v !== '') s.push('value=' + JSON.stringify(String(v).slice(0, 40)));
+      }
     }
     // hrefs are the biggest token sink in snap (~60% on link-heavy pages) and
     // almost never needed — the @eN ref is what you click. Keep them only for
@@ -898,7 +973,7 @@ const FILE_INPUT_GUARD = `if (el.tagName === 'INPUT' && el.type === 'file') thro
 // report 'filled' — fake success. Fail loudly toward click instead.
 const CHECK_RADIO_GUARD = `if (el.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio')) throw new Error('checkbox/radio — fill cannot toggle checked; use: click <match> ' + sel);`;
 
-const clickSrc = (target) => `(() => {
+const clickSrc = (target, dbl) => `(() => {
   const sel = ${JSON.stringify(target)};
   const el = sel.startsWith('@') ? window.__bridgeRefs?.[sel.slice(1)] : document.querySelector(sel);
   if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
@@ -917,14 +992,19 @@ const clickSrc = (target) => `(() => {
   ${CURSOR_SRC}
   showCursor(cx, cy, true);
   const o = { bubbles: true, cancelable: true, composed: true, clientX: cx, clientY: cy, button: 0 };
-  el.dispatchEvent(new PointerEvent('pointerover', o));
-  el.dispatchEvent(new PointerEvent('pointerdown', o));
-  el.dispatchEvent(new MouseEvent('mousedown', o));
-  el.focus?.();
-  el.dispatchEvent(new PointerEvent('pointerup', o));
-  el.dispatchEvent(new MouseEvent('mouseup', o));
-  el.dispatchEvent(new MouseEvent('click', o));
-  return 'clicked ' + sel;
+  const pair = (detail) => {
+    el.dispatchEvent(new PointerEvent('pointerover', o));
+    el.dispatchEvent(new PointerEvent('pointerdown', o));
+    el.dispatchEvent(new MouseEvent('mousedown', o));
+    el.focus?.();
+    el.dispatchEvent(new PointerEvent('pointerup', o));
+    el.dispatchEvent(new MouseEvent('mouseup', o));
+    el.dispatchEvent(new MouseEvent('click', { ...o, detail })); // detail 2 = the second half of a double-click
+  };
+  pair(1);
+  ${dbl ? `pair(2);
+  el.dispatchEvent(new MouseEvent('dblclick', { ...o, detail: 2 }));` : ''}
+  return 'clicked ' + sel${dbl ? ' (double)' : ''};
 })()`;
 
 const fillSrc = (target, value) => `(() => {
@@ -943,7 +1023,10 @@ const fillSrc = (target, value) => `(() => {
     // still returned 'filled'. Match by value or visible label first, and fail
     // loudly with the available choices instead of reporting fake success.
     const hit = [...el.options].find((o) => o.value === value || o.label === value || o.text === value);
-    if (!hit) throw new Error('no option matching ' + JSON.stringify(String(value).slice(0, 40)) + ' — values: ' + [...el.options].map((o) => o.value).slice(0, 8).join(', '));
+    // The value the agent sent can be a secret (server.mjs keeps values out of
+    // logs on purpose) — don't echo it back through the error into server.log
+    // and the watch feed; the agent knows what it sent.
+    if (!hit) throw new Error('no option matching (as sent) — values: ' + [...el.options].map((o) => o.value).slice(0, 8).join(', ') + ' (use: fill <match> <ref> "<label>")');
     el.value = hit.value;
     el.dispatchEvent(new Event('change', { bubbles: true }));
   } else {
@@ -993,20 +1076,31 @@ const typeSrc = (target, text) => `(async () => {
 
 // Key press on the focused element (or a target). Synthetic keys are untrusted:
 // they reach JS listeners but don't trigger browser defaults (form submit).
-const pressSrc = (key, target) => `(() => {
-  const sel = ${JSON.stringify(target || '')}, key = ${JSON.stringify(key)};
+// Modifier combos: 'Control+k' splits into ctrlKey + key 'k' — 'press Control+k'
+// dispatches key='k' with the flag set, which is what app handlers match.
+const pressSrc = (keyIn, target) => `(() => {
+  const sel = ${JSON.stringify(target || '')}, keyIn = ${JSON.stringify(keyIn)};
   let el = document.activeElement || document.body;
   if (sel) {
     el = sel.startsWith('@') ? window.__bridgeRefs?.[sel.slice(1)] : document.querySelector(sel);
     if (!el) throw new Error('element not found: ' + sel);
     el.focus?.();
   }
-  const code = key.length === 1 ? (/[a-z]/i.test(key) ? 'Key' + key.toUpperCase() : 'Digit' + key) : key;
-  const o = { bubbles: true, cancelable: true, composed: true, key, code };
+  const MODS = { Control:'ctrlKey', Ctrl:'ctrlKey', Shift:'shiftKey', Alt:'altKey', Meta:'metaKey', Cmd:'metaKey', Command:'metaKey' };
+  const o = { bubbles: true, cancelable: true, composed: true };
+  let key = keyIn;
+  if (keyIn.includes('+') && keyIn !== '+') {
+    const parts = keyIn.split('+');
+    key = parts.pop();
+    for (const m of parts) if (!MODS[m]) throw new Error('unknown modifier ' + JSON.stringify(m) + ' in ' + JSON.stringify(keyIn) + ' — use Control/Ctrl, Shift, Alt, Meta/Cmd');
+    for (const m of parts) o[MODS[m]] = true;
+  }
+  o.key = key;
+  o.code = key.length === 1 ? (/[a-z]/i.test(key) ? 'Key' + key.toUpperCase() : 'Digit' + key) : key;
   el.dispatchEvent(new KeyboardEvent('keydown', o));
   el.dispatchEvent(new KeyboardEvent('keypress', o));
   el.dispatchEvent(new KeyboardEvent('keyup', o));
-  return 'pressed ' + key + ' on <' + el.tagName.toLowerCase() + '>';
+  return 'pressed ' + keyIn + ' on <' + el.tagName.toLowerCase() + '>';
 })()`;
 
 const hoverSrc = (target) => `(() => {
@@ -1022,6 +1116,39 @@ const hoverSrc = (target) => `(() => {
   el.dispatchEvent(new MouseEvent('mouseover', o));
   el.dispatchEvent(new MouseEvent('mouseenter', { ...o, bubbles: false }));
   return 'hovered ' + sel;
+})()`;
+
+// Drag one element onto another: a real pointerdown, interpolated pointermove
+// steps dispatched on the element under the pointer (dnd-kit/Sortable hit-test
+// that way), pointerup at the destination. Synthetic — legacy HTML5 DnD needs
+// a constructed DataTransfer (an eval recipe), and isTrusted-checking apps
+// (canvas tools) ignore this entirely.
+const dragSrc = (from, to) => `(async () => {
+  const sel = ${JSON.stringify(from)}, sel2 = ${JSON.stringify(to)};
+  const el = sel.startsWith('@') ? window.__bridgeRefs?.[sel.slice(1)] : document.querySelector(sel);
+  const el2 = sel2.startsWith('@') ? window.__bridgeRefs?.[sel2.slice(1)] : document.querySelector(sel2);
+  if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
+  if (!el2) throw new Error('element not found: ' + sel2 + (sel2.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
+  el.scrollIntoView({ block: 'center', inline: 'center' });
+  el2.scrollIntoView({ block: 'center', inline: 'center' });
+  const r = el.getBoundingClientRect(), r2 = el2.getBoundingClientRect();
+  const x1 = r.left + r.width / 2, y1 = r.top + r.height / 2;
+  const x2 = r2.left + r2.width / 2, y2 = r2.top + r2.height / 2;
+  ${CURSOR_SRC}
+  showCursor(x1, y1, false);
+  const mk = (type, x, y) => new PointerEvent(type, { bubbles: true, cancelable: true, composed: true, pointerId: 1, isPrimary: true, clientX: x, clientY: y });
+  el.dispatchEvent(mk('pointerdown', x1, y1));
+  el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: x1, clientY: y1 }));
+  for (let i = 1; i <= 8; i++) {
+    const x = x1 + ((x2 - x1) * i) / 8, y = y1 + ((y2 - y1) * i) / 8;
+    showCursor(x, y, false);
+    document.elementFromPoint(x, y)?.dispatchEvent(mk('pointermove', x, y));
+    await new Promise((res) => setTimeout(res, 16));
+  }
+  const dst = document.elementFromPoint(x2, y2) || el2;
+  dst.dispatchEvent(mk('pointerup', x2, y2));
+  dst.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: x2, clientY: y2 }));
+  return 'dragged ' + sel + ' onto ' + sel2;
 })()`;
 
 // Instant (not CSS-smooth) scrolling, so the position readback is true even on
@@ -1325,9 +1452,12 @@ function waitForLoad(tabId, timeout = 8000, recheck = false) {
 // --- Commands ---------------------------------------------------------------
 
 // Commands that act as the user or run code in the page — these auto-mark an
-// unmarked tab (see findTab). Pure reads (snap/measure/console/net/shot/…)
+// unmarked tab (see findTab). That includes the visibly-acting ones (hover/
+// scroll/grid/emulate/resize/drag/dialog): they move pixels or reshape the
+// window with no read involved, so an unmarked tab would show the user's
+// browser acting on its own. Pure reads (snap/measure/console/net/shot/…)
 // stay unmarked, so glancing at a tab doesn't stick a pill on it.
-const MUTATING = new Set(['click', 'fill', 'type', 'press', 'upload', 'eval']);
+const MUTATING = new Set(['click', 'fill', 'type', 'press', 'upload', 'eval', 'hover', 'scroll', 'grid', 'emulate', 'resize', 'drag', 'dialog']);
 
 // Takes the whole msg: records _tabId so the onmessage finally can flip a
 // driven tab's favicon to ✅, and marks a driven tab busy (⏳) for the command
@@ -1465,6 +1595,15 @@ async function handle(msg) {
   if (msg.type === 'note') {
     const tab = await findTab(msg);
     if (!drivenTabs.has(tab.id)) throw new Error('tab not marked — notes show in the pill on driven tabs (mark it first)');
+    // The pill the human hid (✕) or a chrome:// page silently swallows the
+    // note while the agent believes the human was warned — probe and say so.
+    // (Banner lookup is DOM — world-agnostic; no world option needed.)
+    let seen = null;
+    try {
+      seen = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => !!document.getElementById('bridge-banner') });
+    } catch {} // injection itself failed — chrome:// page etc.
+    if (!seen?.[0]?.result)
+      throw new Error("pill not visible on this tab (hidden via ✕ or non-injectable page) — the human won't see this note");
     return { id: tab.id };
   }
 
@@ -1504,13 +1643,39 @@ async function handle(msg) {
   if (['click', 'fill', 'type', 'press', 'hover'].includes(msg.type)) {
     const tab = await findTab(msg);
     const src =
-      msg.type === 'click' ? clickSrc(msg.target) :
+      msg.type === 'click' ? clickSrc(msg.target, msg.dbl) :
       msg.type === 'fill' ? fillSrc(msg.target, msg.value) :
       msg.type === 'type' ? typeSrc(msg.target, msg.value) :
       msg.type === 'press' ? pressSrc(msg.key, msg.target) :
       hoverSrc(msg.target);
     const result = await runEval(tab.id, src);
     return msg.diff ? await observeDiff(tab.id, result) : result;
+  }
+
+  if (msg.type === 'drag') {
+    const tab = await findTab(msg);
+    const result = await runEval(tab.id, dragSrc(msg.from, msg.to));
+    return msg.diff ? await observeDiff(tab.id, result) : result;
+  }
+
+  // A JS dialog (alert/confirm/prompt) blocks the renderer: every eval and
+  // synthetic key wedges to the server's 70s timeout, so the agent cannot
+  // rescue itself without CDP — the one channel that answers a dialog.
+  if (msg.type === 'dialog') {
+    const tab = await findTab(msg);
+    return await withCdp(tab.id, async () => {
+      try {
+        await attachDbg(tab.id);
+        await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.enable');
+        await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.handleJavaScriptDialog', {
+          accept: msg.accept !== false,
+          ...(msg.text ? { promptText: msg.text } : {}),
+        });
+      } finally {
+        await detachDbg(tab.id);
+      }
+      return (msg.accept === false ? 'dismissed' : 'accepted') + ' dialog on tab ' + tab.id;
+    });
   }
 
   if (msg.type === 'scroll') {
@@ -1685,10 +1850,17 @@ async function handle(msg) {
       // (viewport only, native res — crop/max/scale can't be honored there)
       console.warn('[bridge] cdp shot failed, falling back (crop/max/scale ignored):', e);
       // captureVisibleTab grabs the window's ACTIVE tab — must activate first,
-      // otherwise we'd screenshot whatever the user is looking at.
+      // otherwise we'd screenshot whatever the user is looking at. Restore the
+      // tab the human WAS on after: stealing their view is the one promise
+      // this path must not break (the CDP path above never activates).
+      const prev = (await chrome.tabs.query({ active: true, windowId: tab.windowId }))[0];
       await chrome.tabs.update(tab.id, { active: true });
-      await new Promise((r) => setTimeout(r, 400));
-      return await chrome.tabs.captureVisibleTab(tab.windowId, { format, ...(format === 'jpeg' ? { quality: msg.quality ?? 80 } : {}) });
+      try {
+        await new Promise((r) => setTimeout(r, 400));
+        return await chrome.tabs.captureVisibleTab(tab.windowId, { format, ...(format === 'jpeg' ? { quality: msg.quality ?? 80 } : {}) });
+      } finally {
+        if (prev && prev.id !== tab.id) await chrome.tabs.update(prev.id, { active: true }).catch(() => {});
+      }
     } finally {
       await detachDbg(tab.id);
     }
