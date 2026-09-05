@@ -57,7 +57,7 @@ function pushAct(msg, out, ms) {
     new Date().toTimeString().slice(0, 8) +
     ' ' +
     summarize(msg) +
-    (out.ok ? ` · ok ${(ms / 1000).toFixed(1)}s` : ` · ✗ ${String(out.error).slice(0, 80)}`)
+    (out.ok ? ` · ok ${(ms / 1000).toFixed(1)}s` : ` · ✗ ${String(out.error).replace(/^(Error:\s*)+/, '').slice(0, 80)}`)
     // Page text reaches the line via error messages (click-overlay text,
     // select option values) — strip control chars so a page can't inject ANSI
     // escapes or forged newlines into server.log / the `watch` terminal.
