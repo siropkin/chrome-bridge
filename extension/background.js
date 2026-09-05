@@ -5,7 +5,7 @@ let ws = null;
 // WHICH Chrome holds the seat — with two profiles loaded, a silent seat
 // migration would start driving the browser the human isn't watching.
 let PROFILE_ID = '';
-chrome.storage.local
+const idReady = chrome.storage.local
   .get('profileId')
   .then(({ profileId }) => {
     PROFILE_ID = profileId || crypto.randomUUID();
@@ -129,7 +129,10 @@ function connect() {
   };
 }
 
-connect();
+// Wait for the profile id before the first dial — otherwise this connect
+// races the storage read and the seat is held with extId=null until the next
+// SW cycle (days, on a healthy server). Reconnects run after idReady settled.
+idReady.then(connect);
 
 // Keep the service worker (and its WebSocket) alive; reconnect if dropped.
 chrome.alarms.create('keepalive', { periodInMinutes: 0.4 });
