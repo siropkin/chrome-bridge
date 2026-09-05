@@ -273,7 +273,10 @@ server.on('upgrade', (req, socket) => {
   if (extSocket && !extSocket.destroyed) {
     // Tell the loser why — a second profile's extension otherwise reconnects
     // at 2Hz forever and, when the winner dies, silently takes the seat and
-    // every command starts driving the OTHER profile's browser.
+    // every command starts driving the OTHER profile's browser. Log it: an
+    // installed-but-rejected profile would otherwise be invisible while it
+    // probes every 24s (its keepalive alarm).
+    console.log(`[bridge] seat taken — rejected v=${v || '?'} id=${id || '?'} (holder id=${extId || '?'})`);
     socket.write(encodeFrame(JSON.stringify({ type: 'seat-taken' })));
     socket.destroy();
     return;
