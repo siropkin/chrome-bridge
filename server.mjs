@@ -25,11 +25,112 @@ try {
   if (fs.statSync(p).size > 5_000_000) fs.truncateSync(p);
 } catch {} // not started from the repo (spawned) or no log yet — the next writer creates it
 
-let extSocket = null;
-let extVersion = null; // seat holder's manifest version (?v= on the WS handshake)
-let extId = null; // seat holder's stable per-profile id (?id=) — which Chrome holds the seat
-let nextId = 1;
-const pending = new Map();
+// --- extension seats — one per Chrome profile ---------------------------------
+// Every profile's extension connects with its stable ?id= and keeps its own
+// seat: multiple profiles are drivable at once, each over its own socket. The
+// server routes each command to ONE profile (never multi-casts side effects):
+//   0 profiles  → the classic 'extension not connected' error
+//   1 profile   → straight through, zero routing overhead
+//   N profiles  → probe each for matching tabs; exactly one match routes
+//                 automatically, several matches refuse with a --profile hint
+//                 (never silently act in the personal browser when the agent
+//                 meant the work one), msg.profile overrides with an explicit
+//                 id (prefix match — first chars of the uuid are enough).
+const seats = new Map(); // profileId -> { socket, v, pending: Map, nextId }
+let anonSeatN = 0; // id-less clients (old extensions, raw test sockets) get synthetic ids
+
+function dropSeatPending(seat, error) {
+  for (const resolve of seat.pending.values()) resolve({ ok: false, error });
+  seat.pending.clear();
+}
+
+// One command to one seat. Same shape as the old single-seat sendToExt: the
+// MV3 service worker cycles, so a missing socket gets a brief reconnect grace.
+function ask(seat, msg, timeoutMs = CMD_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    const attempt = (triesLeft) => {
+      if (seat.socket && !seat.socket.destroyed) {
+        const id = seat.nextId++;
+        seat.pending.set(id, resolve);
+        seat.socket.write(encodeFrame(JSON.stringify({ ...msg, id })));
+        setTimeout(() => {
+          if (seat.pending.delete(id)) reject(new Error('extension timeout'));
+        }, timeoutMs);
+        return;
+      }
+      if (triesLeft <= 0) {
+        reject(new Error('extension not connected — load extension/ at chrome://extensions'));
+        return;
+      }
+      setTimeout(() => attempt(triesLeft - 1), 250);
+    };
+    attempt(40);
+  });
+}
+
+const idShort = (pid) => String(pid).slice(0, 4);
+function seatByProfile(want) {
+  const pids = [...seats.keys()].filter((p) => p.startsWith(want));
+  if (pids.length > 1) throw new Error(`--profile '${want}' matches ${pids.length} profiles — a few more characters disambiguate`);
+  if (!pids.length) throw new Error(`no connected profile matching '${want}' — run: cli profiles`);
+  return seats.get(pids[0]);
+}
+
+// Route one command to exactly one profile's seat.
+async function route(msg) {
+  if (msg.type === 'tabs') {
+    // Read-only: merged across profiles. Single profile keeps today's output
+    // byte-identical (no profile tags) — the common case stays the old shape.
+    if (!seats.size) throw new Error('extension not connected — load extension/ at chrome://extensions');
+    if (seats.size === 1) return ask(seats.values().next().value, msg);
+    const rows = [];
+    for (const [pid, seat] of seats) {
+      const reply = await ask(seat, msg).catch(() => null);
+      const tabs = reply?.ok ? reply.result : null;
+      if (!tabs) {
+        rows.push({ profile: idShort(pid), error: 'unresponsive' });
+        continue;
+      }
+      for (const t of tabs) rows.push({ ...t, profile: idShort(pid) });
+    }
+    return { ok: true, result: rows };
+  }
+
+  let seat;
+  if (msg.profile) {
+    seat = seatByProfile(String(msg.profile));
+  } else if (seats.size === 0) {
+    throw new Error('extension not connected — load extension/ at chrome://extensions');
+  } else if (seats.size === 1) {
+    seat = seats.values().next().value;
+  } else {
+    // Multi-seat: probe every profile for matching tabs. Commands without a
+    // <match> (open, ping, swlogs) can't be probed — refuse with the hint.
+    if (!msg.urlMatch) throw new Error(`multiple profiles are connected — name one: --profile <id> (see: cli profiles)`);
+    const probes = await Promise.all(
+      [...seats.entries()].map(async ([pid, s]) => {
+        const reply = await ask(s, { type: 'probe', urlMatch: msg.urlMatch }, 5_000).catch(() => null);
+        return { pid, tabs: reply?.ok ? reply.result : null };
+      })
+    );
+    const live = probes.filter((p) => p.tabs !== null);
+    const matching = live.filter((p) => p.tabs.length);
+    if (!live.length) throw new Error('no profile answered — extensions disconnected?');
+    if (!matching.length)
+      throw new Error(`no tab matching "${msg.urlMatch}" in any connected profile — run tabs to find it`);
+    if (matching.length > 1)
+      throw new Error(
+        `⚠ "${msg.urlMatch}" matches tabs in ${matching.length} profiles (${matching.map((p) => idShort(p.pid)).join(', ')}) — name one: --profile <id> (see: cli profiles)`
+      );
+    seat = seats.get(matching[0].pid);
+  }
+  // The activity feed names who acted — but only when profiles are actually
+  // in play (multi-seat, or the caller named one): a lone profile keeps the
+  // old single-seat line shape.
+  const explicit = !!msg.profile;
+  if (seats.size > 1 || explicit) msg.profile = seat.pid;
+  return await ask(seat, msg);
+}
 
 // --- activity feed (`cli.mjs watch`) ----------------------------------------
 // One line per relayed command: what ran, where, ok or the error, how long.
@@ -43,6 +144,7 @@ const bootId = Date.now();
 function summarize(msg) {
   const s = [msg.type];
   if (msg.urlMatch) s.push(msg.urlMatch);
+  if (msg.profile) s.push('@' + idShort(msg.profile)); // multi-profile: who acted
   // value stays out on purpose: fill values can be secrets, and this line is
   // persisted to server.log.
   const extra =
@@ -52,7 +154,7 @@ function summarize(msg) {
   return s.join(' ');
 }
 function pushAct(msg, out, ms) {
-  if (!msg?.type) return; // unparseable body — sendToExt already returned its error
+  if (!msg?.type) return; // unparseable body — route already returned its error
   const line = (
     new Date().toTimeString().slice(0, 8) +
     ' ' +
@@ -88,7 +190,7 @@ function encodeFrame(data, op = 0x1) {
   return Buffer.concat([head, payload]);
 }
 
-function handleWsData(socket, chunk, state) {
+function handleWsData(seat, chunk, state) {
   state.buf = state.buf.length ? Buffer.concat([state.buf, chunk]) : chunk;
   while (true) {
     const buf = state.buf;
@@ -129,51 +231,9 @@ function handleWsData(socket, chunk, state) {
     if (fin) {
       const msg = Buffer.concat(state.fragments).toString();
       state.fragments = [];
-      onExtMessage(msg);
+      seat.onMessage(msg); // replies are per-seat: ids are only unique within one socket
     }
   }
-}
-
-function onExtMessage(data) {
-  let msg;
-  try {
-    msg = JSON.parse(data);
-  } catch {
-    return;
-  }
-  const resolve = pending.get(msg.id);
-  if (resolve) {
-    pending.delete(msg.id);
-    resolve(msg);
-  }
-}
-
-function dropPending(error) {
-  for (const resolve of pending.values()) resolve({ ok: false, error });
-  pending.clear();
-}
-
-function sendToExt(msg) {
-  return new Promise((resolve, reject) => {
-    // The MV3 service worker cycles; wait briefly for a reconnect before failing.
-    const attempt = (triesLeft) => {
-      if (extSocket && !extSocket.destroyed) {
-        const id = nextId++;
-        pending.set(id, resolve);
-        extSocket.write(encodeFrame(JSON.stringify({ ...msg, id })));
-        setTimeout(() => {
-          if (pending.delete(id)) reject(new Error('extension timeout'));
-        }, CMD_TIMEOUT_MS);
-        return;
-      }
-      if (triesLeft <= 0) {
-        reject(new Error('extension not connected — load extension/ at chrome://extensions'));
-        return;
-      }
-      setTimeout(() => attempt(triesLeft - 1), 250);
-    };
-    attempt(40);
-  });
 }
 
 const server = http.createServer((req, res) => {
@@ -184,7 +244,13 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, extension: !!(extSocket && !extSocket.destroyed), extVersion, extId }));
+    res.end(
+      JSON.stringify({
+        ok: true,
+        extension: !![...seats.values()].find((s) => s.socket && !s.socket.destroyed),
+        profiles: [...seats.entries()].map(([pid, s]) => ({ id: pid, v: s.v })),
+      })
+    );
     return;
   }
   if (req.method === 'POST' && req.url === '/cmd') {
@@ -203,7 +269,7 @@ const server = http.createServer((req, res) => {
       const t0 = Date.now();
       try {
         msg = JSON.parse(body);
-        out = await sendToExt(msg);
+        out = await route(msg);
       } catch (e) {
         out = { ok: false, error: String(e) };
       }
@@ -253,11 +319,10 @@ server.on('upgrade', (req, socket) => {
   }
   // The extension announces its manifest version and a stable per-profile id
   // (?v=…&id=…) — /health lets `cli health` compare versions (stale-extension
-  // trap after git pull), and the id makes a seat migration between two
-  // Chrome profiles visible in the log instead of silent.
+  // trap after git pull) and lists every connected profile.
   const u = new URL(req.url, 'http://x');
   const v = u.searchParams.get('v');
-  const id = u.searchParams.get('id');
+  const id = u.searchParams.get('id') || `anon-${++anonSeatN}`; // old extensions / raw sockets: synthetic id
   const accept = crypto.createHash('sha1').update(key + WS_GUID).digest('base64');
   socket.write(
     'HTTP/1.1 101 Switching Protocols\r\n' +
@@ -266,33 +331,45 @@ server.on('upgrade', (req, socket) => {
       `Sec-WebSocket-Accept: ${accept}\r\n\r\n`
   );
   socket.setNoDelay(true);
-  // First healthy connection holds the seat. A newcomer only takes it when
-  // the current socket is already dead (SW restart closes the old socket,
-  // freeing the seat) — a client stuck in a reconnect loop must not evict a
-  // working connection.
-  if (extSocket && !extSocket.destroyed) {
-    // Tell the loser why — a second profile's extension otherwise reconnects
-    // at 2Hz forever and, when the winner dies, silently takes the seat and
-    // every command starts driving the OTHER profile's browser. Log it: an
-    // installed-but-rejected profile would otherwise be invisible while it
-    // probes every 24s (its keepalive alarm).
-    console.log(`[bridge] seat taken — rejected v=${v || '?'} id=${id || '?'} (holder id=${extId || '?'})`);
+  // One seat per profile. A duplicate id is the SAME profile's service-worker
+  // reconnect race — bounce it with a seat-taken frame (the SW backs off and
+  // lets its 24s keepalive alarm re-probe) instead of evicting the live socket.
+  const existing = seats.get(id);
+  if (existing && existing.socket && !existing.socket.destroyed) {
+    console.log(`[bridge] seat taken — rejected v=${v || '?'} id=${id} (duplicate; holder is alive)`);
     socket.write(encodeFrame(JSON.stringify({ type: 'seat-taken' })));
     socket.destroy();
     return;
   }
-  extSocket = socket;
-  extVersion = v;
-  extId = id;
-  console.log(`[bridge] extension connected origin=${origin || 'none'} v=${v || '?'} id=${id || '?'}`);
+  const seat = {
+    pid: id,
+    v,
+    socket,
+    nextId: 1,
+    pending: new Map(),
+    onMessage(data) {
+      let msg;
+      try {
+        msg = JSON.parse(data);
+      } catch {
+        return;
+      }
+      const resolve = this.pending.get(msg.id);
+      if (resolve) {
+        this.pending.delete(msg.id);
+        resolve(msg);
+      }
+    },
+  };
+  seats.set(id, seat);
+  console.log(`[bridge] extension connected origin=${origin || 'none'} v=${v || '?'} id=${id}`);
   const state = { buf: Buffer.alloc(0), fragments: [] };
-  socket.on('data', (chunk) => handleWsData(socket, chunk, state));
+  socket.on('data', (chunk) => handleWsData(seat, chunk, state));
   const onGone = () => {
-    if (extSocket === socket) {
-      extSocket = null;
-      extVersion = extId = null;
-      dropPending('extension disconnected');
-      console.log('[bridge] extension disconnected');
+    if (seats.get(id) === seat) {
+      seats.delete(id);
+      dropSeatPending(seat, 'extension disconnected');
+      console.log(`[bridge] extension disconnected id=${id}`);
     }
     socket.destroy();
   };
@@ -304,18 +381,19 @@ server.on('upgrade', (req, socket) => {
 
 server.listen(PORT, '127.0.0.1', () => console.log(`[bridge] ws + control on 127.0.0.1:${PORT}`));
 
-// Heartbeat: app-level ping every 20s. A socket can be open at TCP level with
-// a dead service worker behind it (health says "connected" while commands rot
-// to the 70s timeout) — no pong in 5s means the seat is deaf, free it. The
-// ping traffic also wakes/extends the MV3 service worker, so this doubles as
-// the keepalive.
+// Heartbeat: app-level ping every 20s per seat. A socket can be open at TCP
+// level with a dead service worker behind it (health says "connected" while
+// commands rot to the 70s timeout) — no pong in 5s means the seat is deaf,
+// free it. The ping traffic also wakes/extends the MV3 service worker, so
+// this doubles as the keepalive.
 setInterval(() => {
-  if (!extSocket || extSocket.destroyed) return;
-  const sock = extSocket;
-  const id = nextId++;
-  const t = setTimeout(() => {
-    if (pending.delete(id)) sock.destroy();
-  }, 5000);
-  pending.set(id, () => clearTimeout(t));
-  sock.write(encodeFrame(JSON.stringify({ type: 'ping', id })));
+  for (const seat of seats.values()) {
+    if (!seat.socket || seat.socket.destroyed) continue;
+    const t = setTimeout(() => {
+      if (seat.pending.delete(seat.pingId)) seat.socket.destroy();
+    }, 5000);
+    seat.pingId = seat.nextId++;
+    seat.pending.set(seat.pingId, () => clearTimeout(t));
+    seat.socket.write(encodeFrame(JSON.stringify({ type: 'ping', id: seat.pingId })));
+  }
 }, 20_000);

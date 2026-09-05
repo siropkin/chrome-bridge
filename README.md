@@ -80,6 +80,8 @@ node cli.mjs stop && node cli.mjs start
 
 Tabs the bridge drives get a 🟣 pill in the bottom-right corner (click it for the full action history; ✕ hides it until the next navigation) and join a 🟣 tab group so you always know what's being automated. The pill narrates what the agent is doing right now (`🟣 taking screenshot…`, `🟣 reading page…`, `🟣 AI idle` when nothing's running) and its history panel lists the last actions; while a command runs, a purple viewport frame lights up, the tab's favicon shows ⏳ (✅ when it lands, ✗ when it fails), and clicks/hovers flash a purple pointer where the agent acts. `release` (or `close`) gives them back.
 
+**Multiple Chrome profiles**: the extension can be loaded in several profiles at once — each keeps its own connection, and agents can drive them in parallel. A command routes to the only profile with a matching tab; a match in several profiles is **refused** until the agent names one with `--profile <id>` (`cli profiles` lists ids) — the agent never silently acts in your personal browser when it meant the work one.
+
 ## Works with any AI agent — not just Claude
 
 The bridge is a plain local CLI + HTTP endpoint, so it's harness-agnostic by design:
@@ -111,7 +113,8 @@ You're handing an agent your logged-in browser — the design assumes you want t
 
 | Command | What it does |
 |---|---|
-| `tabs` | List tabs (id, url, title, driven flag) |
+| `tabs` | List tabs (id, url, title, driven flag); with several Chrome profiles connected, merged with a `profile` tag |
+| `profiles` | List connected Chrome profiles — id (for `--profile`) + version |
 | `open <url>` · `nav <match> <url> [--diff]` · `close <match>` | Tab lifecycle — `open`/`nav` wait for the page to load (8s cap) |
 | `snap <match> [css] [--diff] [--href] [--find "nl"]` | Accessibility-tree snapshot with `@eN` refs — **cheap; use it before screenshots**. Scope to a subtree, diff against the last snap, or include all link URLs with `--href`. `--find "the cancel button"` has local Gemini Nano (~2s, no cloud tokens) pick the matching lines — a shortlist to verify, not ground truth. Lines prefixed `*` are elements new since the previous snap |
 | `click <match> <@ref\|css> [--dbl] [--diff]` | Click (scrolls into view, full pointer/mouse event sequence, overlay-coverage check); `--dbl` double-clicks |

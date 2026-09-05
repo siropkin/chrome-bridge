@@ -16,6 +16,16 @@ node <repo>/cli.mjs <command> …
 - `extension not connected` → tell the user to load/reload `<repo>/extension/` at `chrome://extensions` (Developer mode → Load unpacked). You cannot click that button yourself.
 - a stderr warning like `⚠ extension 1.4.0 is loaded, the repo has 1.4.1` → the loaded extension is old code (after `git pull`, health still passes) → tell the user to reload the extension at `chrome://extensions`.
 
+## Multiple Chrome profiles
+
+Several Chrome profiles can have the extension loaded at once — each keeps its own connection, and `tabs` merges them (rows carry a `profile` tag). One command always routes to exactly ONE profile:
+
+- a `<match>` that exists in only one connected profile routes there automatically;
+- a `<match>` present in SEVERAL profiles is **refused** — the error names the profiles; re-run with `--profile <id>` (an id prefix is enough; `cli profiles` lists ids);
+- commands without a `<match>` (`open`, `swlogs`) need `--profile` when several profiles are connected.
+
+Parallel work across profiles is fine: two agent sessions can drive two profiles at the same time. Route explicitly when it matters — a wrong-profile action (clicking in the personal browser when you meant the work one) is the failure the refusal rule exists to prevent.
+
 ## Core loop
 
 1. `tabs [match]` — find the tab (the optional match filters the list itself — a full browser's tab list is ~2KB). `<match>` is a URL substring; a driven tab wins, then the most recently active. If several tabs match, the result warns and names them — re-run with a longer match instead of trusting the pick. Two tabs with identical URLs can't be told apart this way — close one first.
@@ -33,7 +43,9 @@ node <repo>/cli.mjs <command> …
 ```
 batch                             read commands from stdin, one per line ('#' = comment,
                                   quotes honored) — one process for N commands; stops on first error
-tabs [match]                      list tabs (compact JSON); [match] filters by URL/title substring
+tabs [match]                      list tabs (compact JSON); [match] filters by URL/title substring;
+                                  several profiles connected → merged, rows carry a profile tag
+profiles                          list connected Chrome profiles — id (for --profile) + version
 open <url>                        open + mark a new tab (waits for load, 8s cap)
 nav <match> <url> [--diff]        navigate matching tab (waits for load, 8s cap)
 close <match>                     close matching tab

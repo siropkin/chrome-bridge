@@ -80,6 +80,8 @@ node cli.mjs stop && node cli.mjs start
 
 被桥接驱动的标签页会在右下角显示 🟣 小标签(点击查看完整操作历史;✕ 可隐藏,下次导航前不再显示)并加入 🟣 标签页分组,你随时知道哪些页面正在被自动化。小标签实时播报智能体正在做什么(`🟣 taking screenshot…`、`🟣 reading page…`,空闲时显示 `🟣 AI idle`),历史面板列出最近的操作;命令执行期间,紫色边框亮起,标签页 favicon 显示 ⏳(完成 ✅,失败 ✗),点击/悬停处会闪现紫色指针标记智能体的操作位置。`release`(或 `close`)即可全部还原。
 
+**多个 Chrome 配置**:扩展可以同时加载在多个配置中——每个配置保持独立连接,智能体可以并行驱动它们。命令会自动路由到唯一拥有匹配标签页的配置;当多个配置都有匹配时**拒绝执行**,要求智能体用 `--profile <id>` 指明(`cli profiles` 列出 id)——智能体绝不会在你以为操作工作浏览器时悄悄点进个人浏览器。
+
 ## 支持任何 AI 智能体——不限于 Claude
 
 桥接器就是一个普通的本地 CLI + HTTP 接口,设计上与具体 harness 无关:
@@ -111,7 +113,8 @@ HTTP API 只有一个命令端点:`POST /cmd`,Body 如 `{"type": "snap", "urlMat
 
 | 命令 | 作用 |
 |---|---|
-| `tabs` | 列出标签页(id、url、标题、是否被驱动) |
+| `tabs` | 列出标签页(id、url、标题、是否被驱动);多个 Chrome 配置同时连接时合并输出,带 `profile` 标记 |
+| `profiles` | 列出已连接的 Chrome 配置——id(用于 `--profile`)+ 版本 |
 | `open <url>` · `nav <match> <url> [--diff]` · `close <match>` | 标签页生命周期——`open`/`nav` 等待页面加载完成(8 秒上限) |
 | `snap <match> [css] [--diff] [--href] [--find "nl"]` | 无障碍树快照,带 `@eN` 引用——**便宜,优先于截图使用**。可限定子树、与上一次快照对比,`--href` 输出全部链接 URL。`--find "取消按钮"` 由本地 Gemini Nano 挑出匹配行(~2 秒,无云端 token)——是待验证的候选清单,不是绝对正确。`*` 前缀标记上次快照后新增的元素 |
 | `click <match> <@ref\|css> [--dbl] [--diff]` | 点击(自动滚动到可见位置,完整 pointer/mouse 事件序列,遮挡检测);`--dbl` 双击 |

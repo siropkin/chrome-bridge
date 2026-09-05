@@ -32,7 +32,7 @@ function assert(cond, name, detail) {
 }
 
 // --- tiny WS client (client frames must be masked) ---------------------------
-function wsClient(port) {
+function wsClient(port, id = 'alpha-test') {
   return new Promise((resolve, reject) => {
     const key = crypto.randomBytes(16).toString('base64');
     const socket = net.connect(port, '127.0.0.1');
@@ -62,9 +62,9 @@ function wsClient(port) {
     };
     socket.on('connect', () => {
       // ?v=/?id= mirror the real extension's handshake (cli health compares
-      // extVersion against the repo manifest).
+      // versions against the repo manifest; --profile prefix-matches the id).
       socket.write(
-        `GET /ws?v=${MANIFEST_V}&id=selftest HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`
+        `GET /ws?v=${MANIFEST_V}&id=${id} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`
       );
     });
     socket.on('data', (chunk) => {
@@ -140,7 +140,7 @@ try {
   assert(h.status === 0 && JSON.parse(h.stdout).extension === false, 'health: extension false before connect');
 
   // connect fake extension
-  const ext = await wsClient(PORT);
+  const ext = await wsClient(PORT, 'alpha-test');
   let lastShot = null;
   // A real 1x1 PNG — imgDims parses the IHDR header to print dimensions, so
   // the suite exercises the parse for real (a fake payload never did).
@@ -153,6 +153,12 @@ try {
     if (msg.type === 'ping') return respond('pong');
     if (msg.type === 'tabs')
       return respond([{ id: 1, url: 'https://example.com/', title: 'Example', active: true, driven: false }]);
+    if (msg.type === 'probe')
+      return respond(
+        [{ id: 1, url: 'https://example.com/', lastAccessed: 1 }, { id: 2, url: 'https://dupe.example/a', lastAccessed: 2 }].filter((t) =>
+          t.url.includes(msg.urlMatch)
+        )
+      );
     if (msg.type === 'eval') return respond({ echo: msg.code.length, world: msg.world, match: msg.urlMatch, label: msg.label || null });
     if (msg.type === 'big') return respond('x'.repeat(3 * 1024 * 1024)); // 3 MB — exercises 64-bit frames
     if (msg.type === 'shot') { lastShot = msg; return respond('data:image/png;base64,' + PNG1x1.toString('base64')); }
@@ -171,7 +177,7 @@ try {
   assert(JSON.parse(h.stdout).extension === true, 'health: extension true after connect');
   {
     const hv = JSON.parse(h.stdout);
-    assert(hv.extVersion === MANIFEST_V && hv.extId === 'selftest', 'health reports the extension version + profile id from the WS handshake', h.stdout);
+    assert(hv.profiles?.length === 1 && hv.profiles[0].id === 'alpha-test' && hv.profiles[0].v === MANIFEST_V, 'health reports connected profiles + versions from the WS handshake', h.stdout);
   }
 
   const tabs = await cli('tabs');
@@ -408,8 +414,9 @@ try {
       for (const q of m[1].matchAll(/'(\w+)'/g)) handleTypes.add(q[1]);
     const verbBlock = bg.slice(bg.indexOf('const ACT_VERBS'), bg.indexOf('};', bg.indexOf('const ACT_VERBS')));
     const verbKeys = new Set([...verbBlock.matchAll(/^  (\w+): \[/gm)].map((m) => m[1]));
-    // ping/swlogs/tabs never reach findTab (no pill); note is special-cased in activityPhrases.
-    const NO_VERBS = ['ping', 'swlogs', 'tabs', 'note'];
+    // ping/swlogs/tabs/probe never reach findTab (no pill; probe is a
+    // server-internal routing query); note is special-cased in activityPhrases.
+    const NO_VERBS = ['ping', 'swlogs', 'tabs', 'note', 'probe'];
     assert(
       [...handleTypes].filter((t) => !NO_VERBS.includes(t)).sort().join() === [...verbKeys].sort().join(),
       'drift: ACT_VERBS keys vs handle() types',
@@ -419,11 +426,12 @@ try {
     const usageCmds = new Set(
       [...usageBlock.matchAll(/^  (\S+)/gm)].flatMap((m) => m[1].split('|')).filter((c) => /^[a-z]+$/.test(c))
     );
-    // CLI-local commands (no wire type) and the nav→navigate alias.
-    const CLI_LOCAL = ['batch', 'health', 'start', 'stop', 'watch'];
+    // CLI-local commands (no wire type), the nav→navigate alias, and probe
+    // (a server-internal routing query — no CLI surface).
+    const CLI_LOCAL = ['batch', 'health', 'start', 'stop', 'watch', 'profiles', 'probe'];
     const usageWire = new Set([...usageCmds].filter((c) => !CLI_LOCAL.includes(c)).map((c) => (c === 'nav' ? 'navigate' : c)));
     assert(
-      [...usageWire].sort().join() === [...handleTypes].filter((t) => t !== 'ping').sort().join(),
+      [...usageWire].sort().join() === [...handleTypes].filter((t) => t !== 'ping' && t !== 'probe').sort().join(),
       'drift: cli USAGE commands vs handle() types',
       `usage: ${[...usageWire].sort()} handle: ${[...handleTypes].sort()}`
     );
@@ -532,8 +540,68 @@ try {
   const ansiLine = (await fetch(`http://127.0.0.1:${PORT}/log`).then((r) => r.json())).lines.find((a) => a.line.includes('ansierr'));
   assert(ansiLine && !/[\x00-\x1f\x7f]/.test(ansiLine.line), 'server /log strips control chars from error text', JSON.stringify(ansiLine));
 
-  // extension disconnect → health flips
+  // --- multi-profile routing: a second fake profile takes its own seat ---------
+  // Every command still routes to exactly ONE profile: unique matches route
+  // automatically, cross-profile matches are refused with a --profile hint,
+  // and --profile (prefix match) picks explicitly.
+  const ext2 = await wsClient(PORT, 'beta-test');
+  ext2.onMessage((msg) => {
+    const respond = (result) => ext2.send({ id: msg.id, ok: true, result });
+    if (msg.type === 'ping') return respond('pong');
+    if (msg.type === 'probe')
+      return respond(
+        [{ id: 9, url: 'https://sample.org/', lastAccessed: 1 }, { id: 10, url: 'https://dupe.example/b', lastAccessed: 2 }].filter((t) =>
+          t.url.includes(msg.urlMatch)
+        )
+      );
+    if (msg.type === 'tabs') return respond([{ id: 9, url: 'https://sample.org/', title: 'Sample B', driven: false }]);
+    if (['snap', 'eval', 'open'].includes(msg.type)) return respond(msg); // echo
+    return respond(null);
+  });
+  await new Promise((r) => setTimeout(r, 100));
+
+  {
+    const hv = JSON.parse((await cli('health')).stdout);
+    assert(hv.profiles?.length === 2, 'health lists both connected profiles', JSON.stringify(hv));
+    const prof = await cli('profiles');
+    assert(prof.status === 0 && prof.stdout.includes('alpha-test') && prof.stdout.includes('beta-test'), 'cli profiles lists ids + versions', prof.stdout + prof.stderr);
+
+    const merged = await cli('tabs');
+    assert(
+      merged.status === 0 && merged.stdout.includes('"profile":"alph"') && merged.stdout.includes('"profile":"beta"') && merged.stdout.includes('sample.org'),
+      'cli tabs merged across profiles with profile tags',
+      merged.stdout + merged.stderr
+    );
+
+    // unique match routes automatically — example.com exists only in alpha
+    const autoRoute = await cli('snap', 'example.com');
+    assert(autoRoute.status === 0 && autoRoute.stdout.includes('"urlMatch":"example.com"'), 'multi-seat: unique match routes without --profile', autoRoute.stdout + autoRoute.stderr);
+
+    // cross-profile match refuses and teaches --profile
+    const refused = await cli('snap', 'dupe.example');
+    assert(refused.status !== 0 && refused.stderr.includes('matches tabs in 2 profiles') && refused.stderr.includes('--profile'), 'multi-seat: cross-profile ambiguity refused with a --profile hint', refused.stdout + refused.stderr);
+
+    // --profile routes explicitly (prefix match on the id)
+    const pinned = await cli('--profile', 'beta', 'snap', 'sample.org');
+    assert(pinned.status === 0 && pinned.stdout.includes('"urlMatch":"sample.org"'), 'multi-seat: --profile prefix routes to the named profile', pinned.stdout + pinned.stderr);
+
+    const badProfile = await cli('--profile', 'nope', 'snap', 'example.com');
+    assert(badProfile.status !== 0 && badProfile.stderr.includes("no connected profile matching 'nope'"), 'multi-seat: unknown --profile fails loudly', badProfile.stdout + badProfile.stderr);
+
+    // open has no <match> to probe — needs --profile when several seats exist
+    const openRefused = await cli('open', 'https://example.org/');
+    assert(openRefused.status !== 0 && openRefused.stderr.includes('--profile'), 'multi-seat: open without --profile refused', openRefused.stdout + openRefused.stderr);
+    const openPinned = await cli('--profile', 'alpha', 'open', 'https://example.org/');
+    assert(openPinned.status === 0 && openPinned.stdout.includes('"url":"https://example.org/"'), 'multi-seat: open --profile routes', openPinned.stdout + openPinned.stderr);
+
+    // the activity feed names who acted
+    const feed = (await fetch(`http://127.0.0.1:${PORT}/log`).then((r) => r.json())).lines;
+    assert(feed.some((a) => a.line.includes('snap sample.org @beta')), 'feed: routed command carries the profile tag', JSON.stringify(feed.slice(-3)));
+  }
+
+  // extension disconnect → health flips (both fake profiles gone)
   ext.socket.destroy();
+  ext2.socket.destroy();
   await new Promise((r) => setTimeout(r, 500));
   h = await cli('health');
   assert(JSON.parse(h.stdout).extension === false, 'health: extension false after disconnect', h.stdout + h.stderr);

@@ -20,6 +20,19 @@ const print = (v) => console.log(typeof v === 'string' ? v : JSON.stringify(v));
 // would misreport "server not running" while the real cause is the runtime.
 if (typeof fetch !== 'function') fail('Node >= 18 required — you have ' + process.version);
 
+// --profile <id>: multi-profile routing. Extracted once at argv level (works
+// before or after the command word) and rides on every command; a prefix of
+// the profile id is enough (see: cli profiles).
+let PROFILE = null;
+{
+  const i = process.argv.indexOf('--profile');
+  if (i >= 0) {
+    if (!process.argv[i + 1] || process.argv[i + 1].startsWith('--')) fail('--profile needs an id (see: cli profiles)');
+    PROFILE = process.argv[i + 1];
+    process.argv.splice(i, 2);
+  }
+}
+
 // Image dimensions from the buffer header (PNG IHDR / JPEG SOF) — agents map
 // shot pixels back to CSS px, and --max rescales extension-side, so print them.
 const imgDims = (b) => {
@@ -36,7 +49,7 @@ async function cmd(msg) {
     res = await fetch(`${BASE}/cmd`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(msg),
+      body: JSON.stringify(PROFILE ? { ...msg, profile: PROFILE } : msg),
     });
   } catch {
     fail('bridge server not running — start it: node cli.mjs start');
@@ -63,7 +76,9 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
 
   batch                             read commands from stdin, one per line ('#' = comment,
                                     quotes honored) — one process for N commands; stops on first error
-  tabs [match]                      list tabs (compact JSON); [match] filters by URL/title substring
+  tabs [match]                      list tabs (compact JSON); [match] filters by URL/title substring;
+                                    with multiple Chrome profiles connected, merged with a profile tag
+  profiles                          list connected Chrome profiles — id (for --profile) + version
   open <url>                        open + mark a new tab (waits for load, 8s cap)
   nav <match> <url> [--diff]        navigate matching tab (waits for load, 8s cap)
   close <match>                     close matching tab
@@ -132,7 +147,11 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
 active. Ambiguous matches print a warning naming the other tabs — re-run with a
 longer match. Mutating commands (click/fill/type/press/upload/eval/hover/scroll/
 grid/emulate/resize/drag/dialog) auto-mark the tab (🟣 pill + tab group).
-Refs (@eN) come from snap; they survive re-snaps but expire on navigation.`;
+Refs (@eN) come from snap; they survive re-snaps but expire on navigation.
+
+Multiple Chrome profiles can be connected at once (one seat each). A <match>
+routes to the only profile that has a matching tab; a match in SEVERAL profiles
+is refused — name one with --profile <id> (a prefix is enough; see: profiles).`;
 
 async function run(cmdName, args) {
   switch (cmdName) {
@@ -149,16 +168,30 @@ async function run(cmdName, args) {
         const h = await res.json();
         print(h);
         // A loaded-but-stale extension still passes health (the SW seat is old
-        // code — README's upgrade trap). Its self-reported version rides the
-        // WS handshake; compare it with the manifest on disk and say so.
-        if (h.extension && h.extVersion) {
+        // code — README's upgrade trap). Each profile self-reports its version
+        // on the WS handshake; compare them with the manifest on disk.
+        if (h.extension && h.profiles?.length) {
           let mine = null;
           try {
             mine = JSON.parse(fs.readFileSync(fileURLToPath(new URL('./extension/manifest.json', import.meta.url)), 'utf8')).version;
           } catch {}
-          if (mine && mine !== h.extVersion)
-            console.error(`⚠ extension ${h.extVersion} is loaded, the repo has ${mine} — reload the extension at chrome://extensions`);
+          for (const p of h.profiles) {
+            if (mine && p.v && p.v !== mine)
+              console.error(`⚠ extension ${p.v} is loaded (profile ${p.id.slice(0, 4)}), the repo has ${mine} — reload the extension at chrome://extensions`);
+          }
         }
+      } catch {
+        fail('bridge server not running — start it: node cli.mjs start');
+      }
+      break;
+    }
+
+    case 'profiles': {
+      // Connected Chrome profiles (one WS seat each): id for --profile, version.
+      try {
+        const res = await fetch(`${BASE}/health`);
+        const h = await res.json();
+        print(h.profiles || []);
       } catch {
         fail('bridge server not running — start it: node cli.mjs start');
       }

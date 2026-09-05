@@ -55,10 +55,11 @@ function connect() {
   s.onmessage = async (e) => {
     const msg = JSON.parse(e.data);
     if (msg.type === 'seat-taken') {
-      // Another Chrome profile holds the seat. Intercept BEFORE handle() (an
-      // unknown type there throws) and mark the socket: the 500ms hot
-      // reconnect in onclose would churn the server at 2Hz forever — let the
-      // 24s keepalive alarm re-probe instead; when the winner dies, we take over.
+      // This profile already holds a live socket (a service-worker reconnect
+      // race — the server keeps ONE seat per profile). Intercept BEFORE
+      // handle() (an unknown type there throws) and mark the socket: the
+      // 500ms hot reconnect in onclose would churn the server at 2Hz — let
+      // the 24s keepalive alarm re-probe instead.
       s._seatTaken = true;
       ws = null;
       return;
@@ -1553,6 +1554,17 @@ async function handle(msg) {
       ...(t.active ? { active: true } : {}),
       ...(drivenTabs.has(t.id) ? { driven: true } : {}),
     }));
+  }
+
+  // Multi-profile routing: does THIS profile have tabs matching? The server
+  // probes every connected profile before sending the real command, so an
+  // ambiguous cross-profile match can be refused instead of acting blind.
+  // Read-only, no findTab, no marking.
+  if (msg.type === 'probe') {
+    const tabs = await chrome.tabs.query({});
+    return tabs
+      .filter((t) => t.url && t.url.includes(msg.urlMatch))
+      .map((t) => ({ id: t.id, url: t.url.slice(0, 80), lastAccessed: t.lastAccessed || 0 }));
   }
 
   if (msg.type === 'open') {
