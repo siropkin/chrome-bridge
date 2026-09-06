@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/creation-of-adam.png" width="600" alt="The Creation of Adam — two hands nearly touching, a spark between them"></p>
+
 # chrome-bridge
 
 **English** | [中文](README.zh-CN.md)
