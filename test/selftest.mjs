@@ -522,6 +522,11 @@ try {
     assert(bg.includes('waitHuman') && bg.includes('e.isTrusted'), 'ext: wait --human completes only on trusted input');
     assert(bg.includes("world: 'ISOLATED'") && bg.includes('__bridgeHumanActed'), 'ext: the human-acted flag lives in the ISOLATED world (page JS cannot flip it)');
     assert(serverSrc.includes("msg.type === 'wait' && msg.human"), 'server: wait --human rides the long-wait path past the 70s cap');
+    // The click coverage check must treat a shadow HOST containing the target
+    // as a container, not an occluder — elementFromPoint returns the host for
+    // shadow-tree points and host.contains() walks light DOM only (LinkedIn's
+    // share modal made every in-shadow element unclickable).
+    assert(bg.includes('root.host === top'), 'ext: click coverage walks the composed chain — a shadow host containing the target is a container, not an occluder');
 
     // The service worker is never executed here (the fake extension plays it)
     // — a syntax error in it would otherwise ship green, as would one in

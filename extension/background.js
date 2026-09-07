@@ -1097,8 +1097,20 @@ const clickSrc = (target, dbl) => `(() => {
   const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
   // Coverage preflight: fail loudly when an overlay intercepts the click point
   // instead of dispatching a click that silently lands on the wrong element.
+  // elementFromPoint never pierces shadow roots — for a point inside one it
+  // returns the HOST, and host.contains() walks light DOM only, so a target
+  // inside a shadow tree whose host covers the point used to read as a
+  // stranger overlay (LinkedIn: every modal element lives in one shadow tree).
+  // Walk the target's composed chain: a host whose shadow subtree contains
+  // the target is a container, not an occluder. The walk only ever CLEARS
+  // hosts on the target's own chain — a real stranger overlay still fails.
   const top = document.elementFromPoint(cx, cy);
-  if (top && top !== el && !el.contains(top) && !top.contains(el) && !top.closest('#bridge-banner')) {
+  let covered = !!(top && top !== el && !el.contains(top) && !top.contains(el) && !top.closest('#bridge-banner'));
+  if (covered) {
+    for (let n = el, root = n.getRootNode(); root instanceof ShadowRoot; n = root.host, root = n.getRootNode())
+      if (root.host === top) { covered = false; break; }
+  }
+  if (covered) {
     const cls = typeof top.className === 'string' && top.className.trim() ? '.' + top.className.trim().split(/\\s+/).slice(0, 2).join('.') : '';
     const txt = (top.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 40);
     throw new Error('click covered by <' + top.tagName.toLowerCase() + cls + '>' + (txt ? ' "' + txt + '"' : '') + ' — close the overlay or click that element first');
