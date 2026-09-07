@@ -113,11 +113,14 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     since the previous snap; lines seen 3+ times collapse to
                                     '… N more · <line> → @refs'; trees truncate at 300 nodes —
                                     scope big pages with [css] or grep/--find can miss the rest
-  click <match> <@ref|css> [--dbl] [--diff]  click an element (fails loudly if an overlay covers it);
-                                    --dbl double-clicks (two click pairs + dblclick event)
-  drag <match> <@ref|css> <@ref|css> [--diff]
+  click <match> <@ref|css> [--dbl] [--diff] [--trusted]
+                                    click an element (fails loudly if an overlay covers it);
+                                    --dbl double-clicks; --trusted drives CDP Input (isTrusted=true —
+                                    canvas tools accept it; attaches the debugger)
+  drag <match> <@ref|css> <@ref|css> [--diff] [--trusted]
                                     drag an element onto another (synthetic pointer sequence —
-                                    apps that check isTrusted ignore it)
+                                    apps that check isTrusted ignore it; --trusted = CDP Input,
+                                    isTrusted=true, legacy HTML5 dragstart/drop fire)
   dialog <match> accept|dismiss [--text s]
                                     dismiss a stuck JS dialog — an open alert/confirm/prompt
                                     wedges the tab until this or a human answers (--text answers a prompt)
@@ -125,17 +128,19 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     matches option value or label — error lists the options on a miss);
                                     a value starting with '--' goes after a bare '--' separator:
                                     fill <match> <ref> -- <value>
-  type <match> <@ref|css> <text> [--diff]    per-char typing — triggers autocomplete/keystroke UIs;
+  type <match> <@ref|css> <text> [--diff] [--trusted]
+                                    per-char typing — triggers autocomplete/keystroke UIs;
                                     '--' separator for '--'-leading text, same as fill;
-                                    long-form text (>2000 chars) is paste's job
+                                    long-form text (>2000 chars) is paste's job; --trusted = CDP keys
+  press <match> <key> [@ref|css] [--diff] [--trusted]  key press on focused or given element (Enter/Tab/…);
+                                    combos like Control+k / Shift+Enter / Meta+k set the modifier flags;
+                                    --trusted = CDP keys (isTrusted — Enter triggers browser defaults)
+  hover <match> <@ref|css> [--diff] [--trusted]  hover an element (opens hover menus); --trusted = CDP Input
   paste <match> [@ref|css] [--diff] [-- <text>]
                                     real-paste semantics into the focused (or given) field:
                                     editors that own their model (Quill, Reddit/LinkedIn
                                     composers) revert fill but take a paste; without -- <text>
                                     it reads the OS clipboard (pbpaste/xclip/Get-Clipboard)
-  press <match> <key> [@ref|css] [--diff]  key press on focused or given element (Enter/Tab/…);
-                                    combos like Control+k / Shift+Enter / Meta+k set the modifier flags
-  hover <match> <@ref|css> [--diff]  hover an element (opens hover menus)
   scroll <match> <up|down|top|bottom|@ref|css> [--diff]
                                     scroll the page (or an element into view); --diff
                                     shows what lazy-loaded in
@@ -451,26 +456,27 @@ async function run(cmdName, args) {
     // shell calls (click → wait → snap --diff becomes one command).
     case 'click':
     case 'hover': {
-      const rest = args.filter((a) => a !== '--diff' && a !== '--dbl');
-      if (!rest[0] || !rest[1]) fail(`usage: ${cmdName} <match> <@ref|css>${cmdName === 'click' ? ' [--dbl]' : ''} [--diff]`);
+      const rest = args.filter((a) => a !== '--diff' && a !== '--dbl' && a !== '--trusted');
+      if (!rest[0] || !rest[1]) fail(`usage: ${cmdName} <match> <@ref|css>${cmdName === 'click' ? ' [--dbl]' : ''} [--diff] [--trusted]`);
       const stray = rest.slice(2).find((a) => a.startsWith('--'));
-      if (stray) fail(`unknown flag ${stray} (flags:${cmdName === 'click' ? ' --dbl,' : ''} --diff)`);
+      if (stray) fail(`unknown flag ${stray} (flags:${cmdName === 'click' ? ' --dbl,' : ''} --diff, --trusted)`);
       print(await cmd({
         type: cmdName,
         urlMatch: rest[0],
         target: rest[1],
         ...(cmdName === 'click' && args.includes('--dbl') ? { dbl: true } : {}),
         ...(args.includes('--diff') ? { diff: true } : {}),
+        ...(args.includes('--trusted') ? { trusted: true } : {}),
       }));
       break;
     }
 
     case 'drag': {
-      const rest = args.filter((a) => a !== '--diff');
-      if (!rest[0] || !rest[1] || !rest[2]) fail('usage: drag <match> <@ref|css> <@ref|css> [--diff]');
+      const rest = args.filter((a) => a !== '--diff' && a !== '--trusted');
+      if (!rest[0] || !rest[1] || !rest[2]) fail('usage: drag <match> <@ref|css> <@ref|css> [--diff] [--trusted]');
       const stray = rest.slice(3).find((a) => a.startsWith('--'));
-      if (stray) fail(`unknown flag ${stray} (flags: --diff)`);
-      print(await cmd({ type: 'drag', urlMatch: rest[0], from: rest[1], to: rest[2], ...(args.includes('--diff') ? { diff: true } : {}) }));
+      if (stray) fail(`unknown flag ${stray} (flags: --diff, --trusted)`);
+      print(await cmd({ type: 'drag', urlMatch: rest[0], from: rest[1], to: rest[2], ...(args.includes('--diff') ? { diff: true } : {}), ...(args.includes('--trusted') ? { trusted: true } : {}) }));
       break;
     }
 
@@ -491,19 +497,26 @@ async function run(cmdName, args) {
       const sep = args.indexOf('--');
       const flagged = sep < 0 ? args : args.slice(0, sep);
       const valuePart = sep < 0 ? [] : args.slice(sep + 1);
-      const rest = flagged.filter((a) => a !== '--diff');
+      const rest = flagged.filter((a) => a !== '--diff' && (cmdName !== 'type' || a !== '--trusted'));
       if (!rest[0] || !rest[1] || (rest[2] === undefined && !valuePart.length)) fail(`usage: ${cmdName} <match> <@ref|css> [--diff] -- <value>`);
       // A '--'-prefixed token BEFORE the separator is a fat-fingered flag,
       // not data — without this guard it gets typed into the user's real form.
       const stray = rest.slice(2).find((a) => a.startsWith('--'));
-      if (stray) fail(`unknown flag ${stray} (flags: --diff; a value starting with '--' goes after a bare '--' separator)`);
+      if (stray) fail(`unknown flag ${stray} (flags: --diff${cmdName === 'type' ? ', --trusted' : ''}; a value starting with '--' goes after a bare '--' separator)`);
       const value = [...rest.slice(2), ...valuePart].join(' ');
       // Per-char typing is for autocomplete/keystroke UIs — a 2000+ char type
       // is per-keystroke cost on the page's clock and blows the 70s command
       // cap on heavy composers. Long-form content is paste's job (one shot).
       if (cmdName === 'type' && value.length > 2000)
         fail(`text is ${value.length} chars — type is per-char for short interactive text; use: paste <match> <@ref|css> -- <text>`);
-      print(await cmd({ type: cmdName, urlMatch: rest[0], target: rest[1], value, ...(flagged.includes('--diff') ? { diff: true } : {}) }));
+      print(await cmd({
+        type: cmdName,
+        urlMatch: rest[0],
+        target: rest[1],
+        value,
+        ...(flagged.includes('--diff') ? { diff: true } : {}),
+        ...(cmdName === 'type' && flagged.includes('--trusted') ? { trusted: true } : {}),
+      }));
       break;
     }
 
@@ -531,11 +544,11 @@ async function run(cmdName, args) {
     }
 
     case 'press': {
-      const rest = args.filter((a) => a !== '--diff');
-      if (!rest[0] || !rest[1]) fail('usage: press <match> <key> [@ref|css] [--diff]');
+      const rest = args.filter((a) => a !== '--diff' && a !== '--trusted');
+      if (!rest[0] || !rest[1]) fail('usage: press <match> <key> [@ref|css] [--diff] [--trusted]');
       const stray = rest.slice(3).find((a) => a.startsWith('--'));
-      if (stray) fail(`unknown flag ${stray} (flags: --diff)`);
-      print(await cmd({ type: 'press', urlMatch: rest[0], key: rest[1], target: rest[2] || null, ...(args.includes('--diff') ? { diff: true } : {}) }));
+      if (stray) fail(`unknown flag ${stray} (flags: --diff, --trusted)`);
+      print(await cmd({ type: 'press', urlMatch: rest[0], key: rest[1], target: rest[2] || null, ...(args.includes('--diff') ? { diff: true } : {}), ...(args.includes('--trusted') ? { trusted: true } : {}) }));
       break;
     }
 

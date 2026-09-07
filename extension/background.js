@@ -1191,24 +1191,17 @@ const DEEPQ = `
 // report 'filled' — fake success. Fail loudly toward click instead.
 const CHECK_RADIO_GUARD = `if (el.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio')) throw new Error('checkbox/radio — fill cannot toggle checked; use: click <match> ' + sel);`;
 
-const clickSrc = (target, dbl) => `(() => {
-  ${DEEPQ}
-  const sel = ${JSON.stringify(target)};
-  const el = deepQuery(sel);
-  if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
-  ${FILE_INPUT_GUARD}
-  el.scrollIntoView({ block: 'center', inline: 'center' });
-  const r = el.getBoundingClientRect();
-  const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-  // Coverage preflight: fail loudly when an overlay intercepts the click point
-  // instead of dispatching a click that silently lands on the wrong element.
-  // elementFromPoint never pierces shadow roots — for a point inside one it
-  // returns the HOST, and host.contains() walks light DOM only, so a target
-  // inside a shadow tree whose host covers the point used to read as a
-  // stranger overlay (LinkedIn: every modal element lives in one shadow tree).
-  // Walk the target's composed chain: a host whose shadow subtree contains
-  // the target is a container, not an occluder. The walk only ever CLEARS
-  // hosts on the target's own chain — a real stranger overlay still fails.
+// Coverage preflight (shared by the synthetic click and --trusted input):
+// fail loudly when an overlay intercepts the click point instead of letting
+// a click silently land on the wrong element. elementFromPoint never pierces
+// shadow roots — for a point inside one it returns the HOST, and
+// host.contains() walks light DOM only, so a target inside a shadow tree
+// whose host covers the point used to read as a stranger overlay (LinkedIn:
+// every modal element lives in one shadow tree). Walk the target's composed
+// chain: a host whose shadow subtree contains the target is a container, not
+// an occluder. The walk only ever CLEARS hosts on the target's own chain —
+// a real stranger overlay still fails. Requires cx/cy/el in scope.
+const COVERAGE_SRC = `
   const top = document.elementFromPoint(cx, cy);
   let covered = !!(top && top !== el && !el.contains(top) && !top.contains(el) && !top.closest('#bridge-banner'));
   if (covered) {
@@ -1220,6 +1213,18 @@ const clickSrc = (target, dbl) => `(() => {
     const txt = (top.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 40);
     throw new Error('click covered by <' + top.tagName.toLowerCase() + cls + '>' + (txt ? ' "' + txt + '"' : '') + ' — close the overlay or click that element first');
   }
+`;
+
+const clickSrc = (target, dbl) => `(() => {
+  ${DEEPQ}
+  const sel = ${JSON.stringify(target)};
+  const el = deepQuery(sel);
+  if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
+  ${FILE_INPUT_GUARD}
+  el.scrollIntoView({ block: 'center', inline: 'center' });
+  const r = el.getBoundingClientRect();
+  const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+  ${COVERAGE_SRC}
   ${CURSOR_SRC}
   showCursor(cx, cy, true);
   const o = { bubbles: true, cancelable: true, composed: true, clientX: cx, clientY: cy, button: 0 };
@@ -1350,6 +1355,135 @@ const pasteSrc = (target, value) => `(async () => {
   }
   return 'pasted ' + text.length + ' chars into ' + (sel || '<' + el.tagName.toLowerCase() + '>') + (handled ? ' (editor paste handler)' : '');
 })()`;
+
+// --- trusted input (--trusted): CDP Input.dispatch* ---------------------------
+// isTrusted=true events — the one thing synthetic dispatchEvent can't fake
+// (canvas tools, Figma, browser defaults like Enter submitting a form).
+// Opt-in: this path attaches the debugger, which the synthetic path never
+// does (see the detectability gotcha) — the caller decides when a trusted
+// event is worth the infobar.
+
+// Page-side prep: resolve the target, scroll it into view, run the coverage
+// preflight (click/drag), show the cursor, hand viewport coordinates back
+// for CDP dispatch.
+const trustedPointSrc = (target, coverage, ripple) => `(() => {
+  ${DEEPQ}
+  const sel = ${JSON.stringify(target)};
+  const el = deepQuery(sel);
+  if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
+  el.scrollIntoView({ block: 'center', inline: 'center' });
+  const r = el.getBoundingClientRect();
+  const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+  ${coverage ? COVERAGE_SRC : ''}
+  ${CURSOR_SRC}
+  showCursor(cx, cy, ${ripple ? 'true' : 'false'});
+  return JSON.stringify({ cx: Math.round(cx), cy: Math.round(cy) });
+})()`;
+
+// Page-side focus for press/type: the key events go to whatever holds focus.
+const trustedFocusSrc = (target) => `(() => {
+  ${DEEPQ}
+  const sel = ${JSON.stringify(target || '')};
+  const el = sel ? deepQuery(sel) : document.activeElement;
+  if (sel) {
+    if (!el) throw new Error('element not found: ' + sel);
+    el.scrollIntoView({ block: 'center' });
+    el.focus?.();
+  }
+  if (!el || !(el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable))
+    throw new Error('no text field focused — pass an @ref|css target or click the field first');
+  return '<' + el.tagName.toLowerCase() + (el.isContentEditable ? ' contenteditable' : '') + '>';
+})()`;
+
+// SW-side CDP dispatch. Modifier combos keep press semantics: 'Control+k'
+// sets the modifier bits on the k event, which is what app handlers match.
+const CDP_KEYCODE = { Enter: 13, Tab: 9, Escape: 27, Backspace: 8, Delete: 46, Insert: 45, ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39, Home: 36, End: 35, PageUp: 33, PageDown: 34, ' ': 32, Shift: 16, Control: 17, Alt: 18, Meta: 91, CapsLock: 20 };
+async function cdpKeyEvent(tabId, keyIn) {
+  const BITS = { alt: 1, control: 2, meta: 4, shift: 8 };
+  const MODS = { Control: 'control', Ctrl: 'control', Shift: 'shift', Alt: 'alt', Meta: 'meta', Cmd: 'meta', Command: 'meta' };
+  let key = keyIn;
+  let bits = 0;
+  if (keyIn.includes('+') && keyIn !== '+') {
+    const parts = keyIn.split('+');
+    key = parts.pop();
+    for (const m of parts) {
+      if (!MODS[m]) throw new Error('unknown modifier ' + JSON.stringify(m) + ' in ' + JSON.stringify(keyIn) + ' — use Control/Ctrl, Shift, Alt, Meta/Cmd');
+      bits |= BITS[MODS[m]];
+    }
+  }
+  const isChar = key.length === 1;
+  const vk = isChar ? (/[a-z]/i.test(key) ? key.toUpperCase().charCodeAt(0) : key.charCodeAt(0)) : CDP_KEYCODE[key] || 0;
+  const base = {
+    key,
+    code: isChar ? (/[a-z]/i.test(key) ? 'Key' + key.toUpperCase() : 'Digit' + key) : key,
+    windowsVirtualKeyCode: vk,
+    nativeVirtualKeyCode: vk,
+    modifiers: bits,
+  };
+  // keyDown with `text` is what inserts the character (DevTools does the same).
+  await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', { ...base, type: 'keyDown', ...(isChar ? { text: key, unmodifiedText: key } : {}) });
+  await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', { ...base, type: 'keyUp' });
+}
+
+async function cdpMouseClick(tabId, x, y, dbl) {
+  const pair = async (count) => {
+    await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: count });
+    await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: count });
+  };
+  await pair(1);
+  if (dbl) await pair(2);
+}
+
+// Trusted drag: pressed → interpolated moves (buttons held) → released. Real
+// pointer input, so legacy HTML5 dragstart/drop fire too — the synthetic
+// drag never did (constructed DataTransfer stayed an eval recipe).
+async function cdpDrag(tabId, x1, y1, x2, y2) {
+  await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: x1, y: y1, button: 'left', clickCount: 1 });
+  for (let i = 1; i <= 8; i++) {
+    const x = Math.round(x1 + ((x2 - x1) * i) / 8), y = Math.round(y1 + ((y2 - y1) * i) / 8);
+    await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'left', buttons: 1 });
+  }
+  await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: x2, y: y2, button: 'left', clickCount: 1 });
+}
+
+async function trustedInput(tab, msg) {
+  const point = (target, coverage, ripple) => runEval(tab.id, trustedPointSrc(target, coverage, ripple)).then((s) => JSON.parse(s));
+  let res;
+  await withCdp(tab.id, async () => {
+    await attachDbg(tab.id);
+    try {
+      if (msg.type === 'click') {
+        const p = await point(msg.target, true, true);
+        await cdpMouseClick(tab.id, p.cx, p.cy, msg.dbl);
+        res = `clicked ${msg.target} (trusted${msg.dbl ? ', double' : ''})`;
+      } else if (msg.type === 'hover') {
+        const p = await point(msg.target, false, false);
+        await chrome.debugger.sendCommand({ tabId: tab.id }, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: p.cx, y: p.cy });
+        res = `hovered ${msg.target} (trusted)`;
+      } else if (msg.type === 'drag') {
+        const p1 = await point(msg.from, true, false);
+        const p2 = await point(msg.to, false, false);
+        await cdpDrag(tab.id, p1.cx, p1.cy, p2.cx, p2.cy);
+        res = `dragged ${msg.from} onto ${msg.to} (trusted)`;
+      } else if (msg.type === 'press') {
+        const what = await runEval(tab.id, trustedFocusSrc(msg.target));
+        await cdpKeyEvent(tab.id, msg.key);
+        res = `pressed ${msg.key} on ${what} (trusted)`;
+      } else if (msg.type === 'type') {
+        const what = await runEval(tab.id, trustedFocusSrc(msg.target));
+        const delay = Math.min(25, 15000 / (msg.value.length || 1));
+        for (const ch of msg.value) {
+          await cdpKeyEvent(tab.id, ch);
+          await new Promise((r) => setTimeout(r, delay));
+        }
+        res = `typed ${msg.value.length} chars into ${what} (trusted)`;
+      }
+    } finally {
+      await detachDbg(tab.id);
+    }
+  });
+  return msg.diff ? await observeDiff(tab.id, res) : res;
+}
 
 // Key press on the focused element (or a target). Synthetic keys are untrusted:
 // they reach JS listeners but don't trigger browser defaults (form submit).
@@ -2062,6 +2196,13 @@ async function handle(msg) {
     const tab = await findTab(msg);
     if (msg.find) return await runEval(tab.id, FIND_SRC(msg.scope, msg.find));
     return await runEval(tab.id, SNAP_SRC(msg.scope, msg.diff, msg.href));
+  }
+
+  // --trusted: route click/press/type/hover/drag through CDP Input.dispatch*
+  // (isTrusted=true events). Before the synthetic group so the flag wins.
+  if (msg.trusted && ['click', 'press', 'type', 'hover', 'drag'].includes(msg.type)) {
+    const tab = await findTab(msg);
+    return await trustedInput(tab, msg);
   }
 
   if (['click', 'fill', 'type', 'press', 'hover'].includes(msg.type)) {

@@ -168,8 +168,8 @@ You're handing an agent your logged-in browser — the design assumes you want t
 | `profiles` | List connected Chrome profiles — id and name (for `--profile`) + version |
 | `open <url>` · `nav <match> <url> [--diff]` · `close <match>` | Tab lifecycle — `open`/`nav` wait for the page to load (8s cap) |
 | `snap <match> [css] [--diff] [--href] [--find "nl"]` | Accessibility-tree snapshot with `@eN` refs — **cheap; use it before screenshots**. Scope to a subtree, diff against the last snap, or include all link URLs with `--href`. `--find "the cancel button"` has local Gemini Nano (~2s, no cloud tokens) pick the matching lines — a shortlist to verify, not ground truth. Lines prefixed `*` are elements new since the previous snap |
-| `click <match> <@ref\|css> [--dbl] [--diff]` | Click (scrolls into view, full pointer/mouse event sequence, overlay-coverage check); `--dbl` double-clicks |
-| `drag <match> <@ref\|css> <@ref\|css> [--diff]` | Drag one element onto another (synthetic pointer sequence) |
+| `click <match> <@ref\|css> [--dbl] [--diff] [--trusted]` | Click (scrolls into view, full pointer/mouse event sequence, overlay-coverage check); `--dbl` double-clicks; `--trusted` drives CDP Input — isTrusted=true, so canvas tools (Figma) accept it |
+| `drag <match> <@ref\|css> <@ref\|css> [--diff] [--trusted]` | Drag one element onto another (synthetic pointer sequence; `--trusted` = CDP Input — isTrusted, and legacy HTML5 dragstart/drop fire) |
 | `dialog <match> accept\|dismiss [--text s]` | Answer a stuck JS dialog (alert/confirm/prompt blocks every other command on the tab) |
 | `fill <match> <@ref\|css> <value> [--diff]` | Set input value — React-safe (native setter + input/change events); on a native `<select>` matches option value or label |
 | `type <match> <@ref\|css> <text> [--diff]` · `press <match> <key> [@ref] [--diff]` · `hover <match> <@ref\|css> [--diff]` | Per-char typing (autocomplete UIs), key presses (`Control+k` combos work), hover |

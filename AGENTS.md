@@ -64,11 +64,15 @@ snap <match> [css] [--diff] [--href] [--find "nl"]
                                   '* ' prefix marks elements new since the previous snap
                                   identical lines seen 3+ times collapse to '… N more · <line> → @refs'
                                   (refs stay clickable); unnamed decorative imgs are elided
-click <match> <@ref|css> [--dbl] [--diff]   click (fails loudly if an overlay covers the
-                                  click point); --dbl double-clicks (two click pairs + dblclick)
-drag <match> <@ref|css> <@ref|css> [--diff]
+click <match> <@ref|css> [--dbl] [--diff] [--trusted]
+                                  click (fails loudly if an overlay covers the
+                                  click point); --dbl double-clicks (two click pairs + dblclick);
+                                  --trusted = CDP Input (isTrusted=true — canvas tools accept it)
+drag <match> <@ref|css> <@ref|css> [--diff] [--trusted]
                                   drag one element onto another — synthetic pointer sequence,
-                                  so isTrusted-checking apps (canvas tools) ignore it
+                                  so isTrusted-checking apps (canvas tools) ignore it;
+                                  --trusted = CDP Input (isTrusted, and legacy HTML5
+                                  dragstart/drop fire too)
 dialog <match> accept|dismiss [--text s]
                                   answer a stuck JS dialog (alert/confirm/prompt blocks every
                                   other command on the tab; --text answers a prompt)
@@ -76,18 +80,22 @@ fill <match> <@ref|css> <value> [--diff]   set input value (React-safe); on a na
                                   matches option value or label — the error lists options on a miss;
                                   a value starting with '--' goes after a bare '--' separator:
                                   fill <match> <ref> -- <value>
-type <match> <@ref|css> <text> [--diff]    per-char typing — triggers autocomplete/keystroke UIs;
+type <match> <@ref|css> <text> [--diff] [--trusted]
+                                  per-char typing — triggers autocomplete/keystroke UIs;
                                   '--' separator for '--'-leading text, same as fill;
-                                  long-form text (>2000 chars) is paste's job
+                                  long-form text (>2000 chars) is paste's job;
+                                  --trusted = CDP keys
 paste <match> [@ref|css] [--diff] [-- <text>]
                                   real-paste semantics into the focused (or given) field —
                                   editors that own their model (Quill, Reddit/LinkedIn rich
                                   composers) revert fill but take a paste; without -- <text>
                                   it reads the OS clipboard (pbpaste/xclip/Get-Clipboard)
 upload <match> <@ref|css> <file...> [--diff]   set a file input's files (CDP; hidden inputs work)
-press <match> <key> [@ref|css] [--diff]   key press (Enter/Tab/Escape/…) on focused or given
-                                  element; combos like Control+k / Shift+Enter set modifier flags
-hover <match> <@ref|css> [--diff]   hover (opens hover menus)
+press <match> <key> [@ref|css] [--diff] [--trusted]   key press (Enter/Tab/Escape/…) on
+                                  focused or given element; combos like Control+k / Shift+Enter
+                                  set modifier flags; --trusted = CDP keys (Enter triggers
+                                  browser defaults like form submit)
+hover <match> <@ref|css> [--diff] [--trusted]   hover (opens hover menus); --trusted = CDP Input
 scroll <match> <up|down|top|bottom|@ref|css> [--diff]
                                   scroll (finds the real scroller — app shells like
                                   Linear/Gmail scroll an inner panel, not the window);
@@ -199,7 +207,7 @@ Follow [design-eye.md](design-eye.md): measure numbers on both sides, crop to th
 ## Gotchas
 
 - `eval` runs in the ISOLATED world, falls back to MAIN, then to CDP (CSP-exempt). `console` uses MAIN automatically. In the CDP fallback, top-level `const`/`let` bindings persist across calls — wrap multi-statement snippets in an IIFE or the second run dies with "already declared".
-- Synthetic events are *untrusted*: canvas-heavy apps (e.g. Figma) ignore them, and `press Enter` reaches JS listeners but doesn't trigger browser defaults (form submit) — click the submit button instead.
+- Synthetic events are *untrusted*: canvas-heavy apps (e.g. Figma) ignore them, and `press Enter` reaches JS listeners but doesn't trigger browser defaults (form submit) — click the submit button instead. `--trusted` on click/press/type/hover/drag routes through CDP `Input.dispatch*` (isTrusted=true, so canvas tools take it and Enter submits) — it attaches the debugger while the synthetic path never does, so it stays opt-in.
 - A page's JS dialog (alert/confirm/prompt) blocks the tab — every eval, snap and synthetic key wedges to the 70s timeout. `dialog <match> accept|dismiss` is the only command that answers one (CDP; beforeunload is not an issue, nav/close bypass it). If every command on a tab starts timing out, suspect a stuck dialog.
 - Same-origin iframes appear in `snap` and their elements are drivable in place. Cross-origin frames (Stripe checkout, embedded docs) show as one `frame "src…"` line — not drivable in place; `open` the frame's src as its own tab, or `shot` for pixels.
 - `net`/`emulate`/`shot` (and `upload`/`dialog`) attach the debugger — Chrome shows its "debugging this browser" infobar while attached; that's expected. The attach is also **detectable by page JS** (DevTools-attach side effects like the `Runtime.enable` leak): anti-bot systems can flag the session, and it's the user's real logged-in profile — prefer the non-CDP commands (`snap`, `eval`, `measure`) when they answer the question, and `unemulate` as soon as you're done emulating.

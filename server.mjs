@@ -190,22 +190,22 @@ const CLI_LINES = {
   swlogs: () => 'swlogs',
   snap: (m) =>
     `snap ${shellq(m.urlMatch)}${m.scope ? ' ' + shellq(m.scope) : ''}${m.href ? ' --href' : ''}${m.find ? ' --find ' + shellq(m.find) : ''}${D(m)}`,
-  click: (m) => `click ${shellq(m.urlMatch)} ${shellq(m.target)}${m.dbl ? ' --dbl' : ''}${D(m)}`,
-  drag: (m) => `drag ${shellq(m.urlMatch)} ${shellq(m.from)} ${shellq(m.to)}${D(m)}`,
+  click: (m) => `click ${shellq(m.urlMatch)} ${shellq(m.target)}${m.dbl ? ' --dbl' : ''}${m.trusted ? ' --trusted' : ''}${D(m)}`,
+  drag: (m) => `drag ${shellq(m.urlMatch)} ${shellq(m.from)} ${shellq(m.to)}${m.trusted ? ' --trusted' : ''}${D(m)}`,
   dialog: (m) => `dialog ${shellq(m.urlMatch)} ${m.accept ? 'accept' : 'dismiss'}${m.text ? ' --text ' + shellq(m.text) : ''}`,
   // fill/type: flags first, then the '--' separator, then the value — a value
   // starting with '--' (dev.to front-matter) would otherwise die on the
   // fill parser's stray-flag scan at replay.
   fill: (m) => `fill ${shellq(m.urlMatch)} ${shellq(m.target)}${D(m)} -- ${shellq(m.value)}`,
-  type: (m) => `type ${shellq(m.urlMatch)} ${shellq(m.target)}${D(m)} -- ${shellq(m.value)}`,
+  type: (m) => `type ${shellq(m.urlMatch)} ${shellq(m.target)}${m.trusted ? ' --trusted' : ''}${D(m)} -- ${shellq(m.value)}`,
   // paste: a clipboard read (clip) is re-read at replay time, not embedded —
   // the exported script shouldn't freeze (or leak) what the clipboard held.
   paste: (m) =>
     m.clip
       ? `paste ${shellq(m.urlMatch)}${m.target ? ' ' + shellq(m.target) : ''}${D(m)}`
       : `paste ${shellq(m.urlMatch)}${m.target ? ' ' + shellq(m.target) : ''}${D(m)} -- ${shellq(m.value)}`,
-  press: (m) => `press ${shellq(m.urlMatch)} ${shellq(m.key)}${m.target ? ' ' + shellq(m.target) : ''}${D(m)}`,
-  hover: (m) => `hover ${shellq(m.urlMatch)} ${shellq(m.target)}${D(m)}`,
+  press: (m) => `press ${shellq(m.urlMatch)} ${shellq(m.key)}${m.target ? ' ' + shellq(m.target) : ''}${m.trusted ? ' --trusted' : ''}${D(m)}`,
+  hover: (m) => `hover ${shellq(m.urlMatch)} ${shellq(m.target)}${m.trusted ? ' --trusted' : ''}${D(m)}`,
   scroll: (m) => `scroll ${shellq(m.urlMatch)} ${shellq(m.target)}${D(m)}`,
   upload: (m) => `upload ${shellq(m.urlMatch)} ${shellq(m.target)} ${(m.files || []).map(shellq).join(' ')}${D(m)}`,
   fetch: (m) => `fetch ${shellq(m.urlMatch)} ${shellq(m.url)}`,

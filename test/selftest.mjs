@@ -432,6 +432,16 @@ try {
   assert(drg.status === 0 && drg.stdout.includes('"from":"@e1"') && drg.stdout.includes('"to":"@e2"') && drg.stdout.includes('"diff":true'), 'cli drag passes from+to+diff', drg.stdout + drg.stderr);
   const dbl = await cli('click', 'example.com', '@e3', '--dbl');
   assert(dbl.status === 0 && dbl.stdout.includes('"dbl":true'), 'cli click --dbl', dbl.stdout + dbl.stderr);
+  // --trusted: opt-in CDP Input on click/press/type/hover/drag (isTrusted
+  // events — canvas tools, browser defaults). fill has no --trusted.
+  const trus = await cli('click', 'example.com', '@e3', '--trusted', '--diff');
+  assert(trus.status === 0 && trus.stdout.includes('"trusted":true') && trus.stdout.includes('"diff":true'), 'cli click --trusted rides with --diff', trus.stdout + trus.stderr);
+  const trusPress = await cli('press', 'example.com', 'Enter', '--trusted');
+  assert(trusPress.status === 0 && trusPress.stdout.includes('"trusted":true'), 'cli press --trusted', trusPress.stdout + trusPress.stderr);
+  const trusType = await cli('type', 'example.com', '@e2', 'hi', '--trusted');
+  assert(trusType.status === 0 && trusType.stdout.includes('"trusted":true') && trusType.stdout.includes('"value":"hi"'), 'cli type --trusted keeps the value', trusType.stdout + trusType.stderr);
+  const trusFill = await cli('fill', 'example.com', '@e2', 'hi', '--trusted');
+  assert(trusFill.status !== 0 && trusFill.stderr.includes('unknown flag'), 'cli fill has no --trusted (value setter has no events to fake)', trusFill.stdout + trusFill.stderr);
   const emu = await cli('emulate', 'example.com', '375', '667', 'mobile');
   assert(emu.status === 0 && emu.stdout.includes('"width":375') && emu.stdout.includes('"mobile":true'), 'cli emulate wire shape', emu.stdout + emu.stderr);
   const rsz = await cli('resize', 'example.com', '800', '600');
@@ -500,7 +510,7 @@ try {
     // sendCommand tore the shared session mid-flight (5.5% of interleaved
     // CDP commands in stress). (6 wrap sites: upload/net/emulate/unemulate/
     // shot/dialog.)
-    assert(bg.split('withCdp(').length === 9, 'ext: CDP handlers serialize per tab (helper + 7 wrap sites)');
+    assert(bg.split('withCdp(').length === 10, 'ext: CDP handlers serialize per tab (helper + 8 wrap sites)');
     // open must not await the favicon/banner marking — executeScript sits
     // pending forever on an uncommitted navigation (unreachable URL), which
     // hung open past its 8s cap to the server's 70s timeout. The response
@@ -624,6 +634,11 @@ try {
     // capture events (headers, postData, wallTime), bodies with base64
     // encoding flagged, initiator as the standard _initiator field.
     assert(bg.includes("version: '1.2'") && bg.includes('_initiator') && bg.includes('encoding:'), 'ext: net --har builds a real HAR 1.2 log (creator, entries, _initiator, base64 bodies)');
+    // --trusted routes through CDP Input.dispatch* — isTrusted=true events,
+    // the one thing synthetic dispatch can't fake. It rides the same
+    // attach/serialize plumbing as upload (refcount + withCdp).
+    assert(bg.includes('Input.dispatchMouseEvent') && bg.includes('Input.dispatchKeyEvent') && bg.includes('trustedInput'), 'ext: --trusted drives CDP Input (isTrusted events) via the shared debugger plumbing');
+    assert(bg.includes('trustedPointSrc') && bg.includes('COVERAGE_SRC') && bg.includes('cdpDrag'), 'ext: trusted input runs the same coverage preflight; trusted drag interpolates real pointer moves');
 
     // The service worker is never executed here (the fake extension plays it)
     // — a syntax error in it would otherwise ship green, as would one in
