@@ -332,6 +332,21 @@ try {
   // command's field names against renames.
   const waitEcho = await cli('wait', 'example.com', '--text', 'Saved', '--timeout', '500');
   assert(waitEcho.status === 0 && waitEcho.stdout.includes('"text":"Saved"') && waitEcho.stdout.includes('"timeout":500'), 'cli wait passes text+timeout', waitEcho.stdout + waitEcho.stderr);
+  // --human: CAPTCHA/2FA handoff — flag rides, default 120s (a human needs
+  // more than a page), max 280s (the CLI HTTP client gives up at 5 min),
+  // and it can't be mixed with the page-side wait modes.
+  const waitHuman = await cli('wait', 'example.com', '--human');
+  assert(
+    waitHuman.status === 0 && waitHuman.stdout.includes('"human":true') && waitHuman.stdout.includes('"timeout":120000') && waitHuman.stdout.includes('"text":null'),
+    'cli wait --human: default 120s, no page-side predicate',
+    waitHuman.stdout + waitHuman.stderr
+  );
+  const waitHumanT = await cli('wait', 'example.com', '--human', '--timeout', '200000');
+  assert(waitHumanT.status === 0 && waitHumanT.stdout.includes('"timeout":200000'), 'cli wait --human --timeout passes through', waitHumanT.stdout + waitHumanT.stderr);
+  const waitHumanCap = await cli('wait', 'example.com', '--human', '--timeout', '300000');
+  assert(waitHumanCap.status !== 0 && waitHumanCap.stderr.includes('280000'), 'cli wait --human caps at 280s (the 5-min HTTP wall)', waitHumanCap.stdout + waitHumanCap.stderr);
+  const waitHumanMix = await cli('wait', 'example.com', '--human', '--text', 'Saved');
+  assert(waitHumanMix.status !== 0 && waitHumanMix.stderr.includes('usage: wait'), 'cli wait --human is exclusive with --text/selector', waitHumanMix.stdout + waitHumanMix.stderr);
   const waitTypo = await cli('wait', 'example.com', '--tex', 'Saved');
   assert(waitTypo.status !== 0 && waitTypo.stderr.includes('unknown flag --tex'), 'cli wait rejects unknown flags', waitTypo.stdout + waitTypo.stderr);
   const waitBare = await cli('wait', 'example.com');
@@ -501,6 +516,12 @@ try {
     // watch's boot-reset: actSeq resets on restart — without this check every
     // new line is filtered out after a server restart.
     assert(cliSrc.includes('res.boot !== boot'), 'cli: watch resets its cursor on server restart');
+    // wait --human: the handoff must only complete on TRUSTED input (synthetic
+    // events can't answer a CAPTCHA, and page JS must not be able to flip the
+    // flag) and the server must hold it past the 70s command cap.
+    assert(bg.includes('waitHuman') && bg.includes('e.isTrusted'), 'ext: wait --human completes only on trusted input');
+    assert(bg.includes("world: 'ISOLATED'") && bg.includes('__bridgeHumanActed'), 'ext: the human-acted flag lives in the ISOLATED world (page JS cannot flip it)');
+    assert(serverSrc.includes("msg.type === 'wait' && msg.human"), 'server: wait --human rides the long-wait path past the 70s cap');
 
     // The service worker is never executed here (the fake extension plays it)
     // — a syntax error in it would otherwise ship green, as would one in

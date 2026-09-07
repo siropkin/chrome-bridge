@@ -116,7 +116,12 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     inputs; target the input or an element wrapping it)
   ask <match> <question>            (experimental) answer from page text with Chrome's
                                     built-in Gemini Nano — local, no cloud tokens
-  wait <match> <css|--text t> [--timeout ms]   (timeout default 10s, max 60s)
+  wait <match> <css|--text t|--human> [--timeout ms]
+                                    wait for element or visible text (timeout default 10s,
+                                    max 60s); --human hands the tab to the user — CAPTCHA/
+                                    2FA/login walls — the pill asks them to act, the command
+                                    blocks until trusted input or navigation (default 120s,
+                                    max 280s), then returns the snap-diff of what they did
   eval <match> <js|-> [--world main|isolated]     '-' reads JS from stdin
   shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full]
                                     --max caps the long edge (default 1280, 0 = native res)
@@ -521,19 +526,27 @@ async function run(cmdName, args) {
       const [match, ...rest] = args;
       let text = null;
       let timeout = 10000;
+      let human = false;
       const pos = [];
       for (let i = 0; i < rest.length; i++) {
         if (rest[i] === '--text') text = rest[++i];
         else if (rest[i] === '--timeout') timeout = Number(rest[++i]);
-        else if (rest[i].startsWith('--')) fail(`unknown flag ${rest[i]} (flags: --text, --timeout)`);
+        else if (rest[i] === '--human') human = true;
+        else if (rest[i].startsWith('--')) fail(`unknown flag ${rest[i]} (flags: --text, --timeout, --human)`);
         else pos.push(rest[i]);
       }
       const selector = pos[0] || null;
-      if (!match || (!selector && !text)) fail('usage: wait <match> [css|--text t] [--timeout ms]');
+      if (!match || (!selector && !text && !human)) fail('usage: wait <match> [css|--text t|--human] [--timeout ms]');
+      if (human && (selector || text)) fail('usage: wait <match> --human [--timeout ms] — --human waits for the human, not the page');
       // Above 60s the server's 70s command cap fires first and the caller gets
       // a misleading 'extension timeout' for a healthy wait — fail here instead.
-      if (!Number.isFinite(timeout) || timeout < 1 || timeout > 60000) fail('--timeout must be 1..60000 ms (the server kills commands at 70s)');
-      print(await cmd({ type: 'wait', urlMatch: match, selector, text, timeout }));
+      // --human extends past that cap (server-side) but not past the CLI HTTP
+      // client's 5-min wall — a longer handoff is a second wait command.
+      if (!Number.isFinite(timeout) || timeout < 1) fail('--timeout must be at least 1 ms');
+      if (!human && timeout > 60000) fail('--timeout must be 1..60000 ms (the server kills commands at 70s)');
+      if (human && timeout > 280000) fail('--timeout must be 1..280000 ms with --human (the HTTP client gives up at 5 min — start another wait for a longer handoff)');
+      if (human && timeout === 10000) timeout = 120000; // a human needs more than a page does
+      print(await cmd({ type: 'wait', urlMatch: match, selector, text, timeout, ...(human ? { human: true } : {}) }));
       break;
     }
 

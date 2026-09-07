@@ -87,8 +87,13 @@ scroll <match> <up|down|top|bottom|@ref|css> [--diff]
                                   append the snap-diff — act + observe in one call
 ask <match> <question>              (experimental) local Gemini Nano answers from page
                                   text — no cloud tokens; pre-filter quality, not truth
-wait <match> <css|--text t> [--timeout ms]   wait for element or visible text
-                                  (timeout default 10s, max 60s)
+wait <match> <css|--text t|--human> [--timeout ms]
+                                  wait for element or visible text (default 10s, max 60s);
+                                  --human hands the tab to the user — CAPTCHA/2FA/login
+                                  walls: the pill tells them it's their turn, the command
+                                  blocks until they act (trusted input or navigation;
+                                  default 120s, max 280s), then returns the snap-diff
+                                  of what they did (fresh snap if they navigated)
 eval <match> <js|-> [--world main|isolated]     '-' reads JS from stdin
 shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full]
                                   --max caps the long edge (default 1280, 0 = native res)

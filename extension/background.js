@@ -472,6 +472,9 @@ function activityPhrases(msg) {
     const t = msg.text.length > 90 ? msg.text.slice(0, 87) + '…' : msg.text;
     return { ing: '💬 ' + t, done: '💬 ' + t };
   }
+  // --human: the pill label IS the handoff — the human must notice it's their
+  // turn; the ticker appends elapsed seconds while they take it.
+  if (msg.type === 'wait' && msg.human) return { ing: '🙋 your turn — act in this tab', done: '🙋 you acted — carrying on' };
   let v = ACT_VERBS[msg.type] || [msg.type, msg.type];
   const detail = msg.target || msg.key || msg.selector || msg.find || msg.text || msg.question || msg.url || '';
   if (msg.type === 'snap' && msg.find) v = ['searching page for', 'searched page for'];
@@ -1566,6 +1569,67 @@ function waitForLoad(tabId, timeout = 8000, recheck = false) {
   });
 }
 
+// --- wait --human: hand the tab to the human, watch what they do -------------
+// CAPTCHA/2FA/login walls are THE failure mode of real-logged-in automation:
+// synthetic events can't answer them (and shouldn't — the human's password
+// belongs to the human). The command blocks in the SERVICE WORKER, not an
+// in-page promise: a login navigation tears the page down mid-await, and
+// navigation is exactly one of the things being waited for. Completion is
+// trusted input — e.isTrusted on a listener armed in the ISOLATED world
+// (page JS can forge neither the event nor the flag) — or the tab navigating.
+async function waitHuman(tab, msg) {
+  const timeout = msg.timeout || 120_000;
+  const t0 = Date.now();
+  const url0 = tab.url;
+  // Baseline snap for the after-diff (a full snap stores the lines the --diff
+  // pass reads back; both sides go through runEval, so the world matches).
+  await runEval(tab.id, SNAP_SRC(null, false, false));
+  // Arm the trusted-input flag: dedicated func injection (not the eval ladder
+  // — page CSP can't block a scripting-API func) into the ISOLATED world.
+  await chrome.scripting
+    .executeScript({
+      target: { tabId: tab.id },
+      world: 'ISOLATED',
+      func: () => {
+        if (window.__bridgeHumanArmed) return;
+        window.__bridgeHumanArmed = true;
+        window.__bridgeHumanActed = false;
+        const mark = (e) => {
+          if (e.isTrusted) window.__bridgeHumanActed = true;
+        };
+        for (const t of ['pointerdown', 'keydown', 'wheel']) addEventListener(t, mark, { capture: true, passive: true });
+      },
+    })
+    .catch(() => {}); // injection failed (chrome:// page) — navigation is still a signal
+  const how = await new Promise((resolve) => {
+    const iv = setInterval(async () => {
+      try {
+        const t = await chrome.tabs.get(tab.id);
+        if (t.url !== url0) { clearInterval(iv); resolve('nav'); return; }
+        const r = await chrome.scripting.executeScript({ target: { tabId: tab.id }, world: 'ISOLATED', func: () => !!window.__bridgeHumanActed });
+        if (r?.[0]?.result) { clearInterval(iv); resolve('input'); return; }
+      } catch {
+        clearInterval(iv);
+        resolve('gone'); // tab closed mid-handoff
+        return;
+      }
+      if (Date.now() - t0 >= timeout) { clearInterval(iv); resolve('timeout'); }
+    }, 1000);
+  });
+  if (how === 'timeout') throw new Error('timeout after ' + timeout + 'ms — the human did not act in this tab; nudge them (note <match> …) or re-run with a longer --timeout');
+  if (how === 'gone') throw new Error('the tab was closed while waiting for the human');
+  // A login usually navigates: the whole page (and every ref, and the diff
+  // baseline) died with the old document. Fresh full snap instead of a diff.
+  if (how === 'nav' || (await chrome.tabs.get(tab.id).catch(() => null))?.url !== url0) {
+    await waitForLoad(tab.id, 8000, true);
+    const snap = await runEval(tab.id, SNAP_SRC(null, false, false));
+    return 'the human navigated to ' + (await chrome.tabs.get(tab.id)).url + ' — fresh snap (refs are new):\n' + snap;
+  }
+  // In-page action (checkbox, puzzle): settle, then diff against the baseline.
+  await runEval(tab.id, SETTLE_SRC);
+  return 'the human acted:\n' + (await runEval(tab.id, SNAP_SRC(null, true, false)));
+}
+
 // --- Commands ---------------------------------------------------------------
 
 // Commands that act as the user or run code in the page — these auto-mark an
@@ -1612,10 +1676,11 @@ async function findTab(msg) {
   }
   // Mutating commands auto-mark: acting on an unmarked tab used to be
   // invisible (no pill, no favicon) — worst exactly when the match landed on
-  // a stranger's tab. Fire-and-forget like open(): the banner injection can
-  // hang on an uncommitted navigation, and drivenTabs updates synchronously,
-  // so the block below already sees the tab as driven.
-  if (MUTATING.has(msg.type) && !drivenTabs.has(matches[0].id)) markTab(matches[0].id).catch(() => {});
+  // a stranger's tab. `wait --human` too: the pill IS the handoff signal.
+  // Fire-and-forget like open(): the banner injection can hang on an
+  // uncommitted navigation, and drivenTabs updates synchronously, so the
+  // block below already sees the tab as driven.
+  if ((MUTATING.has(msg.type) || (msg.type === 'wait' && msg.human)) && !drivenTabs.has(matches[0].id)) markTab(matches[0].id).catch(() => {});
   // Not `release`: it would flash ⏳ on the still-driven tab right before
   // releaseTab restores the site's own favicon. Fire-and-forget for the same
   // uncommitted-nav reason as open() — an awaited executeScript there can
@@ -1877,6 +1942,7 @@ async function handle(msg) {
 
   if (msg.type === 'wait') {
     const tab = await findTab(msg);
+    if (msg.human) return await waitHuman(tab, msg);
     return await runEval(tab.id, waitSrc(msg));
   }
 

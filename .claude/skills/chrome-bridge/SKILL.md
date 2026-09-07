@@ -26,7 +26,7 @@ node <repo>/cli.mjs <command> …
 - `click <match> @e3 [--dbl]` / `fill <match> @e2 "value"` / `type <match> @e2 "text"` / `press <match> Control+k` — act by ref. Refs survive re-snaps, expire on navigation (re-snap after `nav`). `fill` also sets a native `<select>` by option value or label. `press` takes modifier combos (`Control+k`, `Shift+Enter`).
 - `upload <match> @e5 ./report.pdf` — set a file input's files (CDP — hidden inputs work; target the input or an element wrapping it).
 - `nav <match> <url>` / `open <url>` / `close <match>` — tab lifecycle.
-- `wait <match> --text "Saved"` — wait after actions that trigger loads.
+- `wait <match> --text "Saved"` — wait after actions that trigger loads. `wait <match> --human` — hand CAPTCHA/2FA/login walls to the user: the pill tells them it's their turn; blocks until they act (default 2 min, max ~4.5 min), returns the diff of what they did.
 - `batch` — commands on stdin, one per line: `printf 'click m @e4\nwait m --text "Saved"\nsnap m --diff\n' | node cli.mjs batch` — dependent chains in one process, one shell call.
 - `shot <match> out.png [--max 800] [--format jpeg]` — only when pixels matter; `--max` caps the long edge (default 1280).
 - `eval <match> <js|->` — run JS in the page; `-` reads from stdin.

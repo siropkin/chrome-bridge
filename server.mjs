@@ -154,7 +154,10 @@ async function route(msg) {
   // old single-seat line shape.
   const explicit = !!msg.profile;
   if (seats.size > 1 || explicit) msg.profile = seat.pid;
-  return await ask(seat, msg);
+  // `wait --human` blocks for minutes (CAPTCHA/2FA handoff) — the 70s command
+  // cap would kill it mid-handoff. 285s, just under the CLI HTTP client's
+  // 5-min wall, which is the real ceiling (undici aborts the fetch at 300s).
+  return await ask(seat, msg, msg.type === 'wait' && msg.human ? 285_000 : CMD_TIMEOUT_MS);
 }
 
 // --- activity feed (`cli.mjs watch`) ----------------------------------------

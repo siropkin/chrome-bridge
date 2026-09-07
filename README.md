@@ -176,7 +176,7 @@ You're handing an agent your logged-in browser — the design assumes you want t
 | `scroll <match> <up\|down\|top\|bottom\|@ref\|css> [--diff]` | Scroll — finds the real scroller on app-shell pages (Linear, Gmail) that scroll an inner panel, not the window |
 | `upload <match> <@ref\|css> <file...> [--diff]` | Set a file input's files via CDP — works on hidden inputs; target the input or an element wrapping it |
 | `ask <match> <question>` | *(experimental)* Local Gemini Nano answers from page text — no cloud tokens, pre-filter quality |
-| `wait <match> [css\|--text t] [--timeout ms]` | Wait for element or visible text — MutationObserver-driven, resolves as soon as the page changes (timeout default 10s, max 60s) |
+| `wait <match> [css\|--text t\|--human] [--timeout ms]` | Wait for element or visible text — MutationObserver-driven, resolves as soon as the page changes (timeout default 10s, max 60s). `--human` hands the tab to you — CAPTCHA/2FA/login walls: the pill says it's your turn, the command blocks until you act (default 2 min), then returns the snap-diff of what you did |
 | `eval <match> <js\|-> [--world main|isolated]` | Run JS in the page; `-` reads from stdin |
 | `shot <match> <out> [--max px] [--scale N] [--format jpeg] [--quality N] [--crop x,y,w,h] [--full]` | Screenshot via CDP. Long edge capped at `--max` px (default 1280, `0` = native res) — models downscale big images on read anyway, so native res buys file size, not detail. `--full` = whole page height |
 | `net <match> [--dur ms] [--filter s] [--body s]` | Capture network traffic via CDP (≤30s per run) — one compact line per request; `--body s` appends matching JSON/text response bodies |
