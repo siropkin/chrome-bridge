@@ -1509,7 +1509,7 @@ const changedBox = (cmp, bmp) => ({
 
 // Whole-viewport capture shared by shot's viewport path and the pixel-diff
 // machinery. Caller owns the debugger session (withCdp + attachDbg).
-async function captureViewport(tabId, msg) {
+async function captureViewport(tabId, msg, reuseClip) {
   const params = { format: msg.format === 'jpeg' ? 'jpeg' : 'png' };
   if (params.format === 'jpeg') params.quality = msg.quality ?? 80;
   let dpr = 1;
@@ -1521,12 +1521,17 @@ async function captureViewport(tabId, msg) {
   // Captures render at devicePixelRatio, so budget max/dpr CSS px to keep
   // the OUTPUT long edge <= max.
   const s = Math.min(msg.scale || 1, max / (Math.max(v.clientWidth, v.clientHeight) * dpr));
-  if (s !== 1) {
+  const clip = { x: v.pageX, y: v.pageY, width: v.clientWidth, height: v.clientHeight, scale: s };
+  // reuseClip: the --diff/--pixel-change machinery re-captures the EXACT
+  // frame the baseline captured — the debugging infobar appearing/vanishing
+  // resizes the viewport (~52px) and would otherwise randomize consecutive
+  // diffs into 'viewport size changed'.
+  if (s !== 1 || reuseClip) {
     params.captureBeyondViewport = true;
-    params.clip = { x: v.pageX, y: v.pageY, width: v.clientWidth, height: v.clientHeight, scale: s };
+    params.clip = reuseClip || clip;
   }
   const res = await chrome.debugger.sendCommand({ tabId }, 'Page.captureScreenshot', params);
-  return { b64: res.data, format: params.format, v, dpr, s };
+  return { b64: res.data, format: params.format, v, dpr, s: (reuseClip || clip).scale, clip };
 }
 
 // --- trusted input (--trusted): CDP Input.dispatch* ---------------------------
@@ -2222,7 +2227,10 @@ async function waitPixel(tab, msg) {
       for (;;) {
         if (Date.now() - t0 >= timeout) throw new Error('timeout after ' + timeout + 'ms — no pixel change detected');
         await new Promise((r) => setTimeout(r, 800));
-        const cap = await captureViewport(tab.id, { ...msg, format: 'png' });
+        // Reuse the baseline's exact frame — the infobar attach/detach would
+        // otherwise resize the viewport between polls (found live in the
+        // shot --diff verification).
+        const cap = await captureViewport(tab.id, { ...msg, format: 'png' }, cap0.clip);
         const cmp = await pixelDiff(cap0.b64, cap.b64);
         if (cmp.error) throw new Error(cmp.error);
         if (cmp.changed) {
@@ -2699,12 +2707,12 @@ async function handle(msg) {
           // shot of this tab (baseline updates every call, like snap --diff).
           // On change the saved file is the CHANGED REGION only — the one
           // thing a canvas-watcher actually wants to look at.
-          const cap = await captureViewport(tab.id, { ...msg, format: 'png' });
-          const full = 'data:image/png;base64,' + cap.b64;
           const prev = shotBaselines.get(tab.id);
-          shotBaselines.set(tab.id, cap.b64);
+          const cap = await captureViewport(tab.id, { ...msg, format: 'png' }, prev?.clip);
+          const full = 'data:image/png;base64,' + cap.b64;
+          shotBaselines.set(tab.id, { b64: cap.b64, clip: cap.clip });
           if (!prev) return { note: 'diff: baseline saved — run the action, then shot <match> <out> --diff again; this file is the full capture', data: full };
-          const cmp = await pixelDiff(prev, cap.b64);
+          const cmp = await pixelDiff(prev.b64, cap.b64);
           if (cmp.error) return { note: 'diff: ' + cmp.error, data: full };
           if (!cmp.changed) return { note: 'diff: no pixel change since the previous shot (baseline updated)', data: full };
           const box = changedBox(cmp, cmp.bmp);
