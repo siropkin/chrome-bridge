@@ -674,6 +674,13 @@ try {
     assert(spawnSync('node', ['--check', `${ROOT}extension/background.js`]).status === 0, 'ext: background.js parses (node --check)');
     assert(spawnSync('bash', ['-n', `${ROOT}install.sh`]).status === 0, 'install.sh parses (bash -n)');
 
+    // The per-domain recipe convention (#19): AGENTS.md points agents at
+    // recipes/<domain>.md before acting — a missing dir/file 404s the
+    // convention for every agent that reads the manual.
+    assert(
+      fs.existsSync(`${ROOT}recipes/README.md`) && fs.readFileSync(`${ROOT}AGENTS.md`, 'utf8').includes('recipes/README.md'),
+      'recipes: the convention file exists and AGENTS.md points at it'
+    );
     // The agent-setup paste text is THE install interface (both READMEs embed it
     // as the quick start) — same drift logic as AGENTS.md below: a stale copy
     // ships broken install instructions to every new user.

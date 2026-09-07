@@ -213,6 +213,10 @@ The patch survives SPA navigations, dies on reload. If the app caches responses 
 
 Follow [design-eye.md](design-eye.md): measure numbers on both sides, crop to the component, rubric per element.
 
+### Per-domain recipes (recipes/)
+
+Before driving a site you'll revisit, check `<repo>/recipes/<domain>.md` — a flow the bridge already verified there (preconditions + a replayable sequence + the site gotchas that cost the first run 20 commands). After a run you verified end-state included, save one: `history <match> --batch` exports the recorded commands, prune to intent, save as `recipes/<domain>.md`, commit locally — upstream only generally-useful flows. Stale = delete; re-verify after site redesigns. The convention and skeleton: [recipes/README.md](recipes/README.md).
+
 ## Gotchas
 
 - `eval` runs in the ISOLATED world, falls back to MAIN, then to CDP (CSP-exempt). `console` uses MAIN automatically. In the CDP fallback, top-level `const`/`let` bindings persist across calls — wrap multi-statement snippets in an IIFE or the second run dies with "already declared".
