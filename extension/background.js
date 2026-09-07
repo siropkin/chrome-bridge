@@ -2322,6 +2322,33 @@ async function waitPixel(tab, msg) {
       // Decode the baseline ONCE — re-decoding a multi-MB png every 800ms poll
       // was pure waste (found by review).
       bmp0 = await pngBitmap(cap0.b64);
+      // Settle check: the "is being debugged" infobar appears ~0.5-1s AFTER
+      // the debugger attach, asynchronously and with variable timing. cap0
+      // often lands pre-infobar while every poll is post-infobar, and
+      // captureBeyondViewport renders position:fixed elements relative to the
+      // infobar-shifted viewport — so any page with a fixed element self-fired
+      // this wait on a static page (found live: the fixture header's white
+      // text band, no DOM mutation in the frame). One capture after 800ms: if
+      // it differs, the infobar landed mid-window — adopt the settled frame as
+      // the baseline instead of diffing pre- vs post-infobar forever. shot
+      // --diff doesn't need this: its baseline and compare both sit ~0.3s
+      // after their own attaches, consistently pre-infobar (verified 3×
+      // live) — the wait is the only flow whose frames straddle the landing.
+      // ponytail: fixed-delay settle, not infobar observation — Chrome has no
+      // event for the infobar appearing; revisit if variable-timing reports
+      // ever show it landing past ~1s.
+      await new Promise((r) => setTimeout(r, 800));
+      const cap1 = await captureViewport(tab.id, pngMsg, cap0.clip, true);
+      const cmp1 = await diffBmp(bmp0, await pngBitmap(cap1.b64));
+      if (cmp1.error) {
+        // size mismatch (dpr change) — keep bmp0; the first poll dies loud
+        // exactly like today, the wait's one honest loud failure mode.
+      } else if (!cmp1.changed) {
+        cmp1.bmp.close(); // infobar hadn't landed — cap0 is the truth
+      } else {
+        bmp0.close();
+        bmp0 = cmp1.bmp; // infobar landed — diff from the settled frame
+      }
       for (;;) {
         if (Date.now() - t0 >= timeout) throw new Error('timeout after ' + timeout + 'ms — no pixel change detected');
         await new Promise((r) => setTimeout(r, 800));
