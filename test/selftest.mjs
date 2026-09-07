@@ -570,6 +570,12 @@ try {
     assert(bg.includes('BRIDGE_SEL') && bg.includes('inBridge'), 'ext: settle ignores the bridge-injected DOM (pill ticker, cursor, grid)');
     assert(bg.includes("el.id === 'bridge-banner'") && bg.includes("el.id === 'bridge-cursor'"), 'ext: snap excludes the bridge UI (the pill is not page content)');
     assert(bg.includes('Math.min(25, 15000 / text.length)'), 'ext: type caps its total inter-char sleep budget (~15s) for long text');
+    // Shadow-piercing target resolution: document.querySelector can't reach
+    // open shadow roots (Reddit's faceplate-*, LinkedIn's nested roots) —
+    // every action script resolves via deepQuery (@refs/document CSS first,
+    // deep walk on a miss).
+    assert(bg.includes('const DEEPQ') && bg.split('deepQuery(sel').length >= 11, 'ext: action targets pierce open shadow roots (deepQuery at every resolution site)', `deepQuery sites: ${bg.split('deepQuery(sel').length}`);
+    assert(bg.includes('deepAll(') && bg.includes("deepAll(${JSON.stringify(sel)}, document)"), 'ext: measure matches inside open shadow roots too');
 
     // The service worker is never executed here (the fake extension plays it)
     // — a syntax error in it would otherwise ship green, as would one in

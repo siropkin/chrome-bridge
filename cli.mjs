@@ -190,6 +190,7 @@ active. Ambiguous matches print a warning naming the other tabs — re-run with 
 longer match. Mutating commands (click/fill/type/press/upload/eval/hover/scroll/
 grid/emulate/resize/drag/dialog) auto-mark the tab (🟣 pill + tab group).
 Refs (@eN) come from snap; they survive re-snaps but expire on navigation.
+CSS selectors match document-level first, then pierce open shadow roots.
 
 Multiple Chrome profiles can be connected at once (one seat each). A <match>
 routes to the only profile that has a matching tab; a match in SEVERAL profiles

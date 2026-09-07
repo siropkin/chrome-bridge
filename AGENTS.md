@@ -145,6 +145,10 @@ stop                              stop the server
 
 Always `fill`, never set `.value` in `eval` — `fill` uses the native value setter + input/change events so React's value tracker sees a real change. Rich editors that own their content model (Quill, Reddit/LinkedIn composers) revert `fill` — use `paste <match> @ref -- "text"` (real-paste semantics) instead.
 
+### Shadow DOM pages (Reddit's faceplate-\*, LinkedIn's composer)
+
+`snap` walks open shadow roots and mints refs for their elements — refs are the main road, and they click/fill/type straight in. CSS selectors pierce open roots too (document-level match first, then a deep walk — `click <match> "faceplate-radio-input"` works). Closed shadow roots are invisible to both — drive the host element, or reach in with `eval` from the host (`host.shadowRoot.querySelector(…)`).
+
 ### Set a native <select>
 
 `fill <match> @eN "Option label"` — fill matches an option by value, label, or text and fires change (React-safe). On a miss the error lists the available values. Custom listboxes (not a real `<select>`) need `click` → `snap --diff` → click the option instead.

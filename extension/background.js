@@ -1089,13 +1089,32 @@ const CURSOR_SRC = `
 // gesture and JS value-set is ignored. Fail loudly toward upload instead of
 // returning fake success ('clicked'/'filled'/'typed' while nothing happened).
 const FILE_INPUT_GUARD = `if (el.tagName === 'INPUT' && el.type === 'file') throw new Error('file input — synthetic events cannot set it; use: upload <match> ' + sel + ' <file...>');`;
+// Shadow-piercing target resolution, embedded into the page scripts that
+// resolve a selector. @refs and document-level CSS stay the fast path; the
+// deep fallback walks OPEN shadow roots (Reddit's faceplate-*, LinkedIn's
+// nested roots) — document.querySelector can't reach those. snap already
+// shows shadow elements with refs, so this is the CSS escape hatch, not the
+// main road. The fallback runs only on a document miss (it walks every
+// element to find shadow hosts), and closed roots stay invisible to it.
+const DEEPQ = `
+  const deepAll = (sel, root) => {
+    let out = [...root.querySelectorAll(sel)];
+    for (const el of root.querySelectorAll('*')) if (el.shadowRoot) out = out.concat(deepAll(sel, el.shadowRoot));
+    return out;
+  };
+  const deepQuery = (sel) => {
+    if (sel.startsWith('@')) return window.__bridgeRefs?.[sel.slice(1)] || null;
+    return document.querySelector(sel) || deepAll(sel, document)[0] || null;
+  };
+`;;
 // fill on a checkbox/radio would set .value without toggling checked and
 // report 'filled' — fake success. Fail loudly toward click instead.
 const CHECK_RADIO_GUARD = `if (el.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio')) throw new Error('checkbox/radio — fill cannot toggle checked; use: click <match> ' + sel);`;
 
 const clickSrc = (target, dbl) => `(() => {
+  ${DEEPQ}
   const sel = ${JSON.stringify(target)};
-  const el = sel.startsWith('@') ? window.__bridgeRefs?.[sel.slice(1)] : document.querySelector(sel);
+  const el = deepQuery(sel);
   if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
   ${FILE_INPUT_GUARD}
   el.scrollIntoView({ block: 'center', inline: 'center' });
@@ -1140,8 +1159,9 @@ const clickSrc = (target, dbl) => `(() => {
 })()`;
 
 const fillSrc = (target, value) => `(() => {
+  ${DEEPQ}
   const sel = ${JSON.stringify(target)}, value = ${JSON.stringify(value)};
-  const el = sel.startsWith('@') ? window.__bridgeRefs?.[sel.slice(1)] : document.querySelector(sel);
+  const el = deepQuery(sel);
   if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
   ${FILE_INPUT_GUARD}
   ${CHECK_RADIO_GUARD}
@@ -1174,8 +1194,9 @@ const fillSrc = (target, value) => `(() => {
 // Per-char typing: real keydown/input/keyup per character, so autocomplete and
 // keystroke-driven UIs react (fill sets the value in one shot and they don't).
 const typeSrc = (target, text) => `(async () => {
+  ${DEEPQ}
   const sel = ${JSON.stringify(target)}, text = ${JSON.stringify(text)};
-  let el = sel.startsWith('@') ? window.__bridgeRefs?.[sel.slice(1)] : document.querySelector(sel);
+  let el = deepQuery(sel);
   if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
   ${FILE_INPUT_GUARD}
   el.scrollIntoView({ block: 'center' });
@@ -1220,10 +1241,11 @@ const typeSrc = (target, text) => `(async () => {
 // the text the way a native paste would: caret insertion for fields,
 // execCommand for contentEditable.
 const pasteSrc = (target, value) => `(async () => {
+  ${DEEPQ}
   const sel = ${JSON.stringify(target || '')}, text = ${JSON.stringify(value)};
   let el = document.activeElement;
   if (sel) {
-    el = sel.startsWith('@') ? window.__bridgeRefs?.[sel.slice(1)] : document.querySelector(sel);
+    el = deepQuery(sel);
     if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
     el.scrollIntoView({ block: 'center' });
     el.focus?.();
@@ -1254,10 +1276,11 @@ const pasteSrc = (target, value) => `(async () => {
 // Modifier combos: 'Control+k' splits into ctrlKey + key 'k' — 'press Control+k'
 // dispatches key='k' with the flag set, which is what app handlers match.
 const pressSrc = (keyIn, target) => `(() => {
+  ${DEEPQ}
   const sel = ${JSON.stringify(target || '')}, keyIn = ${JSON.stringify(keyIn)};
   let el = document.activeElement || document.body;
   if (sel) {
-    el = sel.startsWith('@') ? window.__bridgeRefs?.[sel.slice(1)] : document.querySelector(sel);
+    el = deepQuery(sel);
     if (!el) throw new Error('element not found: ' + sel);
     el.focus?.();
   }
@@ -1284,8 +1307,9 @@ const pressSrc = (keyIn, target) => `(() => {
 })()`;
 
 const hoverSrc = (target) => `(() => {
+  ${DEEPQ}
   const sel = ${JSON.stringify(target)};
-  const el = sel.startsWith('@') ? window.__bridgeRefs?.[sel.slice(1)] : document.querySelector(sel);
+  const el = deepQuery(sel);
   if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
   el.scrollIntoView({ block: 'center', inline: 'center' });
   const r = el.getBoundingClientRect();
@@ -1304,9 +1328,10 @@ const hoverSrc = (target) => `(() => {
 // a constructed DataTransfer (an eval recipe), and isTrusted-checking apps
 // (canvas tools) ignore this entirely.
 const dragSrc = (from, to) => `(async () => {
+  ${DEEPQ}
   const sel = ${JSON.stringify(from)}, sel2 = ${JSON.stringify(to)};
-  const el = sel.startsWith('@') ? window.__bridgeRefs?.[sel.slice(1)] : document.querySelector(sel);
-  const el2 = sel2.startsWith('@') ? window.__bridgeRefs?.[sel2.slice(1)] : document.querySelector(sel2);
+  const el = deepQuery(sel);
+  const el2 = deepQuery(sel2);
   if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
   if (!el2) throw new Error('element not found: ' + sel2 + (sel2.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
   el.scrollIntoView({ block: 'center', inline: 'center' });
@@ -1336,10 +1361,11 @@ const dragSrc = (from, to) => `(async () => {
 // App shells (Linear, Gmail) scroll an inner panel, not the window — when the
 // document itself can't move, scroll the tallest visible overflow panel instead.
 const scrollSrc = (what) => `(() => {
+  ${DEEPQ}
   const what = ${JSON.stringify(what)};
   const o = { behavior: 'instant' };
   if (!['top', 'bottom', 'up', 'down'].includes(what)) {
-    const el = what.startsWith('@') ? window.__bridgeRefs?.[what.slice(1)] : document.querySelector(what);
+    const el = deepQuery(what);
     if (!el) throw new Error('element not found: ' + what + (what.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
     el.scrollIntoView({ ...o, block: 'center' });
     return 'scrolled ' + what + ' into view';
@@ -1377,11 +1403,12 @@ const scrollSrc = (what) => `(() => {
 const PAGE_TEXT = `(()=>{const b=document.getElementById('bridge-banner');const t=document.body?.innerText||'';return b?t.replace(b.innerText,''):t})()`;
 
 const waitSrc = ({ selector, text, timeout }) => `(async () => {
+  ${DEEPQ}
   const sel = ${JSON.stringify(selector || null)}, text = ${JSON.stringify(text || null)}, timeout = ${Number(timeout) || 10000};
   const t0 = Date.now();
   const check = () => {
     if (sel) {
-      const el = document.querySelector(sel);
+      const el = deepQuery(sel);
       if (el) { const r = el.getBoundingClientRect(); if (r.width > 0 && r.height > 0) return 'found ' + sel; }
     }
     if (text && (${PAGE_TEXT}).includes(text)) return 'found text ' + JSON.stringify(text);
@@ -1516,7 +1543,7 @@ const FIND_SRC = (scope, find) => `(async () => {
 // with a `label` back-channel for the pill — they're commands, so the source
 // lives here with every other page script and ACT_VERBS carries the label.
 const measureSrc = (sel) =>
-  `JSON.stringify([...document.querySelectorAll(${JSON.stringify(sel)})].map(e=>{const r=e.getBoundingClientRect();const c=getComputedStyle(e);return{text:(e.textContent||'').trim().slice(0,30),x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height),display:c.display,alignItems:c.alignItems,justifyContent:c.justifyContent,textAlign:c.textAlign,gap:c.gap,padding:c.padding,radius:c.borderRadius,bg:c.backgroundColor,color:c.color,font:c.fontSize+'/'+c.fontWeight}}))`;
+  `JSON.stringify((()=>{${DEEPQ}return deepAll(${JSON.stringify(sel)}, document);})().map(e=>{const r=e.getBoundingClientRect();const c=getComputedStyle(e);return{text:(e.textContent||'').trim().slice(0,30),x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height),display:c.display,alignItems:c.alignItems,justifyContent:c.justifyContent,textAlign:c.textAlign,gap:c.gap,padding:c.padding,radius:c.borderRadius,bg:c.backgroundColor,color:c.color,font:c.fontSize+'/'+c.fontWeight}}))`;
 const GRID_SRC = `(()=>{const g=document.getElementById('bridge-grid');if(g){g.remove();return 'grid off'}const d=document.createElement('div');d.id='bridge-grid';d.style.cssText='position:fixed;inset:0;z-index:2147483647;pointer-events:none;background-image:repeating-linear-gradient(0deg,rgba(255,0,0,.25) 0 1px,transparent 1px 8px),repeating-linear-gradient(90deg,rgba(255,0,0,.25) 0 1px,transparent 1px 8px)';document.body.appendChild(d);return 'grid on'})()`;
 
 // Console hook must run in the MAIN world — isolated worlds get their own console.
@@ -1968,8 +1995,9 @@ async function handle(msg) {
     const mode = await runEval(
       tab.id,
       `(() => {
+        ${DEEPQ}
         const sel = ${JSON.stringify(msg.target)};
-        const el = sel.startsWith('@') ? window.__bridgeRefs?.[sel.slice(1)] : document.querySelector(sel);
+        const el = deepQuery(sel);
         if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
         const input = el.tagName === 'INPUT' && el.type === 'file' ? el : el.querySelector?.('input[type=file]');
         // No parent-subtree fallback: from a stray target (a heading) it would
