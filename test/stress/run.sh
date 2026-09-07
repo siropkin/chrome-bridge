@@ -267,15 +267,17 @@ s_net() {
   "${CLI[@]}" open "$FX/net.html" --profile "$P1" >/dev/null
   sleep 2
   ( sleep 0.5 && "${CLI[@]}" click net.html '#fire' >/dev/null 2>&1 ) &
+  local clickpid=$!
   "${CLI[@]}" net net.html --dur 5000 --filter /api --body /api --har "$OUT/stress.har" >"$OUT/06.log" 2>&1
-  wait
+  wait $clickpid
   assert_grep "net filter+body" "$OUT/06.log" 'GET 200 /api/data'
   assert_grep "net body content" "$OUT/06.log" 'ok.*true.*items'
   assert_grep "har saved" "$OUT/06.log" 'saved.*HAR 1.2, 2 entries'
   node -e "const h=JSON.parse(require('fs').readFileSync('$OUT/stress.har','utf8')); if(h.log&&h.log.entries&&h.log.entries.length>=2) console.log('har valid, entries: '+h.log.entries.length); else process.exit(1)" >>"$OUT/06.log" 2>&1 && ok "har parses with entries" || bad "har file invalid"
   ( sleep 0.5 && "${CLI[@]}" click net.html '#fire' >/dev/null 2>&1 ) &
+  clickpid=$!
   "${CLI[@]}" net net.html --dur 5000 --ws >>"$OUT/06.log" 2>&1
-  wait
+  wait $clickpid
   assert_grep "ws frame sent" "$OUT/06.log" '→ hello'
   assert_grep "ws frame echoed" "$OUT/06.log" '← echo:hello'
   # fetch riding the file:// origin (in-page fails on credentials+CORS →
@@ -420,8 +422,10 @@ SECTIONS=${*:-$ALL}
 cd "$REPO"
 detect_profiles || { echo "FAIL: no connected profile (cli profiles)"; exit 1; }
 echo "profiles: P1=$P1 P2=${P2:-<none>}"
-# fixture server (HTTP + WS echo) — start if :9334 is down
-curl -s -m 2 http://localhost:9334/api/data >/dev/null 2>&1 || node "$S/server.mjs" &>/dev/null &
+# fixture server (HTTP + WS echo) — start if :9334 is down. Detached spawn:
+# a plain `&` would put the server on this shell's job table, and every bare
+# `wait` below would then wait for the never-exiting server forever
+curl -s -m 2 http://localhost:9334/api/data >/dev/null 2>&1 || ( node "$S/server.mjs" &>/dev/null & )
 for sec in $SECTIONS; do
   case $sec in
     profiles) s_profiles ;; churn) s_churn ;; interact) s_interact ;; dialog) s_dialog ;;
