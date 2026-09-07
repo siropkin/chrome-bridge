@@ -146,7 +146,10 @@ history [match] [-n N] [--batch out]
                                   --batch out writes a replayable batch script (failed commands
                                   commented out; shot paths and multiline eval don't survive)
 swlogs                            service-worker console tail (errors/warnings)
-emulate <match> <w> <h> [mobile]  CDP device view (no window resize)
+emulate <match> <w> <h> [mobile]  CDP device view (no window resize); 'emulate <match> focus'
+                                  makes the page believe it's focused — focus-gated work (pages
+                                  pausing on blur) keeps running in a background tab; it does
+                                  NOT render an occluded window
 unemulate <match>                 clear emulation + detach debugger
 resize <match> <w> <h>            resize the window
 health                            server + extension status
@@ -226,6 +229,7 @@ Follow [design-eye.md](design-eye.md): measure numbers on both sides, crop to th
 - The pill and favicon are page DOM — a malicious page can hide or fake them. The 🟣 tab group is the driven-tab signal a page can't touch.
 - Some dev servers are HTTPS-only — an `http://localhost:…` tab lands on an error page.
 - Tabs in a **minimized or fully occluded window** have no layout — Chrome suspends rendering for them: `scroll` no-ops ("nothing moved"), `measure` numbers are stale, `shot` fails. `snap`/`eval` still work. The fix is a human one — ask the user to show the window; don't activate it yourself (that steals their view).
+- A **background tab in a visible window** is throttled instead (timers slowed, rAF paused, pages that gate on `document.hasFocus()` stall). `emulate <match> focus` fixes that side — measured: hasFocus-gated counters resume at full cadence and rAF resumes in background tabs. It does NOT render a fully occluded window — that half stays the human fix above.
 - After `unemulate`, a tab that has stayed in the background keeps reading the emulated `innerWidth`/`innerHeight` until its next navigation — the emulation itself is cleared (a `nav` restores it), but Chrome doesn't recompute a hidden tab's viewport layout. Verify with a navigation, not a readback.
 - Driven-tab state (marks, emulation, favicon status, pill history) survives natural service-worker restarts via `chrome.storage.session` (check `swlogs` for the "hydrated" line). Reloading the extension at `chrome://extensions` wipes that storage — tab marks are then re-derived from the 🟣 group, and Chrome itself clears any emulation when it detaches the debugger on reload, so nothing gets stuck.
 - Driven tabs show a 🟣 pill in the bottom-right corner (click it for the action history; ✕ hides it until the next navigation) and join a 🟣 tab group; that's the bridge working, not a bug in the page. The pill narrates what you're doing right now (`🟣 taking screenshot…`, `🟣 waiting for .foo…`, elapsed seconds while a command runs, `🟣 AI idle` when nothing's running — with `⚠ N failed since last ok` after failures, `⚠ bridge offline` while the server is unreachable) and its history panel lists the last actions scrolled to the newest; while a command runs, a purple viewport frame lights up, the favicon shows ⏳ (✅ when it lands, ✗ when it fails, kept until the next command), and clicks/hovers flash a purple pointer where the agent acted. `release` restores all of it.

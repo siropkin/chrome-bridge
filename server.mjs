@@ -232,7 +232,7 @@ const CLI_LINES = {
   console: (m) => `console ${shellq(m.urlMatch)}${m.clear ? ' --clear' : ''}${m.ask ? (m.ask === true ? ' --ask' : ' --ask ' + shellq(m.ask)) : ''}`,
   grid: (m) => `grid ${shellq(m.urlMatch)}`,
   note: (m) => `note ${shellq(m.urlMatch)} ${shellq(m.text)}`,
-  emulate: (m) => `emulate ${shellq(m.urlMatch)} ${m.width} ${m.height}${m.mobile ? ' mobile' : ''}`,
+  emulate: (m) => (m.focus ? `emulate ${shellq(m.urlMatch)} focus` : `emulate ${shellq(m.urlMatch)} ${m.width} ${m.height}${m.mobile ? ' mobile' : ''}`),
   resize: (m) => `resize ${shellq(m.urlMatch)} ${m.width} ${m.height}`,
 };
 // `watch` keys its `since` cursor on actSeq, which resets on restart — the

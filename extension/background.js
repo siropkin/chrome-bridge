@@ -477,6 +477,7 @@ function activityPhrases(msg) {
   // --human: the pill label IS the handoff — the human must notice it's their
   // turn; the ticker appends elapsed seconds while they take it.
   if (msg.type === 'wait' && msg.human) return { ing: '🙋 your turn — act in this tab', done: '🙋 you acted — carrying on' };
+  if (msg.type === 'emulate' && msg.focus) return { ing: 'emulating focus', done: 'emulated focus' };
   let v = ACT_VERBS[msg.type] || [msg.type, msg.type];
   const detail = msg.target || msg.key || msg.selector || msg.find || msg.text || msg.question || msg.url || '';
   if (msg.type === 'snap' && msg.find) v = ['searching page for', 'searched page for'];
@@ -717,7 +718,7 @@ const MOBILE_UA =
   'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
 const emulatedTabs = new Set();
 
-async function setEmulation(tabId, { width, height, mobile }) {
+async function setEmulation(tabId, { width, height, mobile, focus }) {
   // The emulation share in cdpRefs is owned by emulatedTabs membership, not by
   // each call — re-emulating a tab (resize the device) must not take a second
   // share, or N emulates + one unemulate would leave the debugger attached and
@@ -736,6 +737,15 @@ async function setEmulation(tabId, { width, height, mobile }) {
     }
   }
   try {
+    if (focus) {
+      // Focus emulation: the page believes it's focused, so focus-GATED work
+      // (pages that pause on document.hasFocus() === false — timers, video,
+      // dashboards) keeps running while the tab sits in the background. NOT
+      // a compositor override: an occluded window's rendering suspension and
+      // visibility-based timer throttling are NOT fixed by this.
+      await chrome.debugger.sendCommand({ tabId }, 'Emulation.setFocusEmulationEnabled', { enabled: true });
+      return;
+    }
     await chrome.debugger.sendCommand(
       { tabId },
       'Emulation.setDeviceMetricsOverride',
@@ -776,10 +786,11 @@ async function clearEmulation(tabId) {
       { tabId },
       'Emulation.clearDeviceMetricsOverride'
     );
-    // setEmulation also sets touch + (mobile) a UA override — clear both, or
-    // the tab keeps the phone UA after unemulate.
+    // setEmulation also sets touch + (mobile) a UA override + (focus mode)
+    // focus emulation — clear all, or the tab keeps the phone UA / fake focus.
     await chrome.debugger.sendCommand({ tabId }, 'Emulation.setTouchEmulationEnabled', { enabled: false });
     await chrome.debugger.sendCommand({ tabId }, 'Network.setUserAgentOverride', { userAgent: '' });
+    await chrome.debugger.sendCommand({ tabId }, 'Emulation.setFocusEmulationEnabled', { enabled: false });
     logLine('emulation cleared ' + tabId);
   } catch (e) {
     logLine('emulation clear ' + tabId + ' FAILED: ' + String(e).slice(0, 80));
@@ -2414,9 +2425,7 @@ async function handle(msg) {
     await withCdp(tab.id, () => setEmulation(tab.id, msg));
     return {
       id: tab.id,
-      width: msg.width,
-      height: msg.height,
-      mobile: !!msg.mobile,
+      ...(msg.focus ? { focus: true } : { width: msg.width, height: msg.height, mobile: !!msg.mobile }),
     };
   }
 

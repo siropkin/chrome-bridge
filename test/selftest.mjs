@@ -450,6 +450,9 @@ try {
   assert(trusType.status === 0 && trusType.stdout.includes('"trusted":true') && trusType.stdout.includes('"value":"hi"'), 'cli type --trusted keeps the value', trusType.stdout + trusType.stderr);
   const trusFill = await cli('fill', 'example.com', '@e2', 'hi', '--trusted');
   assert(trusFill.status !== 0 && trusFill.stderr.includes('unknown flag'), 'cli fill has no --trusted (value setter has no events to fake)', trusFill.stdout + trusFill.stderr);
+  // emulate focus: the spike command — the page believes it's focused.
+  const emuFocus = await cli('emulate', 'example.com', 'focus');
+  assert(emuFocus.status === 0 && emuFocus.stdout.includes('"focus":true') && !emuFocus.stdout.includes('"width"'), 'cli emulate focus mode (no w/h)', emuFocus.stdout + emuFocus.stderr);
   const emu = await cli('emulate', 'example.com', '375', '667', 'mobile');
   assert(emu.status === 0 && emu.stdout.includes('"width":375') && emu.stdout.includes('"mobile":true'), 'cli emulate wire shape', emu.stdout + emu.stderr);
   const rsz = await cli('resize', 'example.com', '800', '600');
@@ -656,8 +659,14 @@ try {
     // --skeleton: past the depth cut, count instead of emit — cut containers
     // read '… N inside' (self-describing truncation, deterministic drill via
     // the positional @ref scope), and skeleton diffs keep their own store.
+    // --skeleton: past the depth cut, count instead of emit — cut containers
+    // read '… N inside' (self-describing truncation, deterministic drill via
+    // the positional @ref scope), and skeleton diffs keep their own store.
     assert(bg.includes('countLines') && bg.includes("' inside'"), 'ext: snap --skeleton counts the cut subtrees and marks them (… N inside)');
     assert(bg.includes("|skel' : ''"), 'ext: skeleton diffs keep their own store (counts churn — mixing shapes would diff noise)');
+    // Focus emulation (#18 spike): enabled by 'emulate focus', cleared by
+    // unemulate with the rest of the emulation family.
+    assert(bg.includes('setFocusEmulationEnabled') && bg.split('setFocusEmulationEnabled').length === 3, 'ext: emulate focus sets and unemulate clears focus emulation');
 
     // The service worker is never executed here (the fake extension plays it)
     // — a syntax error in it would otherwise ship green, as would one in

@@ -194,7 +194,9 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     replayable batch script (failed ones commented out; shot
                                     output paths and multiline eval code don't survive)
   swlogs                            service-worker console tail (errors/warnings)
-  emulate <match> <w> <h> [mobile]  CDP device view (no window resize)
+  emulate <match> <w> <h> [mobile]  CDP device view (no window resize); 'focus' instead of
+                                    <w> <h> emulates page focus (focus-gated work keeps running
+                                    in a background tab — does NOT render an occluded window)
   unemulate <match>                 clear emulation + detach debugger
   resize <match> <w> <h>            resize the window
   health                            server + extension status
@@ -772,7 +774,14 @@ async function run(cmdName, args) {
 
     case 'emulate':
     case 'resize': {
-      if (!args[0] || !args[1] || !args[2]) fail(`usage: ${cmdName} <match> <w> <h>${cmdName === 'emulate' ? ' [mobile]' : ''}`);
+      // emulate focus: the page believes it's focused — focus-GATED work
+      // keeps running in a background tab (spike, #18).
+      if (cmdName === 'emulate' && args[1] === 'focus') {
+        if (!args[0]) fail('usage: emulate <match> focus');
+        print(await cmd({ type: 'emulate', urlMatch: args[0], focus: true }));
+        break;
+      }
+      if (!args[0] || !args[1] || !args[2]) fail(`usage: ${cmdName} <match> <w> <h>${cmdName === 'emulate' ? ' [mobile]|focus' : ''}`);
       const w = Number(args[1]);
       const h = Number(args[2]);
       if (!Number.isFinite(w) || !Number.isFinite(h) || w < 1 || h < 1) fail(`${cmdName} needs numeric <w> <h>`);
