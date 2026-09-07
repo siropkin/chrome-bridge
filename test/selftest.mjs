@@ -169,6 +169,14 @@ try {
     if (msg.type === 'big') return respond('x'.repeat(3 * 1024 * 1024)); // 3 MB — exercises 64-bit frames
     if (msg.type === 'shot') { lastShot = msg; return respond('data:image/png;base64,' + PNG1x1.toString('base64')); }
     if (msg.type === 'ansierr') return ext.send({ id: msg.id, ok: false, error: 'bad \x1b[31mRED\x1b[0m\nforged line' });
+    // fetch answers with the result shape the CLI processes (status/ct/body),
+    // binary when asked — the --out decode and the binary-requires---out
+    // guard both run CLI-side.
+    if (msg.type === 'fetch') {
+      if (msg.url.includes('binary.example'))
+        return respond({ status: 200, ct: 'application/pdf', binary: true, body: Buffer.from('PDFBYTES').toString('base64'), truncated: false });
+      return respond({ status: 200, ct: 'application/json', binary: false, body: '{"a":1}', truncated: false });
+    }
     // snap with scope 'trunc' answers a STRING (the real one does when the
     // tree truncates) — cli must echo the truncation line to stderr (it dies
     // in a `snap | grep` pipe otherwise) while stdout carries the tree.
@@ -351,8 +359,25 @@ try {
   const ntNoArgs = await cli('note', 'example.com');
   assert(ntNoArgs.status !== 0 && ntNoArgs.stderr.includes('usage: note'), 'cli note usage error', ntNoArgs.stdout + ntNoArgs.stderr);
 
-  // measure/grid are real command types (their page-JS lives in the extension
-  // with every other page script; ACT_VERBS carries the pill label)
+  // fetch: result shape processed CLI-side — --out writes the body (base64
+  // decoded for binary), text prints to stdout, binary without --out fails
+  // with the hint.
+  const fetchText = await cli('fetch', 'example.com', 'https://api.example.com/data');
+  assert(fetchText.status === 0 && fetchText.stdout.includes('application/json') && fetchText.stdout.includes('{"a":1}'), 'cli fetch prints status + text body', fetchText.stdout + fetchText.stderr);
+  const fetchOut = await cli('fetch', 'example.com', 'https://api.example.com/data', '--out', '/tmp/chrome-bridge-selftest.json');
+  assert(fetchOut.status === 0 && fs.readFileSync('/tmp/chrome-bridge-selftest.json', 'utf8') === '{"a":1}' && fetchOut.stdout.includes('saved'), 'cli fetch --out writes the body', fetchOut.stdout + fetchOut.stderr);
+  fs.unlinkSync('/tmp/chrome-bridge-selftest.json');
+  const fetchBin = await cli('fetch', 'example.com', 'https://binary.example/doc', '--out', '/tmp/chrome-bridge-selftest.bin');
+  assert(fetchBin.status === 0 && fs.readFileSync('/tmp/chrome-bridge-selftest.bin').equals(Buffer.from('PDFBYTES')), 'cli fetch --out decodes binary bodies', fetchBin.stdout + fetchBin.stderr);
+  fs.unlinkSync('/tmp/chrome-bridge-selftest.bin');
+  const fetchBinNoOut = await cli('fetch', 'example.com', 'https://binary.example/doc');
+  assert(fetchBinNoOut.status !== 0 && fetchBinNoOut.stderr.includes('--out'), 'cli fetch refuses a binary body without --out', fetchBinNoOut.stdout + fetchBinNoOut.stderr);
+  const fetchBadUrl = await cli('fetch', 'example.com', 'not-a-url');
+  assert(fetchBadUrl.status !== 0 && fetchBadUrl.stderr.includes('full http(s) URL'), 'cli fetch validates the URL', fetchBadUrl.stdout + fetchBadUrl.stderr);
+  const fetchTypo = await cli('fetch', 'example.com', 'https://x', '--ou', 'f');
+  assert(fetchTypo.status !== 0 && fetchTypo.stderr.includes('unknown flag'), 'cli fetch rejects unknown flags', fetchTypo.stdout + fetchTypo.stderr);
+
+  // measure/grid are real command types (their page-JS lives in the extension  // with every other page script; ACT_VERBS carries the pill label)
   const meas = await cli('measure', 'example.com', '.btn');
   assert(meas.status === 0 && meas.stdout.includes('"type":"measure"') && meas.stdout.includes('"selector":".btn"'), 'cli measure sends its own type + selector', meas.stdout + meas.stderr);
   const gr = await cli('grid', 'example.com');
@@ -460,7 +485,7 @@ try {
     // sendCommand tore the shared session mid-flight (5.5% of interleaved
     // CDP commands in stress). (6 wrap sites: upload/net/emulate/unemulate/
     // shot/dialog.)
-    assert(bg.split('withCdp(').length === 8, 'ext: CDP handlers serialize per tab (helper + 6 wrap sites)');
+    assert(bg.split('withCdp(').length === 9, 'ext: CDP handlers serialize per tab (helper + 7 wrap sites)');
     // open must not await the favicon/banner marking — executeScript sits
     // pending forever on an uncommitted navigation (unreachable URL), which
     // hung open past its 8s cap to the server's 70s timeout. The response

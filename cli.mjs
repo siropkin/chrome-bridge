@@ -159,6 +159,9 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     capture network for N ms, capped at 30s (CDP, one line per request);
                                     --body s also captures JSON/text response bodies for URLs
                                     containing s (≤8, 1500 chars each; implies --filter s)
+  fetch <match> <url> [--out file]  in-page fetch riding the logged-in session — login-walled
+                                    JSON/feeds answer it; binary responses need --out, text
+                                    prints capped at 50K chars (--out gets the full body)
   measure <match> <css>             rect + computed styles as JSON
   console <match> [--clear] [--ask [question]]
                                     page console + errors (hook installs on first call);
@@ -671,6 +674,39 @@ async function run(cmdName, args) {
       fs.writeFileSync(out, buf);
       const d = imgDims(buf);
       console.log(`saved ${out} (${Math.round(buf.length / 1024)} KB${d ? `, ${d}` : ''})`);
+      break;
+    }
+
+    case 'fetch': {
+      // In-page fetch riding the logged-in session: the request runs in the
+      // page (credentials ride), so login-walled JSON/feeds answer it without
+      // the agent hand-rolling eval fetch plumbing. The response is untrusted
+      // page content like everything else the bridge returns.
+      const [match, url, ...rest] = args;
+      let outFile = null;
+      for (let i = 0; i < rest.length; i++) {
+        if (rest[i] === '--out') {
+          outFile = rest[++i];
+          if (outFile === undefined) fail('usage: fetch <match> <url> [--out file]');
+        } else fail(`unknown flag ${rest[i]} (flags: --out file)`);
+      }
+      if (!match || !url) fail('usage: fetch <match> <url> [--out file]');
+      let u;
+      try {
+        u = new URL(url);
+      } catch {}
+      if (!u || !/^https?:$/.test(u.protocol)) fail('fetch needs a full http(s) URL');
+      const res = await cmd({ type: 'fetch', urlMatch: match, url });
+      if (res.binary && !outFile) fail(`binary response (${res.ct || 'unknown type'}) — save it: fetch <match> <url> --out <file>`);
+      if (outFile) {
+        fs.writeFileSync(outFile, res.binary ? Buffer.from(res.body, 'base64') : res.body);
+        console.log(`saved ${outFile} (${Math.round(Buffer.byteLength(res.body) / 1024)} KB, ${res.status} ${res.ct || ''}${res.truncated ? ' — page capped the body at 512KB' : ''})`);
+      } else {
+        const body = res.body || '';
+        const cap = 50_000; // stdout is agent context — the whole body belongs in --out
+        console.log(`${res.status} ${res.ct || ''}${res.truncated ? ' (page capped the body at 512KB)' : ''}`);
+        print(body.length > cap ? body.slice(0, cap) + `\n… body truncated at ${cap} chars — save it whole: fetch <match> <url> --out <file>` : body || '(empty body)');
+      }
       break;
     }
 

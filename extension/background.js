@@ -467,6 +467,7 @@ const ACT_VERBS = {
   emulate: ['emulating device', 'emulated device'],
   unemulate: ['clearing device emulation', 'cleared device emulation'],
   resize: ['resizing window', 'resized window'],
+  fetch: ['fetching', 'fetched'],
 };
 function activityPhrases(msg) {
   if (msg.type === 'note') {
@@ -1491,6 +1492,24 @@ const nanoSrc = (context, question) => `(async () => {
   }
 })()`;
 
+// In-page fetch riding the logged-in session: the request runs in the page
+// (credentials: include), so the cookies ride it. Body capped at 512KB — a
+// bigger body belongs in --out, and an unbounded one would ride the WS frame
+// regardless. Binary comes back base64 (a JS string can't hold the bytes
+// honestly); the CLI decodes it into --out.
+const fetchSrc = (url) => `(async () => {
+  const res = await fetch(${JSON.stringify(url)}, { credentials: 'include' });
+  const ct = res.headers.get('content-type') || '';
+  if (!/text|json|xml|javascript|csv/i.test(ct)) {
+    const buf = new Uint8Array(await res.arrayBuffer());
+    let bin = '';
+    for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+    return { status: res.status, ct, binary: true, body: btoa(bin).slice(0, 700_000), truncated: buf.length > 512 * 1024 };
+  }
+  const body = await res.text();
+  return { status: res.status, ct, binary: false, body: body.slice(0, 512_000), truncated: body.length > 512_000 };
+})()`;
+
 // --- snap --find: Nano-picked shortlist ---------------------------------------
 // The agent asks in natural language ("the cancel button"); Nano picks
 // matching lines from a fresh tree. Comes back as a shortlist to VERIFY, not
@@ -1735,7 +1754,9 @@ async function waitHuman(tab, msg) {
 // window with no read involved, so an unmarked tab would show the user's
 // browser acting on its own. Pure reads (snap/measure/console/net/shot/…)
 // stay unmarked, so glancing at a tab doesn't stick a pill on it.
-const MUTATING = new Set(['click', 'fill', 'paste', 'type', 'press', 'upload', 'eval', 'hover', 'scroll', 'grid', 'emulate', 'resize', 'drag', 'dialog']);
+// fetch is "read-only" in the DOM sense, but it issues a request in the
+// user's name (a GET can be a mutation on some servers) — so it auto-marks.
+const MUTATING = new Set(['click', 'fill', 'paste', 'type', 'press', 'upload', 'eval', 'hover', 'scroll', 'grid', 'emulate', 'resize', 'drag', 'dialog', 'fetch']);
 
 // Takes the whole msg: records _tabId so the onmessage finally can flip a
 // driven tab's favicon to ✅, and marks a driven tab busy (⏳) for the command
@@ -1912,6 +1933,40 @@ async function handle(msg) {
   if (msg.type === 'eval') {
     const tab = await findTab(msg);
     return await runEval(tab.id, msg.code, msg.world || 'auto');
+  }
+
+  if (msg.type === 'fetch') {
+    const tab = await findTab(msg);
+    // In-page fetch first — the page's session rides it. A page CSP
+    // (connect-src) or a cross-origin CORS refusal falls back to the
+    // browser-network read: Network.loadNetworkResource fetches outside the
+    // page's JS walls with the profile's credentials — the same wall
+    // net --body reads bodies through. Shape handled defensively; a Chrome
+    // version that answers differently fails loudly here, not silently.
+    try {
+      return await runEval(tab.id, fetchSrc(msg.url));
+    } catch (e) {
+      const read = await withCdp(tab.id, async () => {
+        await attachDbg(tab.id);
+        try {
+          const out = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Network.loadNetworkResource', { url: msg.url, options: { includeCredentials: true } });
+          const rec = out?.resource || {};
+          if (!rec.success)
+            throw new Error('browser-network read failed (' + (rec.netErrorName || rec.netError || 'unknown') + ') — in-page fetch said: ' + String(e).replace(/^(Error:\s*)+/, '').slice(0, 120));
+          const content = rec.content ?? '';
+          return {
+            status: rec.httpStatusCode ?? rec.statusCode ?? 200,
+            ct: rec.mime || rec.headers?.['Content-Type'] || '',
+            binary: !!rec.base64Encoded,
+            body: rec.base64Encoded ? String(content) : String(content).slice(0, 512_000),
+            truncated: false,
+          };
+        } finally {
+          await detachDbg(tab.id);
+        }
+      });
+      return read;
+    }
   }
 
   if (msg.type === 'measure') {

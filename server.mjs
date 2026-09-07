@@ -208,6 +208,7 @@ const CLI_LINES = {
   hover: (m) => `hover ${shellq(m.urlMatch)} ${shellq(m.target)}${D(m)}`,
   scroll: (m) => `scroll ${shellq(m.urlMatch)} ${shellq(m.target)}${D(m)}`,
   upload: (m) => `upload ${shellq(m.urlMatch)} ${shellq(m.target)} ${(m.files || []).map(shellq).join(' ')}${D(m)}`,
+  fetch: (m) => `fetch ${shellq(m.urlMatch)} ${shellq(m.url)}`,
   ask: (m) => `ask ${shellq(m.urlMatch)} ${shellq(m.question)}`,
   wait: (m) =>
     `wait ${shellq(m.urlMatch)}${m.selector ? ' ' + shellq(m.selector) : ''}${m.text ? ' --text ' + shellq(m.text) : ''}${

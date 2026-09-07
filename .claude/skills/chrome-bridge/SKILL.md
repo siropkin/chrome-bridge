@@ -31,7 +31,7 @@ node <repo>/cli.mjs <command> …
 - `batch` — commands on stdin, one per line: `printf 'click m @e4\nwait m --text "Saved"\nsnap m --diff\n' | node cli.mjs batch` — dependent chains in one process, one shell call.
 - `shot <match> out.png [--max 800] [--format jpeg]` — only when pixels matter; `--max` caps the long edge (default 1280).
 - `eval <match> <js|->` — run JS in the page; `-` reads from stdin.
-- `net <match> [--dur ms] [--filter s] [--body s]` — capture network, one line per request; `--dur` caps at 30s.
+- `net <match> [--dur ms] [--filter s] [--body s]` — capture network, one line per request; `--dur` caps at 30s. `fetch <match> <url> [--out file]` — replay/grab a URL in the page (the logged-in session rides it; binary → `--out`).
 - `measure <match> <css>` — rect + computed styles; layout truth without pixels.
 - `console <match> [--ask 'what broke?']` — page console + errors; `--ask` triages locally with Gemini Nano instead of spending cloud tokens on log noise.
 - `dialog <match> accept|dismiss` — dismiss a stuck JS dialog (alert/confirm/prompt blocks every other command on the tab).

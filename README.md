@@ -181,6 +181,7 @@ You're handing an agent your logged-in browser — the design assumes you want t
 | `eval <match> <js\|-> [--world main|isolated]` | Run JS in the page; `-` reads from stdin |
 | `shot <match> <out> [--max px] [--scale N] [--format jpeg] [--quality N] [--crop x,y,w,h] [--full]` | Screenshot via CDP. Long edge capped at `--max` px (default 1280, `0` = native res) — models downscale big images on read anyway, so native res buys file size, not detail. `--full` = whole page height |
 | `net <match> [--dur ms] [--filter s] [--body s]` | Capture network traffic via CDP (≤30s per run) — one compact line per request; `--body s` appends matching JSON/text response bodies |
+| `fetch <match> <url> [--out file]` | In-page fetch riding the logged-in session — login-walled JSON/feeds answer it without `eval` plumbing; binary responses need `--out`, text prints capped at 50K chars (`--out` gets the full body) |
 | `measure <match> <css>` | Bounding rect + computed styles as JSON — layout truth without pixels |
 | `console <match> [--clear] [--ask [q]]` | Page console + uncaught errors (hook installs on first call); `--ask` triages the log with local Gemini Nano — only the verdict costs cloud tokens |
 | `grid <match>` | Toggle an 8px alignment grid overlay |
