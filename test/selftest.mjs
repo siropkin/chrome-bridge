@@ -225,6 +225,11 @@ try {
 
   const snap = await cli('snap', 'example.com', '#app', '--diff', '--href');
   assert(snap.status === 0 && snap.stdout.includes('"diff":true') && snap.stdout.includes('"scope":"#app"') && snap.stdout.includes('"href":true'), 'cli snap scope+diff+href flags', snap.stdout + snap.stderr);
+  // --skeleton: depth-limited map; scope takes an @ref — the drill-down.
+  const snapSkel = await cli('snap', 'example.com', '--skeleton');
+  assert(snapSkel.status === 0 && snapSkel.stdout.includes('"skeleton":true') && snapSkel.stdout.includes('"scope":null'), 'cli snap --skeleton rides, scope stays null', snapSkel.stdout + snapSkel.stderr);
+  const snapRef = await cli('snap', 'example.com', '@e12');
+  assert(snapRef.status === 0 && snapRef.stdout.includes('"scope":"@e12"'), 'cli snap scope accepts an @ref (the skeleton drill-down)', snapRef.stdout + snapRef.stderr);
 
   // --find: query rides along; scope detection doesn't swallow it as a scope
   const snapFind = await cli('snap', 'example.com', '--find', 'the save button');
@@ -639,6 +644,11 @@ try {
     // attach/serialize plumbing as upload (refcount + withCdp).
     assert(bg.includes('Input.dispatchMouseEvent') && bg.includes('Input.dispatchKeyEvent') && bg.includes('trustedInput'), 'ext: --trusted drives CDP Input (isTrusted events) via the shared debugger plumbing');
     assert(bg.includes('trustedPointSrc') && bg.includes('COVERAGE_SRC') && bg.includes('cdpDrag'), 'ext: trusted input runs the same coverage preflight; trusted drag interpolates real pointer moves');
+    // --skeleton: past the depth cut, count instead of emit — cut containers
+    // read '… N inside' (self-describing truncation, deterministic drill via
+    // the positional @ref scope), and skeleton diffs keep their own store.
+    assert(bg.includes('countLines') && bg.includes("' inside'"), 'ext: snap --skeleton counts the cut subtrees and marks them (… N inside)');
+    assert(bg.includes("|skel' : ''"), 'ext: skeleton diffs keep their own store (counts churn — mixing shapes would diff noise)');
 
     // The service worker is never executed here (the fake extension plays it)
     // — a syntax error in it would otherwise ship green, as would one in

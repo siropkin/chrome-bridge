@@ -103,16 +103,19 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
   open <url>                        open + mark a new tab (waits for load, 8s cap)
   nav <match> <url> [--diff]        navigate matching tab (waits for load, 8s cap)
   close <match>                     close matching tab
-  snap <match> [css] [--diff] [--href] [--find "nl"]
+  snap <match> [css|@ref] [--diff] [--href] [--skeleton] [--find "nl"]
                                     a11y-tree snapshot with @eN refs (cheap — use before shot);
-                                    [css] scopes to a subtree, --diff shows only changes since last snap,
+                                    [css|@ref] scopes to a subtree (@ref = the --skeleton drill-down),
+                                    --diff shows only changes since last snap,
                                     --href includes all link URLs (default: only nameless links);
+                                    --skeleton: depth-limited map — cut containers read '… N inside'
+                                    (drill: snap <match> @ref) instead of a silent 300-node cut;
                                     --find asks local Gemini Nano to pick the lines matching a
                                     natural-language query — a ~2s shortlist to VERIFY, not ground
                                     truth (~2/3 accurate in testing); lines prefixed '* ' are new
                                     since the previous snap; lines seen 3+ times collapse to
                                     '… N more · <line> → @refs'; trees truncate at 300 nodes —
-                                    scope big pages with [css] or grep/--find can miss the rest
+                                    scope big pages with [css|@ref], or --skeleton first
   click <match> <@ref|css> [--dbl] [--diff] [--trusted]
                                     click an element (fails loudly if an overlay covers it);
                                     --dbl double-clicks; --trusted drives CDP Input (isTrusted=true —
@@ -426,9 +429,10 @@ async function run(cmdName, args) {
       break;
 
     case 'snap': {
-      if (!args[0]) fail('usage: snap <match> [css] [--diff] [--href] [--find "nl query"]');
+      if (!args[0]) fail('usage: snap <match> [css|@ref] [--diff] [--href] [--skeleton] [--find "nl query"]');
       const diff = args.includes('--diff');
       const href = args.includes('--href');
+      const skeleton = args.includes('--skeleton');
       const fi = args.indexOf('--find');
       let find = null;
       if (fi >= 0) {
@@ -439,9 +443,10 @@ async function run(cmdName, args) {
         if (!find) fail('--find needs a query');
       }
       // scope = the first bare positional BEFORE --find (a scope can never
-      // follow a --find query — everything there is the query)
+      // follow a --find query — everything there is the query). Takes a CSS
+      // selector or an @ref — @ref is the --skeleton drill-down.
       const scope = args.slice(1, fi < 1 ? args.length : fi).find((a) => !a.startsWith('--')) || null;
-      const out = await cmd({ type: 'snap', urlMatch: args[0], scope, diff, href, ...(find ? { find } : {}) });
+      const out = await cmd({ type: 'snap', urlMatch: args[0], scope, diff, href, ...(skeleton ? { skeleton: true } : {}), ...(find ? { find } : {}) });
       print(out);
       // The truncation line sits at the end of the tree — a `snap | grep foo`
       // pipe filters it out and the agent concludes "not found" when the truth

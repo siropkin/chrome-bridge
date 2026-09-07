@@ -951,8 +951,11 @@ async function captureNetwork(tabId, duration, filter, bodyFilter, har) {
 // Refs from snap live in `window.__bridgeRefs` of the world snap ran in;
 // click/fill run through the same pipeline so they resolve in the same world.
 
-const SNAP_SRC = (scope, diff, href) => `(() => {
+const SNAP_SRC = (scope, diff, href, skel) => `(() => {
   const MAX = 300;
+  // --skeleton: depth-limited map — past the cut, count instead of emit.
+  const SKEL = ${skel ? 'true' : 'false'};
+  const CUT = 3;
   // Refs persist across snaps within one navigation: an element keeps its @eN
   // while its role+name are unchanged (playwright-mcp style), so a re-snap
   // after a DOM change doesn't renumber the page the agent already read.
@@ -1025,15 +1028,40 @@ const SNAP_SRC = (scope, diff, href) => `(() => {
     }
     return s.length ? ' ' + s.join(' ') : '';
   }
+  // Count of line-worthy elements in a subtree (the --skeleton cut's payload):
+  // same line rules as walk, no refs, no output.
+  function countLines(el) {
+    if (el.id === 'bridge-banner' || el.id === 'bridge-grid' || el.id === 'bridge-cursor') return 0;
+    if (hidden(el)) return 0;
+    const role = roleOf(el);
+    let count = 0;
+    if (role && hasBox(el)) {
+      const name = nameOf(el, role);
+      if (!name && (role === 'img' || role === 'status')) skipped++;
+      else count = 1;
+    }
+    for (const c of el.children) count += countLines(c);
+    if (el.shadowRoot) for (const c of el.shadowRoot.children) count += countLines(c);
+    if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
+      try { if (el.contentDocument?.body) count += countLines(el.contentDocument.body); } catch {} // cross-origin
+    }
+    return count;
+  }
   function walk(el, depth) {
-    if (lines.length >= MAX) { truncated = true; return; }
+    // --skeleton: past the cut, count instead of emit — the count rides the
+    // nearest emitted container as '… N inside', so the agent sees exactly
+    // which subtrees were skipped (and their size) instead of a silent
+    // truncation that grep/--find can't see past. Drill: snap <match> @ref.
+    if (SKEL && depth > CUT) return countLines(el);
+    if (lines.length >= MAX) { truncated = true; return 0; }
     // The bridge's own UI is not page content: the pill is a role=button
     // whose label mutates every command — it would mint a ref and own the
     // --diff output. Skip it (and the cursor/grid overlays) entirely.
-    if (el.id === 'bridge-banner' || el.id === 'bridge-grid' || el.id === 'bridge-cursor') return;
-    if (hidden(el)) return;
+    if (el.id === 'bridge-banner' || el.id === 'bridge-grid' || el.id === 'bridge-cursor') return 0;
+    if (hidden(el)) return 0;
     const role = roleOf(el);
     let childDepth = depth;
+    let myRef = null;
     if (role && hasBox(el)) {
       const name = nameOf(el, role);
       // Unnamed imgs/statuses are decorative icons and empty live regions —
@@ -1052,28 +1080,35 @@ const SNAP_SRC = (scope, diff, href) => `(() => {
           el.__bridgeRefKey = key;
         }
         refs[ref] = el;
+        myRef = ref;
         const fresh = markFresh && !seen.has(ref);
         seen.add(ref);
         lines.push('  '.repeat(Math.min(depth, 10)) + (fresh ? '* ' : '') + role + (name ? ' ' + JSON.stringify(name) : '') + ' @' + ref + stateOf(el, role, name));
         childDepth = depth + 1;
       }
     }
-    for (const c of el.children) walk(c, childDepth);
-    if (el.shadowRoot) for (const c of el.shadowRoot.children) walk(c, childDepth);
+    let inside = 0;
+    for (const c of el.children) inside += walk(c, childDepth);
+    if (el.shadowRoot) for (const c of el.shadowRoot.children) inside += walk(c, childDepth);
     if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') { // FRAME: old <frameset> pages — walk them too, else the tree is silently empty
-      try { if (el.contentDocument?.body) walk(el.contentDocument.body, childDepth); } catch {} // cross-origin
+      try { if (el.contentDocument?.body) inside += walk(el.contentDocument.body, childDepth); } catch {} // cross-origin
     }
+    if (SKEL && myRef && childDepth > CUT && inside) lines[lines.length - 1] += ' … ' + inside + ' inside';
+    return (myRef ? 1 : 0) + inside;
   }
   const scopeSel = ${JSON.stringify(scope || null)};
-  const root = scopeSel ? document.querySelector(scopeSel) : document.body;
-  if (!root) throw new Error('scope not found: ' + scopeSel);
+  ${DEEPQ}
+  // Scope = subtree root: a CSS selector (document-level, then open shadow
+  // roots) or an @ref — the --skeleton drill-down is 'snap <match> @eN'.
+  const root = scopeSel ? (scopeSel.startsWith('@') ? window.__bridgeRefs?.[scopeSel.slice(1)] : document.querySelector(scopeSel) || deepAll(scopeSel, document)[0]) : document.body;
+  if (!root) throw new Error('scope not found: ' + scopeSel + (scopeSel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
   walk(root, 0);
   if (truncated) lines.push('… truncated at ' + MAX + ' nodes' + (scopeSel ? '' : ' — scope with: snap <match> <css>'));
   // --diff: lines added/changed/removed since the last snap at THIS scope.
   const store = (window.__bridgeSnapLines = window.__bridgeSnapLines || {});
   // Key by scope AND href mode: lines embed hrefs only in --href snaps, so a
   // shared key would report every link as changed when the flag is toggled.
-  const skey = (scopeSel || '') + (${href ? 'true' : 'false'} ? '|href' : '');
+  const skey = (scopeSel || '') + (${href ? 'true' : 'false'} ? '|href' : '') + (${skel ? 'true' : 'false'} ? '|skel' : '');
   const prev = store[skey] || null;
   const cur = {};
   // Star markers are display-only — strip them before storing, else a starred
@@ -2195,7 +2230,7 @@ async function handle(msg) {
   if (msg.type === 'snap') {
     const tab = await findTab(msg);
     if (msg.find) return await runEval(tab.id, FIND_SRC(msg.scope, msg.find));
-    return await runEval(tab.id, SNAP_SRC(msg.scope, msg.diff, msg.href));
+    return await runEval(tab.id, SNAP_SRC(msg.scope, msg.diff, msg.href, msg.skeleton));
   }
 
   // --trusted: route click/press/type/hover/drag through CDP Input.dispatch*

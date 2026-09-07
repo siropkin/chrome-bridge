@@ -34,7 +34,7 @@ The bridge is for pages a plain HTTP request can't handle — interaction (click
 
 1. `tabs [match]` — find the tab (the optional match filters the list itself — a full browser's tab list is ~2KB). `<match>` is a URL substring; a driven tab wins, then the most recently active. If several tabs match, the result warns and names them — re-run with a longer match instead of trusting the pick. Two tabs with identical URLs can't be told apart this way — close one first.
 2. `open <url>` / `nav <match> <url>` — auto-marks the tab (🟣 corner tag + tab group). Mutating commands (`click`/`fill`/`type`/`press`/`upload`/`eval`/`hover`/`scroll`/`grid`/`emulate`/`resize`/`drag`/`dialog`) auto-mark too — any tab you act in, or that visibly changes, shows the pill.
-3. **`snap <match>` — always snap before shooting.** The a11y tree with `@eN` refs is ~10× cheaper than a screenshot and usually answers the question. Only interactive/landmark elements appear — static text (`<p>`, `<div>`, `<pre>`) is not in the tree, so `--diff` can't see text changes; verify those with `wait --text` or `eval`. Trees truncate at 300 nodes: on a big page, `grep`/`--find` over a full snap can silently miss what's past the cut — scope it: `snap <match> "[role=dialog]"`. Re-checking after an action? `snap <match> --diff` prints only what changed. Looking for one thing? `snap <match> | grep -i save` — or, when you don't know what it's called, `snap <match> --find "the cancel button"` (local Nano picks matching lines, ~2s warm / ~20s first call while it loads; verify the shortlist). Link URLs are omitted except on nameless links (they were most of the bytes — you click refs, not URLs); add `--href` only if you truly need them.
+3. **`snap <match>` — always snap before shooting.** The a11y tree with `@eN` refs is ~10× cheaper than a screenshot and usually answers the question. Only interactive/landmark elements appear — static text (`<p>`, `<div>`, `<pre>`) is not in the tree, so `--diff` can't see text changes; verify those with `wait --text` or `eval`. Trees truncate at 300 nodes: on a big page, `grep`/`--find` over a full snap can silently miss what's past the cut — take a `--skeleton` map first (cut subtrees read `… N inside`), or scope it: `snap <match> "[role=dialog]"` / `snap <match> @e12`. Re-checking after an action? `snap <match> --diff` prints only what changed. Looking for one thing? `snap <match> | grep -i save` — or, when you don't know what it's called, `snap <match> --find "the cancel button"` (local Nano picks matching lines, ~2s warm / ~20s first call while it loads; verify the shortlist). Link URLs are omitted except on nameless links (they were most of the bytes — you click refs, not URLs); add `--href` only if you truly need them.
 4. `click <match> @e3` / `fill <match> @e2 "value"` — refs **survive re-snaps** (an element keeps its @eN while its role+name are unchanged) but expire on navigation; re-snap after `nav`.
 5. **Act + observe in one call: `click <match> @e3 --diff`** — the action settles (waits for the DOM to go quiet, 3s cap), then the snap-diff (only what changed) rides along in the same result. No separate `wait` + `snap --diff` round trips. If there was no earlier snap, the full tree is returned instead — that's your baseline.
 6. `wait <match> --text "Saved"` only when you need something specific without acting. Chain other dependent steps in one `batch` — stdin, one command per line — one process and one shell call instead of several.
@@ -53,10 +53,14 @@ profiles                          list connected Chrome profiles — id and name
 open <url>                        open + mark a new tab (waits for load, 8s cap)
 nav <match> <url> [--diff]        navigate matching tab (waits for load, 8s cap)
 close <match>                     close matching tab
-snap <match> [css] [--diff] [--href] [--find "nl"]
-                                  a11y tree with @eN refs; [css] scopes to a subtree,
-                                  --diff prints only lines added/removed/changed since last snap,
+snap <match> [css|@ref] [--diff] [--href] [--skeleton] [--find "nl"]
+                                  a11y tree with @eN refs; [css|@ref] scopes to a subtree
+                                  (@ref = the --skeleton drill-down), --diff prints only lines
+                                  added/removed/changed since last snap,
                                   --href includes all link URLs (default: only nameless links);
+                                  --skeleton: depth-limited map — cut containers read
+                                  '… N inside' (deterministic drill: snap <match> @ref) instead
+                                  of silently truncating at 300 nodes;
                                   --find "query" asks local Gemini Nano (no cloud tokens; ~2s warm,
                                   ~20s first call while Nano loads) to pick
                                   tree lines matching a natural-language query ("the cancel button") —
