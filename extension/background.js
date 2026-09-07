@@ -2255,22 +2255,39 @@ async function waitHuman(tab, msg) {
   return 'the human acted:\n' + (await runEval(tab.id, SNAP_SRC(null, true, false)));
 }
 
-// Hide/show the pill+viewport-frame banner during diff captures: the banner
-// is page DOM at inset:0 (z-index max), and the pill's elapsed-seconds label
-// changes pixels every second — found live: wait --pixel-change on a marked
-// static tab self-triggered in ~5s from its own pill ("0.1% changed" region
-// exactly the pill's corner box). The banner must never be in a diff frame.
-const setBannerHidden = (tabId, hidden) =>
-  chrome.scripting
-    .executeScript({
+// Remove the pill+viewport-frame banner for the duration of captures. It is
+// page DOM at inset:0 (z-index max) and poisons captures three ways, all found
+// live: the pill's elapsed-seconds label changes pixels every second (a
+// wait --pixel-change on a marked static tab self-triggered from its own
+// pill); the ACTIVE purple border renders as a phantom full-width band in
+// captureBeyondViewport frames whose clip starts below the viewport top
+// (crop/full/diff — a 1280×24 strip on a static page); and visibility:hidden
+// does NOT keep it out of those frames (the wait fired with the banner
+// 'hidden' — some cached/compositor path still paints it). Only DOM removal
+// is invisible to every render path. Cost: the pill is absent while a shot
+// runs (sub-second) and for the length of a pixel-change wait — favicon ⏳
+// and the 🟣 tab group still show driven-ness; a pill that fabricates the
+// very change being watched is worse.
+const removeBannerForCapture = async (tabId) => {
+  try {
+    const r = await chrome.scripting.executeScript({
       target: { tabId },
-      func: (hidden) => {
+      func: () => {
         const b = document.getElementById('bridge-banner');
-        if (b) b.style.visibility = hidden ? 'hidden' : '';
+        if (!b) return false;
+        b.remove();
+        return true;
       },
-      args: [hidden],
-    })
-    .catch(() => {}); // banner absent (user hid it / chrome:// page) — fine
+    });
+    return !!r?.[0]?.result;
+  } catch {
+    return false; // chrome:// page etc. — no banner to worry about
+  }
+};
+const restoreBanner = async (tabId) => {
+  await chrome.scripting.executeScript({ target: { tabId }, func: injectBanner }).catch(() => {});
+  await chrome.scripting.executeScript({ target: { tabId }, func: pillInject, args: [idleLabel(tabId), tabActivity.get(tabId) || [], null, false] }).catch(() => {});
+};
 
 // wait --pixel-change: the canvas watcher — polls the viewport until pixels
 // move (the a11y tree can't see canvas; bklapholz's salesforce pilot watched
@@ -2283,7 +2300,7 @@ async function waitPixel(tab, msg) {
   return await withCdp(tab.id, async () => {
     await attachDbg(tab.id);
     const pngMsg = { ...msg, format: 'png' };
-    await setBannerHidden(tab.id, true); // the pill ticks pixels — keep it out of the baseline AND the polls
+    const bannered = await removeBannerForCapture(tab.id); // the pill ticks pixels — keep it out of the baseline AND the polls
     let bmp0 = null;
     try {
       const cap0 = await captureViewport(tab.id, pngMsg, undefined, true);
@@ -2310,7 +2327,7 @@ async function waitPixel(tab, msg) {
       }
     } finally {
       bmp0?.close();
-      await setBannerHidden(tab.id, false);
+      if (bannered) await restoreBanner(tab.id);
       await detachDbg(tab.id);
     }
   });
@@ -2741,6 +2758,12 @@ async function handle(msg) {
     return await withCdp(tab.id, async () => {
     try {
       await attachDbg(tab.id);
+      // Every CDP capture below (viewport/crop/full/diff) and even the
+      // cdp-less fallback runs banner-free: the pill and its active purple
+      // frame border are bridge UI and must not be in the shot (the band
+      // artifact, the self-triggering pill — see removeBannerForCapture).
+      const bannered = await removeBannerForCapture(tab.id);
+      try {
       const params = { format };
       if (format === 'jpeg') params.quality = msg.quality ?? 80;
       // Downscale to a long edge of `max` px (0 = native). Claude resizes
@@ -2773,55 +2796,50 @@ async function handle(msg) {
           // --diff: whole-viewport png compared against the previous --diff
           // shot of this tab (baseline updates every call, like snap --diff).
           // On change the saved file is the CHANGED REGION only — the one
-          // thing a canvas-watcher actually wants to look at. The pill+frame
-          // banner stays hidden for the whole compare: its elapsed-seconds
-          // label is real pixel change inside the frame (found live).
+          // thing a canvas-watcher actually wants to look at.
           const prev = shotBaselines.get(tab.id);
           // --scale/--max cannot apply while a baseline exists (the diff is
           // pinned to the baseline's frame) — say so instead of a silent no-op.
           const ignored = prev && (msg.max !== undefined || msg.scale !== undefined) ? ' (--scale/--max ignored — the diff reuses the baseline frame)' : '';
-          await setBannerHidden(tab.id, true);
           const cap = await captureViewport(tab.id, { ...msg, format: 'png' }, prev?.clip, true);
           const full = 'data:image/png;base64,' + cap.b64;
           const setBase = () => shotBaselines.set(tab.id, { b64: cap.b64, clip: cap.clip });
           if (!prev) {
             setBase();
-            await setBannerHidden(tab.id, false);
             return { note: 'diff: baseline saved — run the action, then shot <match> <out> --diff again; this file is the full capture', data: full };
           }
           // Commit the baseline only once the comparison (and the crop) has
           // actually run — a throw mid-diff must not swallow the observed
           // change into the baseline, or the retry would report 'no change'
           // (found by review).
-          try {
-            const cmp = await pixelDiff(prev.b64, cap.b64);
-            if (cmp.error) {
-              setBase();
-              return { note: 'diff: ' + cmp.error + ignored, data: full };
-            }
-            if (!cmp.changed) {
-              cmp.bmp.close();
-              setBase();
-              return { note: 'diff: no pixel change since the previous shot (baseline updated)' + ignored, data: full };
-            }
-            const box = changedBox(cmp, cmp.bmp);
-            const data = await cropDataUrl(cmp.bmp, box.x, box.y, box.w, box.h);
+          const cmp = await pixelDiff(prev.b64, cap.b64);
+          if (cmp.error) {
+            setBase();
+            return { note: 'diff: ' + cmp.error + ignored, data: full };
+          }
+          if (!cmp.changed) {
             cmp.bmp.close();
             setBase();
-            const { x: cssX, y: cssY } = cssBox(cap, box);
-            return {
-              note: `diff: ${cmp.pct}% of pixels changed — the saved file is the changed region (${box.w}×${box.h}px; CSS offset x=${cssX}, y=${cssY} for measure/crop). Baseline is now THIS shot.` + ignored,
-              data,
-            };
-          } finally {
-            await setBannerHidden(tab.id, false);
+            return { note: 'diff: no pixel change since the previous shot (baseline updated)' + ignored, data: full };
           }
+          const box = changedBox(cmp, cmp.bmp);
+          const data = await cropDataUrl(cmp.bmp, box.x, box.y, box.w, box.h);
+          cmp.bmp.close();
+          setBase();
+          const { x: cssX, y: cssY } = cssBox(cap, box);
+          return {
+            note: `diff: ${cmp.pct}% of pixels changed — the saved file is the changed region (${box.w}×${box.h}px; CSS offset x=${cssX}, y=${cssY} for measure/crop). Baseline is now THIS shot.` + ignored,
+            data,
+          };
         }
         const cap = await captureViewport(tab.id, msg);
         return `data:image/${cap.format};base64,${cap.b64}`;
       }
       const res = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.captureScreenshot', params);
       return `data:image/${format};base64,${res.data}`;
+      } finally {
+        if (bannered) await restoreBanner(tab.id);
+      }
     } catch (e) {
       // debugger unavailable (chrome:// pages etc.) — fall back to captureVisibleTab
       // (viewport only, native res — crop/max/scale can't be honored there)
