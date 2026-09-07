@@ -198,6 +198,12 @@ const CLI_LINES = {
   // fill parser's stray-flag scan at replay.
   fill: (m) => `fill ${shellq(m.urlMatch)} ${shellq(m.target)}${D(m)} -- ${shellq(m.value)}`,
   type: (m) => `type ${shellq(m.urlMatch)} ${shellq(m.target)}${D(m)} -- ${shellq(m.value)}`,
+  // paste: a clipboard read (clip) is re-read at replay time, not embedded —
+  // the exported script shouldn't freeze (or leak) what the clipboard held.
+  paste: (m) =>
+    m.clip
+      ? `paste ${shellq(m.urlMatch)}${m.target ? ' ' + shellq(m.target) : ''}${D(m)}`
+      : `paste ${shellq(m.urlMatch)}${m.target ? ' ' + shellq(m.target) : ''}${D(m)} -- ${shellq(m.value)}`,
   press: (m) => `press ${shellq(m.urlMatch)} ${shellq(m.key)}${m.target ? ' ' + shellq(m.target) : ''}${D(m)}`,
   hover: (m) => `hover ${shellq(m.urlMatch)} ${shellq(m.target)}${D(m)}`,
   scroll: (m) => `scroll ${shellq(m.urlMatch)} ${shellq(m.target)}${D(m)}`,

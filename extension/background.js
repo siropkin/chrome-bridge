@@ -451,6 +451,7 @@ const ACT_VERBS = {
   drag: ['dragging', 'dragged'],
   dialog: ['answering a dialog', 'answered a dialog'],
   fill: ['filling in', 'filled in'],
+  paste: ['pasting into', 'pasted into'],
   upload: ['uploading file to', 'uploaded file to'],
   type: ['typing into', 'typed into'],
   press: ['pressing', 'pressed'],
@@ -1201,6 +1202,44 @@ const typeSrc = (target, text) => `(async () => {
   return 'typed ' + text.length + ' chars into ' + sel + warn;
 })()`;
 
+// Real-paste semantics: editors that own their content model (Quill,
+// ProseMirror, Reddit/LinkedIn rich composers) revert fill writes but accept
+// pastes — they install 'paste' handlers that read clipboardData and convert.
+// Chrome's ClipboardEvent constructor silently ignores the clipboardData init
+// key, so the only way an editor can read our payload is a plain Event with a
+// duck-typed clipboardData. No handler claiming it (no preventDefault) → land
+// the text the way a native paste would: caret insertion for fields,
+// execCommand for contentEditable.
+const pasteSrc = (target, value) => `(async () => {
+  const sel = ${JSON.stringify(target || '')}, text = ${JSON.stringify(value)};
+  let el = document.activeElement;
+  if (sel) {
+    el = sel.startsWith('@') ? window.__bridgeRefs?.[sel.slice(1)] : document.querySelector(sel);
+    if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
+    el.scrollIntoView({ block: 'center' });
+    el.focus?.();
+  }
+  if (!el || !(el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable))
+    throw new Error('no text field focused — pass an @ref|css target or click the field first');
+  if (el.tagName === 'INPUT' && ['checkbox', 'radio', 'file'].includes(el.type))
+    throw new Error('not a text field: <input type=' + el.type + '>');
+  const ev = new Event('paste', { bubbles: true, cancelable: true });
+  ev.clipboardData = { types: ['text/plain'], getData: (t) => (t === 'text/html' ? null : text) };
+  const handled = !el.dispatchEvent(ev);
+  if (!handled) {
+    if (el.isContentEditable) {
+      document.execCommand('insertText', false, text); // deprecated, still the only CE path that fires beforeinput correctly
+    } else {
+      const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const start = el.selectionStart ?? el.value.length, end = el.selectionEnd ?? start;
+      Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, el.value.slice(0, start) + text + el.value.slice(end));
+      el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste', data: text }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  }
+  return 'pasted ' + text.length + ' chars into ' + (sel || '<' + el.tagName.toLowerCase() + '>') + (handled ? ' (editor paste handler)' : '');
+})()`;
+
 // Key press on the focused element (or a target). Synthetic keys are untrusted:
 // they reach JS listeners but don't trigger browser defaults (form submit).
 // Modifier combos: 'Control+k' splits into ctrlKey + key 'k' — 'press Control+k'
@@ -1650,7 +1689,7 @@ async function waitHuman(tab, msg) {
 // window with no read involved, so an unmarked tab would show the user's
 // browser acting on its own. Pure reads (snap/measure/console/net/shot/…)
 // stay unmarked, so glancing at a tab doesn't stick a pill on it.
-const MUTATING = new Set(['click', 'fill', 'type', 'press', 'upload', 'eval', 'hover', 'scroll', 'grid', 'emulate', 'resize', 'drag', 'dialog']);
+const MUTATING = new Set(['click', 'fill', 'paste', 'type', 'press', 'upload', 'eval', 'hover', 'scroll', 'grid', 'emulate', 'resize', 'drag', 'dialog']);
 
 // Takes the whole msg: records _tabId so the onmessage finally can flip a
 // driven tab's favicon to ✅, and marks a driven tab busy (⏳) for the command
@@ -1854,6 +1893,12 @@ async function handle(msg) {
       msg.type === 'press' ? pressSrc(msg.key, msg.target) :
       hoverSrc(msg.target);
     const result = await runEval(tab.id, src);
+    return msg.diff ? await observeDiff(tab.id, result) : result;
+  }
+
+  if (msg.type === 'paste') {
+    const tab = await findTab(msg);
+    const result = await runEval(tab.id, pasteSrc(msg.target, msg.value));
     return msg.diff ? await observeDiff(tab.id, result) : result;
   }
 

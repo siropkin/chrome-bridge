@@ -2,7 +2,7 @@
 // chrome-bridge CLI — zero dependencies, Node >= 18.
 // Run without arguments for usage.
 import fs from 'node:fs';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const PORT = process.env.BRIDGE_PORT || 9333;
@@ -66,6 +66,27 @@ async function stdin() {
   return s.trim();
 }
 
+// The OS clipboard read for `paste` (no explicit -- <text>). BRIDGE_CLIPBOARD
+// overrides it — the hermetic selftest (CI has no clipboard) and headless /
+// clipboard-less machines.
+function readClipboard() {
+  const override = process.env.BRIDGE_CLIPBOARD;
+  if (override !== undefined) return override;
+  // maxBuffer: the default 1MB would throw on a whole-article clipboard.
+  const run = (cmd, args) => {
+    try {
+      const r = spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 });
+      return r.status === 0 ? r.stdout : null;
+    } catch {
+      return null;
+    }
+  };
+  if (process.platform === 'darwin') return run('pbpaste', []);
+  if (process.platform === 'win32') return run('powershell.exe', ['-NoProfile', '-Command', 'Get-Clipboard']);
+  // Linux: neither ships everywhere — try both.
+  return run('xclip', ['-selection', 'clipboard', '-o']) ?? run('xsel', ['--clipboard', '--output']);
+}
+
 // POSIX-ish word split honoring 'single'/"double" quotes — including quotes
 // glued onto bare words (a"b c" → `ab c`), like a shell. Two steps: split
 // into maximal runs of bare/quoted parts, then strip the quotes per part.
@@ -106,6 +127,11 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     fill <match> <ref> -- <value>
   type <match> <@ref|css> <text> [--diff]    per-char typing — triggers autocomplete/keystroke UIs;
                                     '--' separator for '--'-leading text, same as fill
+  paste <match> [@ref|css] [--diff] [-- <text>]
+                                    real-paste semantics into the focused (or given) field:
+                                    editors that own their model (Quill, Reddit/LinkedIn
+                                    composers) revert fill but take a paste; without -- <text>
+                                    it reads the OS clipboard (pbpaste/xclip/Get-Clipboard)
   press <match> <key> [@ref|css] [--diff]  key press on focused or given element (Enter/Tab/…);
                                     combos like Control+k / Shift+Enter / Meta+k set the modifier flags
   hover <match> <@ref|css> [--diff]  hover an element (opens hover menus)
@@ -464,6 +490,29 @@ async function run(cmdName, args) {
       const stray = rest.slice(2).find((a) => a.startsWith('--'));
       if (stray) fail(`unknown flag ${stray} (flags: --diff; a value starting with '--' goes after a bare '--' separator)`);
       print(await cmd({ type: cmdName, urlMatch: rest[0], target: rest[1], value: [...rest.slice(2), ...valuePart].join(' '), ...(flagged.includes('--diff') ? { diff: true } : {}) }));
+      break;
+    }
+
+    case 'paste': {
+      // '--' = the text (may itself start with '--'), same separator as fill.
+      // Without it, the OS clipboard is the source — the agent usually HAS
+      // the text, but "paste what I just copied" needs the real clipboard.
+      const sep = args.indexOf('--');
+      const flagged = sep < 0 ? args : args.slice(0, sep);
+      const valuePart = sep < 0 ? [] : args.slice(sep + 1);
+      const rest = flagged.filter((a) => a !== '--diff');
+      if (!rest[0] || rest[2] !== undefined || (sep >= 0 && !valuePart.length))
+        fail('usage: paste <match> [@ref|css] [--diff] [-- <text>] — without -- <text> it reads the OS clipboard');
+      const value = valuePart.join(' ');
+      let clip = false;
+      let text = value;
+      if (!text) {
+        text = readClipboard();
+        if (text == null) fail(`cannot read the clipboard on ${process.platform} — install xclip/xsel, or pass the text: paste <match> <ref> -- <text>`);
+        if (!text) fail('clipboard is empty — copy something, or pass the text: paste <match> <ref> -- <text>');
+        clip = true;
+      }
+      print(await cmd({ type: 'paste', urlMatch: rest[0], target: rest[1] || null, value: text, clip, ...(flagged.includes('--diff') ? { diff: true } : {}) }));
       break;
     }
 

@@ -103,9 +103,9 @@ function wsClient(port, id = 'alpha-test', name) {
 
 // NOTE: must be async — a spawnSync here would freeze this process's event
 // loop, and the fake extension (same process) could never answer.
-function cliRaw(args, input) {
+function cliRaw(args, input, extraEnv = {}) {
   return new Promise((resolve) => {
-    const p = spawn('node', [`${ROOT}/cli.mjs`, ...args], { env });
+    const p = spawn('node', [`${ROOT}/cli.mjs`, ...args], { env: { ...env, ...extraEnv } });
     if (input != null) {
       p.stdin.write(input);
       p.stdin.end();
@@ -174,7 +174,7 @@ try {
     // in a `snap | grep` pipe otherwise) while stdout carries the tree.
     if (msg.type === 'snap' && msg.scope === 'trunc')
       return respond('tree line A\ntree line B\n… truncated at 300 nodes — scope with: snap <match> <css>');
-    if (['snap', 'press', 'type', 'hover', 'net', 'click', 'fill', 'navigate', 'scroll', 'ask', 'upload', 'console', 'note', 'measure', 'grid', 'open', 'close', 'mark', 'release', 'unemulate', 'wait', 'emulate', 'resize', 'dialog', 'drag'].includes(msg.type)) return respond(msg); // echo for flag-parsing checks
+    if (['snap', 'press', 'type', 'hover', 'net', 'click', 'fill', 'paste', 'navigate', 'scroll', 'ask', 'upload', 'console', 'note', 'measure', 'grid', 'open', 'close', 'mark', 'release', 'unemulate', 'wait', 'emulate', 'resize', 'dialog', 'drag'].includes(msg.type)) return respond(msg); // echo for flag-parsing checks
     return respond(null);
   });
   await new Promise((r) => setTimeout(r, 100));
@@ -249,6 +249,26 @@ try {
   assert(shotScale0.status !== 0 && shotScale0.stderr.includes('--scale must be > 0'), 'cli shot rejects out-of-range --scale', shotScale0.stdout + shotScale0.stderr);
   const shotQual = await cli('shot', 'example.com', shotPath, '--quality', '200');
   assert(shotQual.status !== 0 && shotQual.stderr.includes('--quality must be 1..100'), 'cli shot rejects out-of-range --quality', shotQual.stdout + shotQual.stderr);
+
+  // paste: BRIDGE_CLIPBOARD stands in for the OS clipboard (hermetic — CI
+  // has no pbpaste); -- <text> bypasses it entirely (the agent usually HAS
+  // the text and shouldn't touch the user's clipboard).
+  const pasteClip = await cliRaw(['paste', 'example.com', '@e2', '--diff'], null, { BRIDGE_CLIPBOARD: 'clipboard text' });
+  assert(
+    pasteClip.status === 0 && pasteClip.stdout.includes('"value":"clipboard text"') && pasteClip.stdout.includes('"clip":true') && pasteClip.stdout.includes('"diff":true'),
+    'cli paste reads the clipboard (override) with --diff',
+    pasteClip.stdout + pasteClip.stderr
+  );
+  const pasteText = await cli('paste', 'example.com', '@e2', '--diff', '--', 'explicit paste text');
+  assert(
+    pasteText.status === 0 && pasteText.stdout.includes('"value":"explicit paste text"') && pasteText.stdout.includes('"clip":false') && pasteText.stdout.includes('"diff":true'),
+    'cli paste -- <text> bypasses the clipboard',
+    pasteText.stdout + pasteText.stderr
+  );
+  const pasteEmpty = await cliRaw(['paste', 'example.com', '@e2'], null, { BRIDGE_CLIPBOARD: '' });
+  assert(pasteEmpty.status !== 0 && pasteEmpty.stderr.includes('clipboard is empty'), 'cli paste fails loudly on an empty clipboard', pasteEmpty.stdout + pasteEmpty.stderr);
+  const pasteUsage = await cli('paste');
+  assert(pasteUsage.status !== 0 && pasteUsage.stderr.includes('usage: paste'), 'cli paste usage error', pasteUsage.stdout + pasteUsage.stderr);
 
   const press = await cli('press', 'example.com', 'Enter', '@e3');
   assert(press.status === 0 && press.stdout.includes('"key":"Enter"') && press.stdout.includes('"target":"@e3"'), 'cli press passes key+target', press.stdout + press.stderr);
@@ -534,6 +554,11 @@ try {
     // shadow-tree points and host.contains() walks light DOM only (LinkedIn's
     // share modal made every in-shadow element unclickable).
     assert(bg.includes('root.host === top'), 'ext: click coverage walks the composed chain — a shadow host containing the target is a container, not an occluder');
+    // paste: Chrome's ClipboardEvent constructor ignores the clipboardData
+    // init key — only a duck-typed plain Event lets editor paste handlers
+    // (Quill, ProseMirror) read the payload; no handler claiming it must
+    // still land the text (caret insertion / execCommand).
+    assert(bg.includes('ev.clipboardData =') && bg.includes('insertFromPaste'), 'ext: paste duck-types clipboardData (constructor drops it) and falls back to native insertion');
 
     // The service worker is never executed here (the fake extension plays it)
     // — a syntax error in it would otherwise ship green, as would one in

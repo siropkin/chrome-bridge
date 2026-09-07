@@ -173,6 +173,7 @@ You're handing an agent your logged-in browser — the design assumes you want t
 | `dialog <match> accept\|dismiss [--text s]` | Answer a stuck JS dialog (alert/confirm/prompt blocks every other command on the tab) |
 | `fill <match> <@ref\|css> <value> [--diff]` | Set input value — React-safe (native setter + input/change events); on a native `<select>` matches option value or label |
 | `type <match> <@ref\|css> <text> [--diff]` · `press <match> <key> [@ref] [--diff]` · `hover <match> <@ref\|css> [--diff]` | Per-char typing (autocomplete UIs), key presses (`Control+k` combos work), hover |
+| `paste <match> [@ref\|css] [--diff] [-- <text>]` | Real-paste semantics into the focused (or given) field — rich editors that revert `fill` (Quill, Reddit/LinkedIn composers) take a paste; without `-- <text>` it reads the OS clipboard |
 | `scroll <match> <up\|down\|top\|bottom\|@ref\|css> [--diff]` | Scroll — finds the real scroller on app-shell pages (Linear, Gmail) that scroll an inner panel, not the window |
 | `upload <match> <@ref\|css> <file...> [--diff]` | Set a file input's files via CDP — works on hidden inputs; target the input or an element wrapping it |
 | `ask <match> <question>` | *(experimental)* Local Gemini Nano answers from page text — no cloud tokens, pre-filter quality |
