@@ -1990,7 +1990,8 @@ async function observeDiff(tabId, actionResult, url0) {
     if (url1 && url0 && url1 !== url0) return await navVerdict(url1);
     // Bound the settle: a click that starts a navigation mid-settle leaves the
     // eval pending on the dying document — race it, then re-check the URL.
-    await Promise.race([runEval(tabId, SETTLE_SRC).catch(() => null), new Promise((r) => setTimeout(r, 10_000))]);
+    // 4s: the settle itself caps at 3s, so anything past that is a pend.
+    await Promise.race([runEval(tabId, SETTLE_SRC).catch(() => null), new Promise((r) => setTimeout(r, 4_000))]);
     url1 = await url();
     if (url1 && url0 && url1 !== url0) return await navVerdict(url1);
     const wall = await runEval(tabId, WALL_SRC);
