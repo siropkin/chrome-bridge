@@ -121,9 +121,11 @@ shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--c
 fetch <match> <url> [--out file]  in-page fetch riding the logged-in session — login-walled
                                   JSON/feeds answer it without eval plumbing; binary needs
                                   --out, text prints capped at 50K chars (--out: full body)
-net <match> [--dur ms] [--filter s] [--body s] [--har out.har]
+net <match> [--dur ms] [--filter s] [--body s] [--ws] [--har out.har]
                                   capture network for N ms, capped at 30s (CDP; one line per
                                   request) — run successive captures for longer windows;
+                                  --ws appends WebSocket frames (→ sent / ← received, 200 per
+                                  capture) — chat/streaming apps are invisible without them;
                                   --body s appends response bodies for URLs containing s (≤8);
                                   --har out.har also saves the capture as HAR 1.2 (DevTools/
                                   Burp open it; bodies land in the file, not the lines)

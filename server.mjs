@@ -227,7 +227,7 @@ const CLI_LINES = {
   net: (m) =>
     `net ${shellq(m.urlMatch)}${m.duration != null ? ' --dur ' + m.duration : ''}${m.filter ? ' --filter ' + shellq(m.filter) : ''}${
       m.body ? ' --body ' + shellq(m.body) : ''
-    }${m.har ? ' --har net-replay.har' : ''}`,
+    }${m.ws ? ' --ws' : ''}${m.har ? ' --har net-replay.har' : ''}`,
   measure: (m) => `measure ${shellq(m.urlMatch)} ${shellq(m.selector)}`,
   console: (m) => `console ${shellq(m.urlMatch)}${m.clear ? ' --clear' : ''}${m.ask ? (m.ask === true ? ' --ask' : ' --ask ' + shellq(m.ask)) : ''}`,
   grid: (m) => `grid ${shellq(m.urlMatch)}`,

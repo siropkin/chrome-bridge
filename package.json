@@ -1,6 +1,6 @@
 {
   "name": "chrome-bridge",
-  "version": "1.14.0",
+  "version": "1.15.0",
   "description": "Let AI agents drive your real Chrome browser — logged-in tabs, no relaunch, zero dependencies",
   "type": "module",
   "private": true,

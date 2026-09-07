@@ -163,9 +163,11 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
   eval <match> <js|-> [--world main|isolated]     '-' reads JS from stdin
   shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full]
                                     --max caps the long edge (default 1280, 0 = native res)
-  net <match> [--dur ms] [--filter s] [--body s] [--har out.har]
+  net <match> [--dur ms] [--filter s] [--body s] [--ws] [--har out.har]
                                     capture network for N ms, capped at 30s (CDP, one line per
                                     request, each naming its initiator: ⟵ script:line);
+                                    --ws also captures WebSocket frames (→ sent / ← received,
+                                    300 chars each, 200 per capture — chat/streaming apps);
                                     --body s also captures JSON/text response bodies for URLs
                                     containing s (≤8, 1500 chars each; implies --filter s);
                                     --har out.har saves the capture as HAR 1.2 (DevTools/Burp
@@ -597,6 +599,7 @@ async function run(cmdName, args) {
       let filter = null;
       let body = null;
       let har = null;
+      let ws = false;
       for (let i = 0; i < rest.length; i++) {
         if (rest[i] === '--dur') {
           duration = Number(rest[++i]);
@@ -606,14 +609,15 @@ async function run(cmdName, args) {
           if (duration > 30000) fail('--dur max is 30000 ms — run successive captures for longer windows');
         } else if (rest[i] === '--filter') filter = rest[++i];
         else if (rest[i] === '--body') body = rest[++i];
+        else if (rest[i] === '--ws') ws = true;
         else if (rest[i] === '--har') {
           har = rest[++i];
           if (har === undefined) fail('--har needs a file path');
         } else fail(`unknown flag ${rest[i]}`);
       }
-      if (!match) fail('usage: net <match> [--dur ms] [--filter s] [--body s] [--har out.har]');
+      if (!match) fail('usage: net <match> [--dur ms] [--filter s] [--body s] [--ws] [--har out.har]');
       if (body && !filter) filter = body; // --body implies you only want those lines
-      const out = await cmd({ type: 'net', urlMatch: match, duration, filter, body, ...(har ? { har: true } : {}) });
+      const out = await cmd({ type: 'net', urlMatch: match, duration, filter, body, ...(ws ? { ws: true } : {}), ...(har ? { har: true } : {}) });
       if (har) {
         // The capture as a persisted, shareable HAR 1.2 — DevTools/Burp/Caido
         // open it; text/JSON response bodies land in the file (50 max), the

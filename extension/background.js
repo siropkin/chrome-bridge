@@ -799,6 +799,20 @@ const netCollectors = new Map(); // tabId -> Map(requestId -> entry)
 chrome.debugger.onEvent.addListener((src, method, params) => {
   const c = netCollectors.get(src.tabId);
   if (!c) return;
+  // --ws: WebSocket frames — chat/streaming apps are invisible to the request
+  // lines. Nearly free: the debugger is attached for the capture anyway.
+  if (c.ws && method.startsWith('Network.webSocket')) {
+    if (method === 'Network.webSocketCreated') c.wsUrls.set(params.requestId, params.url);
+    else if (method === 'Network.webSocketFrameSent' || method === 'Network.webSocketFrameReceived') {
+      if ((c.wsFrames.length || 0) < 200)
+        c.wsFrames.push({
+          url: c.wsUrls.get(params.requestId) || '(closed socket)',
+          dir: method === 'Network.webSocketFrameSent' ? '→' : '←',
+          data: params.response?.opcode === 2 ? '(binary ' + (params.response?.payloadData?.length || 0) + 'B)' : (params.response?.payloadData || '').slice(0, 300),
+        });
+    }
+    return;
+  }
   if (method === 'Network.requestWillBeSent') {
     // Initiator (already on the wire): the request→issuing-script jump —
     // first stack frame with a URL, or the parser's URL. 'other' with no URL
@@ -839,11 +853,14 @@ chrome.debugger.onEvent.addListener((src, method, params) => {
   }
 });
 
-async function captureNetwork(tabId, duration, filter, bodyFilter, har) {
+async function captureNetwork(tabId, duration, filter, bodyFilter, har, ws) {
   await attachDbg(tabId);
   const c = new Map();
   c.bodyFilter = bodyFilter;
   c.har = har;
+  c.ws = ws;
+  c.wsUrls = new Map();
+  c.wsFrames = [];
   netCollectors.set(tabId, c);
   try {
     await chrome.debugger.sendCommand({ tabId }, 'Network.enable', {
@@ -886,6 +903,24 @@ async function captureNetwork(tabId, duration, filter, bodyFilter, har) {
   // out the full duration but events stopped — say so, don't pass the partial
   // list off as a full capture.
   if (c.detached) lines.push('⚠ capture cut short — debugger detached mid-capture');
+  // The --ws frame section rides the same output, grouped per connection.
+  // --filter keeps applying to request lines only (frame URLs rarely match
+  // the API path being filtered on).
+  if (c.ws) {
+    if (!c.wsFrames.length) lines.push('(no WebSocket frames this window)');
+    else {
+      lines.push('— WebSocket frames —');
+      let url = null;
+      for (const f of c.wsFrames) {
+        if (f.url !== url) {
+          url = f.url;
+          lines.push('WS ' + (url.length > 80 ? url.slice(0, 77) + '…' : url));
+        }
+        lines.push('  ' + f.dir + ' ' + f.data.replace(/\s+/g, ' ').trim());
+      }
+      if (c.wsFrames.length >= 200) lines.push('… frame cap 200 reached — run another capture for more');
+    }
+  }
   const text = lines.join('\n') || '(no requests captured — is the page idle? trigger the action, then run net again)';
   if (!har) return text;
   // HAR 1.2 (DevTools/Burp/Caido open it): everything here was already riding
@@ -2351,7 +2386,7 @@ async function handle(msg) {
 
   if (msg.type === 'net') {
     const tab = await findTab(msg);
-    return await withCdp(tab.id, () => captureNetwork(tab.id, msg.duration, msg.filter, msg.body, msg.har));
+    return await withCdp(tab.id, () => captureNetwork(tab.id, msg.duration, msg.filter, msg.body, msg.har, msg.ws));
   }
 
   if (msg.type === 'wait') {

@@ -313,6 +313,9 @@ try {
     netHar.stdout + netHar.stderr
   );
   fs.unlinkSync(harPath);
+  // --ws: WebSocket frame capture flag rides the wire
+  const netWs = await cli('net', 'example.com', '--ws', '--dur', '500');
+  assert(netWs.status === 0 && netWs.stdout.includes('"ws":true') && netWs.stdout.includes('"duration":500'), 'cli net --ws rides with --dur', netWs.stdout + netWs.stderr);
   // --dur caps at 30s — the extension silently clamps, so fail here instead
   const netCap = await cli('net', 'example.com', '--dur', '60000');
   assert(netCap.status !== 0 && netCap.stderr.includes('--dur max is 30000'), 'cli net rejects --dur above the 30s cap', netCap.stdout + netCap.stderr);
@@ -639,6 +642,12 @@ try {
     // capture events (headers, postData, wallTime), bodies with base64
     // encoding flagged, initiator as the standard _initiator field.
     assert(bg.includes("version: '1.2'") && bg.includes('_initiator') && bg.includes('encoding:'), 'ext: net --har builds a real HAR 1.2 log (creator, entries, _initiator, base64 bodies)');
+    // --ws: the debugger is attached for net anyway — the frame events are
+    // nearly free; caps are printed, never silent.
+    assert(
+      bg.includes('Network.webSocketFrameSent') && bg.includes('Network.webSocketFrameReceived') && bg.includes('(no WebSocket frames this window)'),
+      'ext: net --ws captures WebSocket frames with explicit caps and an honest empty state'
+    );
     // --trusted routes through CDP Input.dispatch* — isTrusted=true events,
     // the one thing synthetic dispatch can't fake. It rides the same
     // attach/serialize plumbing as upload (refcount + withCdp).
