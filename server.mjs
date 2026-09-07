@@ -193,8 +193,11 @@ const CLI_LINES = {
   click: (m) => `click ${shellq(m.urlMatch)} ${shellq(m.target)}${m.dbl ? ' --dbl' : ''}${D(m)}`,
   drag: (m) => `drag ${shellq(m.urlMatch)} ${shellq(m.from)} ${shellq(m.to)}${D(m)}`,
   dialog: (m) => `dialog ${shellq(m.urlMatch)} ${m.accept ? 'accept' : 'dismiss'}${m.text ? ' --text ' + shellq(m.text) : ''}`,
-  fill: (m) => `fill ${shellq(m.urlMatch)} ${shellq(m.target)} ${shellq(m.value)}${D(m)}`,
-  type: (m) => `type ${shellq(m.urlMatch)} ${shellq(m.target)} ${shellq(m.value)}${D(m)}`,
+  // fill/type: flags first, then the '--' separator, then the value — a value
+  // starting with '--' (dev.to front-matter) would otherwise die on the
+  // fill parser's stray-flag scan at replay.
+  fill: (m) => `fill ${shellq(m.urlMatch)} ${shellq(m.target)}${D(m)} -- ${shellq(m.value)}`,
+  type: (m) => `type ${shellq(m.urlMatch)} ${shellq(m.target)}${D(m)} -- ${shellq(m.value)}`,
   press: (m) => `press ${shellq(m.urlMatch)} ${shellq(m.key)}${m.target ? ' ' + shellq(m.target) : ''}${D(m)}`,
   hover: (m) => `hover ${shellq(m.urlMatch)} ${shellq(m.target)}${D(m)}`,
   scroll: (m) => `scroll ${shellq(m.urlMatch)} ${shellq(m.target)}${D(m)}`,

@@ -73,8 +73,11 @@ dialog <match> accept|dismiss [--text s]
                                   answer a stuck JS dialog (alert/confirm/prompt blocks every
                                   other command on the tab; --text answers a prompt)
 fill <match> <@ref|css> <value> [--diff]   set input value (React-safe); on a native <select>
-                                  matches option value or label — the error lists options on a miss
-type <match> <@ref|css> <text> [--diff]    per-char typing — triggers autocomplete/keystroke UIs
+                                  matches option value or label — the error lists options on a miss;
+                                  a value starting with '--' goes after a bare '--' separator:
+                                  fill <match> <ref> -- <value>
+type <match> <@ref|css> <text> [--diff]    per-char typing — triggers autocomplete/keystroke UIs;
+                                  '--' separator for '--'-leading text, same as fill
 upload <match> <@ref|css> <file...> [--diff]   set a file input's files (CDP; hidden inputs work)
 press <match> <key> [@ref|css] [--diff]   key press (Enter/Tab/Escape/…) on focused or given
                                   element; combos like Control+k / Shift+Enter set modifier flags

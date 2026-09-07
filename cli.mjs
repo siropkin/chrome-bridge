@@ -101,8 +101,11 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     dismiss a stuck JS dialog — an open alert/confirm/prompt
                                     wedges the tab until this or a human answers (--text answers a prompt)
   fill <match> <@ref|css> <value> [--diff]   set input value (React-safe; on a native <select>
-                                    matches option value or label — error lists the options on a miss)
-  type <match> <@ref|css> <text> [--diff]    per-char typing — triggers autocomplete/keystroke UIs
+                                    matches option value or label — error lists the options on a miss);
+                                    a value starting with '--' goes after a bare '--' separator:
+                                    fill <match> <ref> -- <value>
+  type <match> <@ref|css> <text> [--diff]    per-char typing — triggers autocomplete/keystroke UIs;
+                                    '--' separator for '--'-leading text, same as fill
   press <match> <key> [@ref|css] [--diff]  key press on focused or given element (Enter/Tab/…);
                                     combos like Control+k / Shift+Enter / Meta+k set the modifier flags
   hover <match> <@ref|css> [--diff]  hover an element (opens hover menus)
@@ -447,13 +450,20 @@ async function run(cmdName, args) {
 
     case 'fill':
     case 'type': {
-      const rest = args.filter((a) => a !== '--diff');
-      if (!rest[0] || !rest[1] || rest[2] === undefined) fail(`usage: ${cmdName} <match> <@ref|css> <value> [--diff]`);
-      // A '--'-prefixed token in the value is a fat-fingered flag, not data —
-      // without this guard it gets typed into the user's real form field.
+      // '--' = end of options (shell convention): everything after it is the
+      // value, unscanned — pasted content can legitimately start with '--'
+      // (dev.to front-matter died on this). Quotes can't be the signal for a
+      // direct shell call: the shell strips them before argv exists.
+      const sep = args.indexOf('--');
+      const flagged = sep < 0 ? args : args.slice(0, sep);
+      const valuePart = sep < 0 ? [] : args.slice(sep + 1);
+      const rest = flagged.filter((a) => a !== '--diff');
+      if (!rest[0] || !rest[1] || (rest[2] === undefined && !valuePart.length)) fail(`usage: ${cmdName} <match> <@ref|css> [--diff] -- <value>`);
+      // A '--'-prefixed token BEFORE the separator is a fat-fingered flag,
+      // not data — without this guard it gets typed into the user's real form.
       const stray = rest.slice(2).find((a) => a.startsWith('--'));
-      if (stray) fail(`unknown flag ${stray} (flags: --diff)`);
-      print(await cmd({ type: cmdName, urlMatch: rest[0], target: rest[1], value: rest.slice(2).join(' '), ...(args.includes('--diff') ? { diff: true } : {}) }));
+      if (stray) fail(`unknown flag ${stray} (flags: --diff; a value starting with '--' goes after a bare '--' separator)`);
+      print(await cmd({ type: cmdName, urlMatch: rest[0], target: rest[1], value: [...rest.slice(2), ...valuePart].join(' '), ...(flagged.includes('--diff') ? { diff: true } : {}) }));
       break;
     }
 

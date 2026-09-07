@@ -272,9 +272,16 @@ try {
   assert(clickPlain.status === 0 && !clickPlain.stdout.includes('"diff"'), 'cli click without --diff sends no diff', clickPlain.stdout + clickPlain.stderr);
   const fillDiff = await cli('fill', 'example.com', '@e2', 'hello world', '--diff');
   assert(fillDiff.status === 0 && fillDiff.stdout.includes('"value":"hello world"') && fillDiff.stdout.includes('"diff":true'), 'cli fill --diff keeps value', fillDiff.stdout + fillDiff.stderr);
+  // '--' separator: pasted content can legitimately start with '--' (dev.to
+  // front-matter died on the stray-flag scan); after a bare '--' everything
+  // is value. Before it, the fat-finger guard still fires.
+  const fillDash = await cli('fill', 'example.com', '@e2', '--', '---\ntitle: x');
+  assert(fillDash.status === 0 && fillDash.stdout.includes('"value":"---\\ntitle: x"'), 'cli fill -- separator passes --leading values', fillDash.stdout + fillDash.stderr);
+  const fillDashDiff = await cli('fill', 'example.com', '@e2', '--diff', '--', 'hello world');
+  assert(fillDashDiff.status === 0 && fillDashDiff.stdout.includes('"value":"hello world"') && fillDashDiff.stdout.includes('"diff":true'), 'cli fill flags before -- separator, value after', fillDashDiff.stdout + fillDashDiff.stderr);
   // A typoed flag must fail loudly — it used to be typed into the user's real form.
   const fillTypo = await cli('fill', 'example.com', '@e2', 'John', '--dfif');
-  assert(fillTypo.status !== 0 && fillTypo.stderr.includes('unknown flag --dfif'), 'cli fill rejects a typoed flag instead of typing it', fillTypo.stdout + fillTypo.stderr);
+  assert(fillTypo.status !== 0 && fillTypo.stderr.includes('unknown flag --dfif') && fillTypo.stderr.includes("'--' separator"), 'cli fill rejects a typoed flag instead of typing it, error teaches the -- separator', fillTypo.stdout + fillTypo.stderr);
   const navDiff = await cli('nav', 'example.com', 'https://example.org/x', '--diff');
   assert(navDiff.status === 0 && navDiff.stdout.includes('"url":"https://example.org/x"') && navDiff.stdout.includes('"diff":true'), 'cli nav --diff', navDiff.stdout + navDiff.stderr);
 
@@ -401,7 +408,7 @@ try {
   const histExport = await cli('history', 'example.com', '--batch', histPath);
   const histScript = fs.readFileSync(histPath, 'utf8');
   assert(
-    histExport.status === 0 && histScript.includes('fill example.com @e2 "hello world" --diff') && histScript.includes('eval example.com document.title'),
+    histExport.status === 0 && histScript.includes('fill example.com @e2 --diff -- "hello world"') && histScript.includes('eval example.com document.title'),
     'cli history --batch exports replayable, quoted commands',
     histExport.stdout + '\n' + histScript
   );
