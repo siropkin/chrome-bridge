@@ -1526,8 +1526,9 @@ const changedBox = (cmp, bmp) => ({
 
 // Changed-box capture px → viewport-relative CSS coords. measure and --crop
 // both speak viewport-relative, and box.x is an offset into cap's bitmap
-// whose page origin is cap.clip.x — the PINNED frame while diffing — so
-// subtract the CURRENT scroll (cap.v.pageX) to land where the caller crops.
+// whose page origin is cap.clip.x. For diff captures the pin follows the
+// CURRENT viewport origin (clip.x === v.pageX, so the subtraction is 0);
+// the plain-capture path still carries a real origin, so the formula stays.
 const cssBox = (cap, box) => {
   const k = cap.s * cap.dpr; // capture px → CSS px
   return {
@@ -1546,7 +1547,7 @@ const maxOf = (msg) => {
 
 // Whole-viewport capture shared by shot's viewport path and the pixel-diff
 // machinery. Caller owns the debugger session (withCdp + attachDbg).
-async function captureViewport(tabId, msg, reuseClip) {
+async function captureViewport(tabId, msg, reuseClip, forceClip) {
   const params = { format: msg.format === 'jpeg' ? 'jpeg' : 'png' };
   if (params.format === 'jpeg') params.quality = msg.quality ?? 80;
   const m = await chrome.debugger.sendCommand({ tabId }, 'Page.getLayoutMetrics');
@@ -1556,14 +1557,19 @@ async function captureViewport(tabId, msg, reuseClip) {
   // Captures render at devicePixelRatio, so budget max/dpr CSS px to keep
   // the OUTPUT long edge <= max.
   const s = Math.min(msg.scale || 1, max / (Math.max(v.clientWidth, v.clientHeight) * dpr));
-  // reuseClip: the --diff/--pixel-change machinery re-captures the EXACT
-  // frame the baseline captured — the debugging infobar appearing/vanishing
-  // resizes the viewport (~52px) and would otherwise randomize consecutive
-  // diffs into 'viewport size changed'. The returned clip is ALWAYS the one
-  // that framed the b64 — the diff baseline stores this pair, and the
-  // changed-region math uses clip.x/y as the capture's page origin.
-  const clip = reuseClip || { x: v.pageX, y: v.pageY, width: v.clientWidth, height: v.clientHeight, scale: s };
-  if (s !== 1 || reuseClip) {
+  // reuseClip: the --diff/--pixel-change machinery re-pins SIZE+SCALE and
+  // re-captures the CURRENT viewport origin — agents scrollIntoView between
+  // shots, so a page-absolute pin would diff off-screen pixels while the
+  // visible page moved ("no change" on a 100%-changed viewport). The infobar
+  // appearing/vanishing resizes the viewport, and the pinned size is what
+  // covers that. forceClip: the diff machinery takes the clip path even at
+  // s === 1, so the FIRST baseline renders in the same capture mode
+  // (captureBeyondViewport) as every later pinned capture — a plain baseline
+  // vs a beyond-viewport compare renders the scrollbar differently and
+  // reports a phantom changed strip on a static page (found live: 30×407px
+  // right-edge band, two consecutive --diff --max 0 calls, nothing moved).
+  const clip = reuseClip ? { ...reuseClip, x: v.pageX, y: v.pageY } : { x: v.pageX, y: v.pageY, width: v.clientWidth, height: v.clientHeight, scale: s };
+  if (forceClip || reuseClip || s !== 1) {
     params.captureBeyondViewport = true;
     params.clip = clip;
   }
@@ -2249,6 +2255,23 @@ async function waitHuman(tab, msg) {
   return 'the human acted:\n' + (await runEval(tab.id, SNAP_SRC(null, true, false)));
 }
 
+// Hide/show the pill+viewport-frame banner during diff captures: the banner
+// is page DOM at inset:0 (z-index max), and the pill's elapsed-seconds label
+// changes pixels every second — found live: wait --pixel-change on a marked
+// static tab self-triggered in ~5s from its own pill ("0.1% changed" region
+// exactly the pill's corner box). The banner must never be in a diff frame.
+const setBannerHidden = (tabId, hidden) =>
+  chrome.scripting
+    .executeScript({
+      target: { tabId },
+      func: (hidden) => {
+        const b = document.getElementById('bridge-banner');
+        if (b) b.style.visibility = hidden ? 'hidden' : '';
+      },
+      args: [hidden],
+    })
+    .catch(() => {}); // banner absent (user hid it / chrome:// page) — fine
+
 // wait --pixel-change: the canvas watcher — polls the viewport until pixels
 // move (the a11y tree can't see canvas; bklapholz's salesforce pilot watched
 // at 1 FPS for exactly this). Attaches CDP for the duration (infobar +
@@ -2260,9 +2283,10 @@ async function waitPixel(tab, msg) {
   return await withCdp(tab.id, async () => {
     await attachDbg(tab.id);
     const pngMsg = { ...msg, format: 'png' };
+    await setBannerHidden(tab.id, true); // the pill ticks pixels — keep it out of the baseline AND the polls
     let bmp0 = null;
     try {
-      const cap0 = await captureViewport(tab.id, pngMsg);
+      const cap0 = await captureViewport(tab.id, pngMsg, undefined, true);
       // Decode the baseline ONCE — re-decoding a multi-MB png every 800ms poll
       // was pure waste (found by review).
       bmp0 = await pngBitmap(cap0.b64);
@@ -2286,6 +2310,7 @@ async function waitPixel(tab, msg) {
       }
     } finally {
       bmp0?.close();
+      await setBannerHidden(tab.id, false);
       await detachDbg(tab.id);
     }
   });
@@ -2293,14 +2318,15 @@ async function waitPixel(tab, msg) {
 
 // --- Commands ---------------------------------------------------------------
 
-// Commands that act as the user or run code in the page — these auto-mark an
-// unmarked tab (see findTab). That includes the visibly-acting ones (hover/
-// scroll/grid/emulate/resize/drag/dialog): they move pixels or reshape the
-// window with no read involved, so an unmarked tab would show the user's
-// browser acting on its own. Pure reads (snap/measure/console/net/shot/…)
-// stay unmarked, so glancing at a tab doesn't stick a pill on it.
-// fetch is "read-only" in the DOM sense, but it issues a request in the
-// user's name (a GET can be a mutation on some servers) — so it auto-marks.
+// Commands that act as the user or run code in the page. Auto-MARKING is no
+// longer this set's job — findTab marks on every command it resolves, reads
+// included (owner's call: the pill shows on any tab the agent looks at, not
+// just the ones it changes). What the set still decides (onmessage): a
+// successful MUTATING command clears the pill's "failed since last ok"
+// counter — a read must not (a failed click followed by a passing snap is
+// still a failure the human needs to see). fetch is in the set for the same
+// reason it used to auto-mark: it issues a request in the user's name (a GET
+// can be a mutation on some servers).
 const MUTATING = new Set(['click', 'fill', 'paste', 'type', 'press', 'upload', 'eval', 'hover', 'scroll', 'grid', 'emulate', 'resize', 'drag', 'dialog', 'fetch']);
 
 // Takes the whole msg: records _tabId so the onmessage finally can flip a
@@ -2337,13 +2363,15 @@ async function findTab(msg) {
       (matches.length > 4 ? ` (+${matches.length - 4} more)` : '') +
       '. To pick another, re-run with a longer <match>.';
   }
-  // Mutating commands auto-mark: acting on an unmarked tab used to be
-  // invisible (no pill, no favicon) — worst exactly when the match landed on
-  // a stranger's tab. `wait --human` too: the pill IS the handoff signal.
-  // Fire-and-forget like open(): the banner injection can hang on an
-  // uncommitted navigation, and drivenTabs updates synchronously, so the
-  // block below already sees the tab as driven.
-  if ((MUTATING.has(msg.type) || (msg.type === 'wait' && msg.human)) && !drivenTabs.has(matches[0].id)) markTab(matches[0].id).catch(() => {});
+  // Every command resolving here marks the tab, reads included (owner's
+  // call: the pill must show on any tab the agent is LOOKING at, not just
+  // the ones it changes — a read-only session used to leave the browser
+  // looking untouched). Cleanup exceptions: release (removing the pill is
+  // its whole job), mark (explicit), unemulate (only meaningful on an
+  // already-driven tab). Fire-and-forget like open(): the banner injection
+  // can hang on an uncommitted navigation, and drivenTabs updates
+  // synchronously, so the block below already sees the tab as driven.
+  if (!['release', 'mark', 'unemulate'].includes(msg.type) && !drivenTabs.has(matches[0].id)) markTab(matches[0].id).catch(() => {});
   // Not `release`: it would flash ⏳ on the still-driven tab right before
   // releaseTab restores the site's own favicon. Fire-and-forget for the same
   // uncommitted-nav reason as open() — an awaited executeScript there can
@@ -2745,38 +2773,49 @@ async function handle(msg) {
           // --diff: whole-viewport png compared against the previous --diff
           // shot of this tab (baseline updates every call, like snap --diff).
           // On change the saved file is the CHANGED REGION only — the one
-          // thing a canvas-watcher actually wants to look at.
+          // thing a canvas-watcher actually wants to look at. The pill+frame
+          // banner stays hidden for the whole compare: its elapsed-seconds
+          // label is real pixel change inside the frame (found live).
           const prev = shotBaselines.get(tab.id);
-          const cap = await captureViewport(tab.id, { ...msg, format: 'png' }, prev?.clip);
+          // --scale/--max cannot apply while a baseline exists (the diff is
+          // pinned to the baseline's frame) — say so instead of a silent no-op.
+          const ignored = prev && (msg.max !== undefined || msg.scale !== undefined) ? ' (--scale/--max ignored — the diff reuses the baseline frame)' : '';
+          await setBannerHidden(tab.id, true);
+          const cap = await captureViewport(tab.id, { ...msg, format: 'png' }, prev?.clip, true);
           const full = 'data:image/png;base64,' + cap.b64;
           const setBase = () => shotBaselines.set(tab.id, { b64: cap.b64, clip: cap.clip });
           if (!prev) {
             setBase();
+            await setBannerHidden(tab.id, false);
             return { note: 'diff: baseline saved — run the action, then shot <match> <out> --diff again; this file is the full capture', data: full };
           }
           // Commit the baseline only once the comparison (and the crop) has
           // actually run — a throw mid-diff must not swallow the observed
           // change into the baseline, or the retry would report 'no change'
           // (found by review).
-          const cmp = await pixelDiff(prev.b64, cap.b64);
-          if (cmp.error) {
-            setBase();
-            return { note: 'diff: ' + cmp.error, data: full };
-          }
-          if (!cmp.changed) {
+          try {
+            const cmp = await pixelDiff(prev.b64, cap.b64);
+            if (cmp.error) {
+              setBase();
+              return { note: 'diff: ' + cmp.error + ignored, data: full };
+            }
+            if (!cmp.changed) {
+              cmp.bmp.close();
+              setBase();
+              return { note: 'diff: no pixel change since the previous shot (baseline updated)' + ignored, data: full };
+            }
+            const box = changedBox(cmp, cmp.bmp);
+            const data = await cropDataUrl(cmp.bmp, box.x, box.y, box.w, box.h);
             cmp.bmp.close();
             setBase();
-            return { note: 'diff: no pixel change since the previous shot (baseline updated)', data: full };
+            const { x: cssX, y: cssY } = cssBox(cap, box);
+            return {
+              note: `diff: ${cmp.pct}% of pixels changed — the saved file is the changed region (${box.w}×${box.h}px; CSS offset x=${cssX}, y=${cssY} for measure/crop). Baseline is now THIS shot.` + ignored,
+              data,
+            };
+          } finally {
+            await setBannerHidden(tab.id, false);
           }
-          const box = changedBox(cmp, cmp.bmp);
-          const data = await cropDataUrl(cmp.bmp, box.x, box.y, box.w, box.h);
-          cmp.bmp.close();
-          setBase();
-          const { x: cssX, y: cssY } = cssBox(cap, box);
-          return {
-            note: `diff: ${cmp.pct}% of pixels changed — the saved file is the changed region (${box.w}×${box.h}px; CSS offset x=${cssX}, y=${cssY} for measure/crop). Baseline is now THIS shot.`,
-            data,
-          };
         }
         const cap = await captureViewport(tab.id, msg);
         return `data:image/${cap.format};base64,${cap.b64}`;

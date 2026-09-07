@@ -33,7 +33,7 @@ The bridge is for pages a plain HTTP request can't handle — interaction (click
 ## Core loop
 
 1. `tabs [match]` — find the tab (the optional match filters the list itself — a full browser's tab list is ~2KB). `<match>` is a URL substring; a driven tab wins, then the most recently active. If several tabs match, the result warns and names them — re-run with a longer match instead of trusting the pick. Two tabs with identical URLs can't be told apart this way — close one first.
-2. `open <url>` / `nav <match> <url>` — auto-marks the tab (🟣 corner tag + tab group). Mutating commands (`click`/`fill`/`type`/`press`/`upload`/`eval`/`hover`/`scroll`/`grid`/`emulate`/`resize`/`drag`/`dialog`) auto-mark too — any tab you act in, or that visibly changes, shows the pill.
+2. `open <url>` / `nav <match> <url>` — auto-marks the tab (🟣 corner tag + tab group). Every command that targets a tab marks it — reads (`snap`/`measure`/`console`/`net`/`shot`) included: the pill shows on any tab you are *looking at*, not just the ones you change.
 3. **`snap <match>` — always snap before shooting.** The a11y tree with `@eN` refs is ~10× cheaper than a screenshot and usually answers the question. Only interactive/landmark elements appear — static text (`<p>`, `<div>`, `<pre>`) is not in the tree, so `--diff` can't see text changes; verify those with `wait --text` or `eval`, and canvas/pixel changes with `shot <match> out.png --diff` (changed region only) or `wait --pixel-change`. Trees truncate at 300 nodes: on a big page, `grep`/`--find` over a full snap can silently miss what's past the cut — take a `--skeleton` map first (cut subtrees read `… N inside`), or scope it: `snap <match> "[role=dialog]"` / `snap <match> @e12`. Re-checking after an action? `snap <match> --diff` prints only what changed. Looking for one thing? `snap <match> | grep -i save` — or, when you don't know what it's called, `snap <match> --find "the cancel button"` (local Nano picks matching lines, ~2s warm / ~20s first call while it loads; verify the shortlist). Link URLs are omitted except on nameless links (they were most of the bytes — you click refs, not URLs); add `--href` only if you truly need them.
 4. `click <match> @e3` / `fill <match> @e2 "value"` — refs **survive re-snaps** (an element keeps its @eN while its role+name are unchanged) but expire on navigation; re-snap after `nav`.
 5. **Act + observe in one call: `click <match> @e3 --diff`** — the action settles (waits for the DOM to go quiet, 3s cap), then the diff of exactly the action's effects rides along in the same result, prefixed with a **verdict**: `succeeded` (observable change / navigation), `needs_human` (bot wall named — hand off with `wait <match> --human`), `blocked` (rate limit), `uncertain` (dispatched, nothing observable changed — verify with console/net/shot; never read it as ok). No separate `wait` + `snap --diff` round trips.
@@ -123,9 +123,11 @@ wait <match> <css|--text t|--human|--pixel-change> [--timeout ms]
 eval <match> <js|-> [--world main|isolated]     '-' reads JS from stdin
 shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full] [--diff]
                                   --max caps the long edge (default 1280, 0 = native res);
-                                  --diff compares against the previous --diff shot of the tab
-                                  and, on change, saves ONLY the changed region (padded,
-                                  capture res) — canvas/pixel changes the tree can't see
+                                  --diff compares against the previous --diff shot of the tab —
+                                  pinned to the baseline's SIZE/scale but the CURRENT scroll position
+                                  (it watches what you see), and, on change, saves ONLY the changed
+                                  region (padded, capture res) — canvas/pixel changes the tree can't see.
+                                  --scale/--max are ignored while a baseline exists (noted in the reply)
 fetch <match> <url> [--out file]  in-page fetch riding the logged-in session — login-walled
                                   JSON/feeds answer it without eval plumbing; binary needs
                                   --out, text prints capped at 50K chars (--out: full body)

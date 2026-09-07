@@ -126,7 +126,7 @@ node cli.mjs stop && node cli.mjs start
 
 **Windows**:`install.sh` 是 bash(macOS/Linux,或 Git Bash)。桥接器本身是纯 Node——任何平台都能在终端里运行 `node server.mjs`,所有 `cli.mjs` 命令都是跨平台的。
 
-被桥接驱动的标签页会在右下角显示 🟣 小标签(点击查看完整操作历史;✕ 可隐藏,下次导航前不再显示)并加入 🟣 标签页分组,你随时知道哪些页面正在被自动化。小标签实时播报智能体正在做什么(`🟣 taking screenshot…`、`🟣 reading page…`,长命令会显示已耗时秒数),历史面板列出最近的操作并自动滚动到最新一行;空闲时显示 `🟣 AI idle`(连续失败后显示 `⚠ N failed since last ok`,桥接服务器不可达时显示 `⚠ bridge offline`);命令执行期间,紫色边框亮起,标签页 favicon 显示 ⏳(完成 ✅,失败 ✗,✗ 会保留到下一条命令),点击/悬停处会闪现紫色指针标记智能体的操作位置。`release`(或 `close`)即可全部还原。
+被桥接驱动的标签页会在右下角显示 🟣 小标签(点击查看完整操作历史;✕ 可隐藏,下次导航前不再显示)并加入 🟣 标签页分组,你随时知道哪些页面正在被自动化——只读命令(`snap`、`measure`、`console`)同样会打上标签:智能体**正在查看**的标签页也会戴标签,而不只是它修改过的。小标签实时播报智能体正在做什么(`🟣 taking screenshot…`、`🟣 reading page…`,长命令会显示已耗时秒数),历史面板列出最近的操作并自动滚动到最新一行;空闲时显示 `🟣 AI idle`(连续失败后显示 `⚠ N failed since last ok`,桥接服务器不可达时显示 `⚠ bridge offline`);命令执行期间,紫色边框亮起,标签页 favicon 显示 ⏳(完成 ✅,失败 ✗,✗ 会保留到下一条命令),点击/悬停处会闪现紫色指针标记智能体的操作位置。`release`(或 `close`)即可全部还原。
 
 **多个 Chrome 配置**:扩展可以同时加载在多个配置中——每个配置保持独立连接,智能体可以并行驱动它们。命令会自动路由到唯一拥有匹配标签页的配置;当多个配置都有匹配时**拒绝执行**,要求智能体用 `--profile <id 或 name>` 指明(`cli profiles` 同时列出两者)——智能体绝不会在你以为操作工作浏览器时悄悄点进个人浏览器。每个配置还有一个稳定的短名字(`birch`、`oak` 等),`--profile` 直接接受该名字,显示在 `watch` 输出和标签里——对正在观看的人类来说,uuid 前缀毫无意义。
 
@@ -177,7 +177,7 @@ HTTP API 只有一个命令端点:`POST /cmd`,Body 如 `{"type": "snap", "urlMat
 | `ask <match> <question>` | *(实验性)* 本地 Gemini Nano 根据页面文本回答——无云端 token,质量仅供预筛 |
 | `wait <match> <css\|--text t\|--human\|--pixel-change> [--timeout ms]` | 等待元素或可见文本出现(MutationObserver 驱动,页面一变即返回;默认 10 秒,上限 60 秒)。`--human` 把标签页交给你——验证码/两步验证/登录墙:小标签提示轮到你了,命令阻塞到你完成操作(默认 2 分钟),然后返回你所做改动的快照 diff。`--pixel-change` 轮询直到像素变化(无障碍树看不到的画布变化) |
 | `eval <match> <js\|-> [--world main\|isolated]` | 在页面中执行 JS;`-` 从 stdin 读取 |
-| `shot <match> <out> [--max px] [--scale N] [--format jpeg] [--quality N] [--crop x,y,w,h] [--full] [--diff]` | CDP 截图。长边默认限制为 `--max` 1280px(`0` = 原始分辨率)——模型读取大图时本来就会缩小,原图只增加文件体积不增加细节。`--full` = 整页高度。`--diff` 与上一次 `--diff` 截图对比,只保存变化的区域——无障碍树看不到的画布/像素变化 |
+| `shot <match> <out> [--max px] [--scale N] [--format jpeg] [--quality N] [--crop x,y,w,h] [--full] [--diff]` | CDP 截图。长边默认限制为 `--max` 1280px(`0` = 原始分辨率)——模型读取大图时本来就会缩小,原图只增加文件体积不增加细节。`--full` = 整页高度。`--diff` 与上一次 `--diff` 截图对比(固定基线的尺寸/缩放,跟随当前滚动位置——对比的是智能体当前看到的画面),只保存变化的区域——无障碍树看不到的画布/像素变化 |
 | `net <match> [--dur ms] [--filter s] [--body s] [--ws] [--har out.har]` | CDP 网络抓包(单次 ≤30 秒)——每个请求一行紧凑输出,并标注发起者(`⟵ api-client.js:88`);`--ws` 同时抓取 WebSocket 帧(`→` 发送 / `←` 接收——聊天/流式应用);`--body s` 附加匹配的 JSON/文本响应体;`--har out.har` 把抓包存为可分享的 HAR 1.2(DevTools/Burp 可打开) |
 | `fetch <match> <url> [--out file]` | 在页面内发 fetch,复用登录会话——需要登录的 JSON/信息源直接可取,无需 eval 拼接;二进制响应必须 `--out`,文本打印截断在 5 万字符(`--out` 保存完整内容) |
 | `measure <match> <css>` | 元素位置 + 计算样式,JSON 输出——不看像素也能知道布局真相 |
