@@ -125,8 +125,11 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     apps that check isTrusted ignore it; --trusted = CDP Input,
                                     isTrusted=true, legacy HTML5 dragstart/drop fire)
   dialog <match> accept|dismiss [--text s]
-                                    dismiss a stuck JS dialog — an open alert/confirm/prompt
-                                    wedges the tab until this or a human answers (--text answers a prompt)
+                                    answer a JS dialog over CDP — on current Chrome reachable
+                                    only if it opened during a live debugger session (net/shot/
+                                    etc.); a dialog that wedged an unattached tab cannot be
+                                    answered: recover with nav <match> <url> — navigation drops
+                                    it (--text answers a prompt)
   fill <match> <@ref|css> <value> [--diff]   set input value (React-safe; on a native <select>
                                     matches option value or label — error lists the options on a miss);
                                     a value starting with '--' goes after a bare '--' separator:

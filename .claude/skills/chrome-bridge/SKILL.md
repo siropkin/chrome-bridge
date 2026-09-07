@@ -35,7 +35,7 @@ node <repo>/cli.mjs <command> …
 - `net <match> [--dur ms] [--filter s] [--body s] [--ws] [--har out.har]` — capture network, one line per request (each names its initiator); `--dur` caps at 30s; `--ws` also captures WebSocket frames (chat/streaming apps); `--har` saves the capture as a shareable HAR 1.2. `fetch <match> <url> [--out file]` — replay/grab a URL in the page (the logged-in session rides it; binary → `--out`).
 - `measure <match> <css>` — rect + computed styles; layout truth without pixels.
 - `console <match> [--ask 'what broke?']` — page console + errors; `--ask` triages locally with Gemini Nano instead of spending cloud tokens on log noise.
-- `dialog <match> accept|dismiss` — dismiss a stuck JS dialog (alert/confirm/prompt blocks every other command on the tab).
+- `dialog <match> accept|dismiss` — answer a JS dialog over CDP, reachable only if it opened during a live debugger session (`net`/`shot`/…). A dialog that wedged an unattached tab can't be answered — recover with `nav <match> <url>` (navigation drops the dialog and revives the tab).
 - `drag <match> @e1 @e2` — drag one element onto another (synthetic pointer sequence; isTrusted-checking apps ignore it).
 - `emulate <match> <w> <h> [mobile]` / `unemulate <match>` — device view without resizing the window.
 - `note <match> <text>` — narrate to the human watching the driven tab (pill + history): before a risky/long sequence or to explain a surprising step. Sparing — the pill already shows every command; notes add intent.

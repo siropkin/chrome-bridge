@@ -168,7 +168,7 @@ HTTP API 只有一个命令端点:`POST /cmd`,Body 如 `{"type": "snap", "urlMat
 | `snap <match> [css\|@ref] [--diff] [--href] [--skeleton] [--find "nl"]` | 无障碍树快照,带 `@eN` 引用——**便宜,优先于截图使用**。可限定子树(CSS 或 `@ref`)、与上一次快照对比,`--href` 输出全部链接 URL。`--skeleton` 用于密集页面:深度受限的地图,被裁剪的子树显示 `… N inside`(钻取:`snap <match> @ref`),不再无声错过 300 节点截断。`--find "取消按钮"` 由本地 Gemini Nano 挑出匹配行(~2 秒,无云端 token)——是待验证的候选清单,不是绝对正确。`*` 前缀标记上次快照后新增的元素 |
 | `click <match> <@ref\|css> [--dbl] [--diff] [--trusted]` | 点击(自动滚动到可见位置,完整 pointer/mouse 事件序列,遮挡检测);`--dbl` 双击;`--trusted` 走 CDP Input(isTrusted=true,画布类应用如 Figma 接受) |
 | `drag <match> <@ref\|css> <@ref\|css> [--diff] [--trusted]` | 把一个元素拖到另一个上(合成指针序列;`--trusted` 走 CDP Input——isTrusted,且触发传统 HTML5 dragstart/drop) |
-| `dialog <match> accept\|dismiss [--text s]` | 应答卡死的 JS 对话框(alert/confirm/prompt 会阻塞标签页上的所有其他命令) |
+| `dialog <match> accept\|dismiss [--text s]` | 通过 CDP 应答 JS 对话框——仅当对话框在调试器会话期间(net/shot/…)打开时可达;若在未挂载的标签页上卡死则无法应答:用 `nav <match> <url>` 恢复(导航会丢弃对话框) |
 | `fill <match> <@ref\|css> <value> [--diff]` | 设置输入框的值——React 安全(原生 setter + input/change 事件);原生 `<select>` 按选项值或标签匹配 |
 | `type <match> <@ref\|css> <text> [--diff] [--trusted]` · `press <match> <key> [@ref] [--diff] [--trusted]` · `hover <match> <@ref\|css> [--diff] [--trusted]` | 逐字符输入(自动补全 UI)、按键(`Control+k` 组合键可用)、悬停;`--trusted` 走 CDP 输入(isTrusted——Enter 能触发表单提交等浏览器默认行为) |
 | `paste <match> [@ref\|css] [--diff] [-- <text>]` | 以真实粘贴的语义写入聚焦(或指定)的字段——会回退 `fill` 的富文本编辑器(Quill、Reddit/LinkedIn 编辑器)接受粘贴;不给 `-- <text>` 时读取系统剪贴板 |

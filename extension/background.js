@@ -1006,6 +1006,10 @@ const SNAP_SRC = (scope, diff, href, skel) => `(() => {
   // --skeleton: depth-limited map — past the cut, count instead of emit.
   const SKEL = ${skel ? 'true' : 'false'};
   const CUT = 3;
+  // width-fold threshold: near the cap, skeleton mode stops WALKING further
+  // children and counts them instead — a wide tree at/below the depth cut
+  // used to blow past MAX and truncate exactly like the plain snap.
+  const WCUT = MAX - 40;
   // Refs persist across snaps within one navigation: an element keeps its @eN
   // while its role+name are unchanged (playwright-mcp style), so a re-snap
   // after a DOM change doesn't renumber the page the agent already read.
@@ -1035,6 +1039,11 @@ const SNAP_SRC = (scope, diff, href, skel) => `(() => {
     const explicit = el.getAttribute('role');
     if (explicit) return ['presentation', 'none'].includes(explicit) ? null : explicit;
     if (el.tagName === 'INPUT') return INPUT_ROLE[el.type] || 'textbox';
+    // editing HOSTS (the attr marks the host; inheritors read 'inherit') —
+    // fill/paste drive contenteditable editors, but the tree never showed
+    // them (stress: rich fixture's #ce invisible between its headings)
+    const ce = el.getAttribute('contenteditable');
+    if (ce === 'true' || ce === 'plaintext-only') return 'textbox';
     return ROLE_BY_TAG[el.tagName] || null;
   }
   function nameOf(el, role) {
@@ -1112,6 +1121,8 @@ const SNAP_SRC = (scope, diff, href, skel) => `(() => {
     const role = roleOf(el);
     let childDepth = depth;
     let myRef = null;
+    let myLineIdx = -1; // where MY line landed — annotations append here even
+                        // when children emitted lines after it (width fold)
     if (role && hasBox(el)) {
       const name = nameOf(el, role);
       // Unnamed imgs/statuses are decorative icons and empty live regions —
@@ -1133,18 +1144,44 @@ const SNAP_SRC = (scope, diff, href, skel) => `(() => {
         myRef = ref;
         const fresh = markFresh && !seen.has(ref);
         seen.add(ref);
-        lines.push('  '.repeat(Math.min(depth, 10)) + (fresh ? '* ' : '') + role + (name ? ' ' + JSON.stringify(name) : '') + ' @' + ref + stateOf(el, role, name));
+        myLineIdx = lines.push('  '.repeat(Math.min(depth, 10)) + (fresh ? '* ' : '') + role + (name ? ' ' + JSON.stringify(name) : '') + ' @' + ref + stateOf(el, role, name)) - 1;
         childDepth = depth + 1;
       }
     }
     let inside = 0;
-    for (const c of el.children) inside += walk(c, childDepth);
-    if (el.shadowRoot) for (const c of el.shadowRoot.children) inside += walk(c, childDepth);
+    let foldCnt = 0;
+    const kid = (c) => {
+      // width fold: once the map nears the cap, stop WALKING further children
+      // and count them — a skeleton must never silently truncate at MAX
+      // (a wide tree at role-depth <= CUT used to).
+      if (SKEL && lines.length >= WCUT) { foldCnt += countLines(c); return; }
+      inside += walk(c, childDepth);
+    };
+    for (const c of el.children) kid(c);
+    if (el.shadowRoot) for (const c of el.shadowRoot.children) kid(c);
     if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') { // FRAME: old <frameset> pages — walk them too, else the tree is silently empty
-      try { if (el.contentDocument?.body) inside += walk(el.contentDocument.body, childDepth); } catch {} // cross-origin
+      try { if (el.contentDocument?.body) kid(el.contentDocument.body); } catch {} // cross-origin
     }
-    if (SKEL && myRef && childDepth > CUT && inside) lines[lines.length - 1] += ' … ' + inside + ' inside';
-    return (myRef ? 1 : 0) + inside;
+    if (SKEL && foldCnt) {
+      // attach the fold count to the parent's line; a role-less parent gets
+      // a minted container line so the drill (snap <match> @ref) always has
+      // a handle — counts used to vanish silently up div-soup ancestors.
+      let idx = myLineIdx;
+      if (idx < 0) {
+        const crole = role || 'container';
+        const cname = nameOf(el, crole) || '';
+        const key2 = crole + ' ' + cname;
+        let ref = el.__bridgeRef;
+        if (ref && (refs[ref] !== el || el.__bridgeRefKey !== key2)) ref = null;
+        if (!ref) { ref = 'e' + ++n; window.__bridgeRefN = n; el.__bridgeRef = ref; el.__bridgeRefKey = key2; }
+        refs[ref] = el;
+        myRef = ref;
+        idx = lines.push('  '.repeat(Math.min(depth, 10)) + crole + (cname ? ' ' + JSON.stringify(cname) : '') + ' @' + ref + stateOf(el, crole, cname)) - 1;
+      }
+      lines[idx] += ' … ' + foldCnt + ' inside';
+    }
+    if (SKEL && myRef && childDepth > CUT && inside) lines[myLineIdx] += ' … ' + inside + ' inside';
+    return (myRef ? 1 : 0) + inside + foldCnt;
   }
   const scopeSel = ${JSON.stringify(scope || null)};
   ${DEEPQ}
@@ -1264,7 +1301,15 @@ const FILE_INPUT_GUARD = `if (el.tagName === 'INPUT' && el.type === 'file') thro
 const DEEPQ = `
   const deepAll = (sel, root) => {
     let out = [...root.querySelectorAll(sel)];
-    for (const el of root.querySelectorAll('*')) if (el.shadowRoot) out = out.concat(deepAll(sel, el.shadowRoot));
+    for (const el of root.querySelectorAll('*')) {
+      if (el.shadowRoot) out = out.concat(deepAll(sel, el.shadowRoot));
+      // same-origin frames: their elements sit in the snap tree and are
+      // drivable in place — CSS resolution must reach them (stress: click
+      // iframe.html #kid-btn → 'element not found' while @ref worked)
+      if ((el.tagName === 'IFRAME' || el.tagName === 'FRAME') && el.contentDocument?.body) {
+        try { out = out.concat(deepAll(sel, el.contentDocument.body)); } catch {}
+      }
+    }
     return out;
   };
   const deepQuery = (sel) => {
@@ -1275,6 +1320,36 @@ const DEEPQ = `
 // fill on a checkbox/radio would set .value without toggling checked and
 // report 'filled' — fake success. Fail loudly toward click instead.
 const CHECK_RADIO_GUARD = `if (el.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio')) throw new Error('checkbox/radio — fill cannot toggle checked; use: click <match> ' + sel);`;
+
+// Same-origin frame plumbing: an element inside an <iframe> has getBoundingClientRect
+// relative to ITS OWN frame's viewport, while elementFromPoint / the top document
+// / CDP Input all speak top-viewport coords. Without the hop, an iframe child was
+// unclickable ('click covered by <body>' — stress) and --trusted input went to the
+// wrong point. toTop translates element coords up the frame chain; pierceFromPoint
+// is elementFromPoint that descends INTO same-origin frames (a cross-origin frame
+// is a wall, matching the "one frame line, not drivable" rule).
+const FRAME_SRC = `
+  const toTop = (el, x, y) => {
+    let d = el.ownerDocument;
+    while (d !== document) {
+      const f = d.defaultView?.frameElement;
+      if (!f) break;
+      const r = f.getBoundingClientRect();
+      x += r.left; y += r.top;
+      d = f.ownerDocument;
+    }
+    return [x, y];
+  };
+  const pierceFromPoint = (x, y) => {
+    let hit = document.elementFromPoint(x, y);
+    while (hit && (hit.tagName === 'IFRAME' || hit.tagName === 'FRAME') && hit.contentDocument?.body) {
+      const r = hit.getBoundingClientRect();
+      x -= r.left; y -= r.top;
+      hit = hit.contentDocument.elementFromPoint(x, y);
+    }
+    return hit;
+  };
+`;
 
 // Coverage preflight (shared by the synthetic click and --trusted input):
 // fail loudly when an overlay intercepts the click point instead of letting
@@ -1287,7 +1362,9 @@ const CHECK_RADIO_GUARD = `if (el.tagName === 'INPUT' && (el.type === 'checkbox'
 // an occluder. The walk only ever CLEARS hosts on the target's own chain —
 // a real stranger overlay still fails. Requires cx/cy/el in scope.
 const COVERAGE_SRC = `
-  const top = document.elementFromPoint(cx, cy);
+  // toTop/pierceFromPoint come from FRAME_SRC, embedded by the calling src
+  const [covX, covY] = toTop(el, cx, cy);
+  const top = pierceFromPoint(covX, covY);
   let covered = !!(top && top !== el && !el.contains(top) && !top.contains(el) && !top.closest('#bridge-banner'));
   if (covered) {
     for (let n = el, root = n.getRootNode(); root instanceof ShadowRoot; n = root.host, root = n.getRootNode())
@@ -1302,6 +1379,7 @@ const COVERAGE_SRC = `
 
 const clickSrc = (target, dbl) => `(() => {
   ${DEEPQ}
+  ${FRAME_SRC}
   const sel = ${JSON.stringify(target)};
   const el = deepQuery(sel);
   if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
@@ -1311,7 +1389,9 @@ const clickSrc = (target, dbl) => `(() => {
   const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
   ${COVERAGE_SRC}
   ${CURSOR_SRC}
-  showCursor(cx, cy, true);
+  // the cursor overlay lives in the TOP document — a frame child's center
+  // must be translated or the ping shows in the wrong place
+  showCursor(...toTop(el, cx, cy), true);
   const o = { bubbles: true, cancelable: true, composed: true, clientX: cx, clientY: cy, button: 0 };
   const pair = (detail) => {
     el.dispatchEvent(new PointerEvent('pointerover', o));
@@ -1348,7 +1428,7 @@ const fillSrc = (target, value) => `(() => {
     // The value the agent sent can be a secret (server.mjs keeps values out of
     // logs on purpose) — don't echo it back through the error into server.log
     // and the watch feed; the agent knows what it sent.
-    if (!hit) throw new Error('no option matching (as sent) — values: ' + [...el.options].map((o) => o.value).slice(0, 8).join(', ') + ' (use: fill <match> <ref> "<label>")');
+    if (!hit) throw new Error('no option matching (as sent) — options: ' + [...el.options].slice(0, 8).map((o) => '"' + (o.label || o.text) + '" (value ' + JSON.stringify(o.value) + ')').join(', ') + ' — match a label or value');
     el.value = hit.value;
     el.dispatchEvent(new Event('change', { bubbles: true }));
   } else {
@@ -1597,6 +1677,7 @@ async function captureViewport(tabId, msg, reuseClip, forceClip) {
 // for CDP dispatch.
 const trustedPointSrc = (target, coverage, ripple) => `(() => {
   ${DEEPQ}
+  ${FRAME_SRC}
   const sel = ${JSON.stringify(target)};
   const el = deepQuery(sel);
   if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
@@ -1605,8 +1686,12 @@ const trustedPointSrc = (target, coverage, ripple) => `(() => {
   const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
   ${coverage ? COVERAGE_SRC : ''}
   ${CURSOR_SRC}
-  showCursor(cx, cy, ${ripple ? 'true' : 'false'});
-  return JSON.stringify({ cx: Math.round(cx), cy: Math.round(cy) });
+  // CDP Input speaks TOP-viewport coords — a frame child's rect is its own
+  // frame's viewport; without the hop --trusted clicks inside iframes land
+  // at the wrong point
+  const [cxTop, cyTop] = toTop(el, cx, cy);
+  showCursor(cxTop, cyTop, ${ripple ? 'true' : 'false'});
+  return JSON.stringify({ cx: Math.round(cxTop), cy: Math.round(cyTop) });
 })()`;
 
 // Page-side focus for press/type: the key events go to whatever holds focus.
@@ -1751,13 +1836,14 @@ const pressSrc = (keyIn, target) => `(() => {
 
 const hoverSrc = (target) => `(() => {
   ${DEEPQ}
+  ${FRAME_SRC}
   const sel = ${JSON.stringify(target)};
   const el = deepQuery(sel);
   if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
   el.scrollIntoView({ block: 'center', inline: 'center' });
   const r = el.getBoundingClientRect();
   ${CURSOR_SRC}
-  showCursor(r.left + r.width / 2, r.top + r.height / 2, false);
+  showCursor(...toTop(el, r.left + r.width / 2, r.top + r.height / 2), false);
   const o = { bubbles: true, cancelable: true, composed: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
   el.dispatchEvent(new PointerEvent('pointerover', o));
   el.dispatchEvent(new MouseEvent('mouseover', o));
@@ -1772,6 +1858,7 @@ const hoverSrc = (target) => `(() => {
 // (canvas tools) ignore this entirely.
 const dragSrc = (from, to) => `(async () => {
   ${DEEPQ}
+  ${FRAME_SRC}
   const sel = ${JSON.stringify(from)}, sel2 = ${JSON.stringify(to)};
   const el = deepQuery(sel);
   const el2 = deepQuery(sel2);
@@ -1780,8 +1867,10 @@ const dragSrc = (from, to) => `(async () => {
   el.scrollIntoView({ block: 'center', inline: 'center' });
   el2.scrollIntoView({ block: 'center', inline: 'center' });
   const r = el.getBoundingClientRect(), r2 = el2.getBoundingClientRect();
-  const x1 = r.left + r.width / 2, y1 = r.top + r.height / 2;
-  const x2 = r2.left + r2.width / 2, y2 = r2.top + r2.height / 2;
+  // frame-relative centers → top-document coords, so the interpolated path,
+  // the cursor and the move targets are all in one coordinate system
+  const [x1, y1] = toTop(el, r.left + r.width / 2, r.top + r.height / 2);
+  const [x2, y2] = toTop(el2, r2.left + r2.width / 2, r2.top + r2.height / 2);
   ${CURSOR_SRC}
   showCursor(x1, y1, false);
   const mk = (type, x, y) => new PointerEvent(type, { bubbles: true, cancelable: true, composed: true, pointerId: 1, isPrimary: true, clientX: x, clientY: y });
@@ -1790,10 +1879,14 @@ const dragSrc = (from, to) => `(async () => {
   for (let i = 1; i <= 8; i++) {
     const x = x1 + ((x2 - x1) * i) / 8, y = y1 + ((y2 - y1) * i) / 8;
     showCursor(x, y, false);
-    document.elementFromPoint(x, y)?.dispatchEvent(mk('pointermove', x, y));
+    // pierceFromPoint: a path across an iframe must move inside the frame
+    // (its own listeners), not stop at the <iframe> element in the top doc
+    pierceFromPoint(x, y)?.dispatchEvent(mk('pointermove', x, y));
     await new Promise((res) => setTimeout(res, 16));
   }
-  const dst = document.elementFromPoint(x2, y2) || el2;
+  // a cross-document drop goes to the element the agent named — the top doc's
+  // elementFromPoint can't reach inside the frame
+  const dst = el2.ownerDocument === document ? (document.elementFromPoint(x2, y2) || el2) : el2;
   dst.dispatchEvent(mk('pointerup', x2, y2));
   dst.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: x2, clientY: y2 }));
   return 'dragged ' + sel + ' onto ' + sel2;
@@ -2037,7 +2130,9 @@ async function runEval(tabId, code, world = 'auto') {
       if (value && typeof value.then === 'function') {
         return value.then(
           (v) => ({ ok: true, value: v === undefined ? null : v }),
-          (e) => ({ ok: false, error: `async: ${String(e)}` })
+          // e.message, not String(e): String(Error) re-includes 'Error:', so
+          // wait timeouts read 'async: Error: timeout after…' (stress-finding)
+          (e) => ({ ok: false, error: `async: ${e?.message || String(e)}` })
         );
       }
       return { ok: true, value: value === undefined ? null : value };
@@ -2428,7 +2523,11 @@ async function findTab(msg) {
   if (matches.length > 1) {
     const host = (t) => {
       try {
-        return new URL(t.url).host;
+        const u = new URL(t.url);
+        // file:// (and friends) parse fine but have an EMPTY host — the
+        // warning used to read 'acting on ; also matched: .'. Name the
+        // last path segment instead (stress: two file:// tabs).
+        return u.host || u.pathname.split('/').pop() || String(t.url).slice(0, 40);
       } catch {
         return String(t.url).slice(0, 40);
       }
@@ -2607,17 +2706,37 @@ async function handle(msg) {
       const read = await withCdp(tab.id, async () => {
         await attachDbg(tab.id);
         try {
-          const out = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Network.loadNetworkResource', { url: msg.url, options: { includeCredentials: true } });
+          // Chrome 152 tightened loadNetworkResource: options.disableCache is
+          // mandatory AND frameId must be provided (stress: the fallback died
+          // on both — 'Failed to deserialize options.disableCache', then
+          // 'Parameter frameId must be provided for frame targets').
+          const tree = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.getFrameTree');
+          const frameId = tree?.frameTree?.frame?.id;
+          const out = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Network.loadNetworkResource', { url: msg.url, frameId, options: { includeCredentials: true, disableCache: false } });
           const rec = out?.resource || {};
           if (!rec.success)
             throw new Error('browser-network read failed (' + (rec.netErrorName || rec.netError || 'unknown') + ') — in-page fetch said: ' + String(e).replace(/^(Error:\s*)+/, '').slice(0, 120));
-          const content = rec.content ?? '';
+          // The body now STREAMS (rec.stream, Chrome 152) instead of riding
+          // rec.content — read it via IO.read or the CLI writes a 0-byte
+          // --out (stress: 200 application/json, 0 KB file).
+          let binary = !!rec.base64Encoded;
+          let body = rec.content ?? '';
+          if (rec.stream) {
+            let b64 = '', text = '';
+            for (;;) {
+              const c = await chrome.debugger.sendCommand({ tabId: tab.id }, 'IO.read', { handle: rec.stream });
+              if (c.base64Encoded) { binary = true; b64 += c.data; } else text += c.data || '';
+              if (c.eof) break;
+            }
+            await chrome.debugger.sendCommand({ tabId: tab.id }, 'IO.close', { handle: rec.stream }).catch(() => {});
+            body = binary ? b64 : text.slice(0, 512_000);
+          }
           return {
             status: rec.httpStatusCode ?? rec.statusCode ?? 200,
             ct: rec.mime || rec.headers?.['Content-Type'] || '',
-            binary: !!rec.base64Encoded,
-            body: rec.base64Encoded ? String(content) : String(content).slice(0, 512_000),
-            truncated: false,
+            binary,
+            body: binary ? String(body) : String(body).slice(0, 512_000),
+            truncated: !binary && body.length > 512_000,
           };
         } finally {
           await detachDbg(tab.id);
@@ -2676,14 +2795,35 @@ async function handle(msg) {
   // rescue itself without CDP — the one channel that answers a dialog.
   if (msg.type === 'dialog') {
     const tab = await findTab(msg);
+    // Ground truth (live, Chrome 152): handleJavaScriptDialog only answers a
+    // dialog when the session's Page domain was enabled BEFORE the dialog
+    // opened. After the fact, Page.enable wedges on the dialog-blocked
+    // renderer, and a no-enable handle answers "No dialog is showing" while
+    // the box sits on screen. CDP cannot rescue a stuck tab — but NAVIGATION
+    // drops the dialog and revives the renderer (verified against a real
+    // 40-minute-stuck alert: nav <match> <url> unwedged it instantly).
     return await withCdp(tab.id, async () => {
       try {
         await attachDbg(tab.id);
-        await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.enable');
         await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.handleJavaScriptDialog', {
           accept: msg.accept !== false,
           ...(msg.text ? { promptText: msg.text } : {}),
         });
+      } catch (e) {
+        if (!/No dialog is showing/.test(String(e))) throw e;
+        // "No dialog is showing" + a BLOCKED renderer = a native dialog CDP
+        // can't touch. Distinguish it from the honest no-dialog case with a
+        // short probe: a blocked renderer can't run any script.
+        const alive = await Promise.race([
+          chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => true }).then((r) => !!r?.[0]?.result?.value, () => false),
+          new Promise((r) => setTimeout(() => r(null), 1500)),
+        ]);
+        if (alive === null)
+          throw new Error(
+            'a dialog IS showing but cannot be answered over CDP on this Chrome (the debugger must have attached before the dialog opened). ' +
+              'Dismiss it by navigating — nav <match> <any url> drops the dialog and revives the tab — or: close <match>'
+          );
+        throw e; // renderer alive → genuinely no dialog
       } finally {
         await detachDbg(tab.id);
       }

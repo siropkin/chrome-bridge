@@ -78,8 +78,11 @@ drag <match> <@ref|css> <@ref|css> [--diff] [--trusted]
                                   --trusted = CDP Input (isTrusted, and legacy HTML5
                                   dragstart/drop fire too)
 dialog <match> accept|dismiss [--text s]
-                                  answer a stuck JS dialog (alert/confirm/prompt blocks every
-                                  other command on the tab; --text answers a prompt)
+                                  answer a JS dialog over CDP — on current Chrome reachable
+                                  only if it opened during a live debugger session (net/shot/
+                                  etc.); a dialog that wedged an unattached tab cannot be
+                                  answered: recover with nav <match> <url> — navigation drops
+                                  it (--text answers a prompt)
 fill <match> <@ref|css> <value> [--diff]   set input value (React-safe); on a native <select>
                                   matches option value or label — the error lists options on a miss;
                                   a value starting with '--' goes after a bare '--' separator:
@@ -231,7 +234,7 @@ Before driving a site you'll revisit, check `<repo>/recipes/<domain>.md` — a f
 
 - `eval` runs in the ISOLATED world, falls back to MAIN, then to CDP (CSP-exempt). `console` uses MAIN automatically. In the CDP fallback, top-level `const`/`let` bindings persist across calls — wrap multi-statement snippets in an IIFE or the second run dies with "already declared".
 - Synthetic events are *untrusted*: canvas-heavy apps (e.g. Figma) ignore them, and `press Enter` reaches JS listeners but doesn't trigger browser defaults (form submit) — click the submit button instead. `--trusted` on click/press/type/hover/drag routes through CDP `Input.dispatch*` (isTrusted=true, so canvas tools take it and Enter submits) — it attaches the debugger while the synthetic path never does, so it stays opt-in.
-- A page's JS dialog (alert/confirm/prompt) blocks the tab — every eval, snap and synthetic key wedges to the 70s timeout. `dialog <match> accept|dismiss` is the only command that answers one (CDP; beforeunload is not an issue, nav/close bypass it). If every command on a tab starts timing out, suspect a stuck dialog.
+- A page's JS dialog (alert/confirm/prompt) blocks the tab — every eval, snap and synthetic key wedges to the 70s timeout. On current Chrome, CDP can only answer a dialog that opened while a debugger session was already attached (`net`/`shot`/`emulate` running); a dialog popped on an unattached tab is unreachable over CDP — the verified rescue is `nav <match> <url>` (navigation drops the dialog and revives the renderer; beforeunload is not an issue either). If every command on a tab starts timing out, suspect a stuck dialog.
 - Same-origin iframes appear in `snap` and their elements are drivable in place. Cross-origin frames (Stripe checkout, embedded docs) show as one `frame "src…"` line — not drivable in place; `open` the frame's src as its own tab, or `shot` for pixels.
 - `net`/`emulate`/`shot` (and `upload`/`dialog`) attach the debugger — Chrome shows its "debugging this browser" infobar while attached; that's expected. The attach is also **detectable by page JS** (DevTools-attach side effects like the `Runtime.enable` leak): anti-bot systems can flag the session, and it's the user's real logged-in profile — prefer the non-CDP commands (`snap`, `eval`, `measure`) when they answer the question, and `unemulate` as soon as you're done emulating.
 - `shot` needs the tab visible and the display awake; on failure, get layout truth from `measure` / `eval getBoundingClientRect` instead. `--full` captures the whole page height (capped at 16384px).
