@@ -275,6 +275,10 @@ try {
 
   const typ = await cli('type', 'example.com', '@e2', 'hello', 'world');
   assert(typ.status === 0 && typ.stdout.includes('"value":"hello world"'), 'cli type joins text args', typ.stdout + typ.stderr);
+  // Long-form text is paste's job: a 2000+ char type is per-keystroke cost on
+  // the page's clock and blew the 70s cap on heavy composers (live: LinkedIn).
+  const typLong = await cli('type', 'example.com', '@e2', 'a'.repeat(2001));
+  assert(typLong.status !== 0 && typLong.stderr.includes('paste <match>'), 'cli type refuses 2000+ chars, points at paste', typLong.stdout + typLong.stderr.slice(0, 200));
 
   const hov = await cli('hover', 'example.com', '@e1');
   assert(hov.status === 0 && hov.stdout.includes('"target":"@e1"'), 'cli hover passes target', hov.stdout + hov.stderr);
@@ -559,6 +563,13 @@ try {
     // (Quill, ProseMirror) read the payload; no handler claiming it must
     // still land the text (caret insertion / execCommand).
     assert(bg.includes('ev.clipboardData =') && bg.includes('insertFromPaste'), 'ext: paste duck-types clipboardData (constructor drops it) and falls back to native insertion');
+    // The bridge's own UI must not defeat the bridge's own observation: the
+    // pill ticker mutates every 5s on a driven tab (settle could never go
+    // quiet — every --diff ate its full 3s cap) and the pill is a role=button
+    // that would mint a ref and own the snap diff.
+    assert(bg.includes('BRIDGE_SEL') && bg.includes('inBridge'), 'ext: settle ignores the bridge-injected DOM (pill ticker, cursor, grid)');
+    assert(bg.includes("el.id === 'bridge-banner'") && bg.includes("el.id === 'bridge-cursor'"), 'ext: snap excludes the bridge UI (the pill is not page content)');
+    assert(bg.includes('Math.min(25, 15000 / text.length)'), 'ext: type caps its total inter-char sleep budget (~15s) for long text');
 
     // The service worker is never executed here (the fake extension plays it)
     // — a syntax error in it would otherwise ship green, as would one in

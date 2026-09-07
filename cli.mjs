@@ -126,7 +126,8 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     a value starting with '--' goes after a bare '--' separator:
                                     fill <match> <ref> -- <value>
   type <match> <@ref|css> <text> [--diff]    per-char typing — triggers autocomplete/keystroke UIs;
-                                    '--' separator for '--'-leading text, same as fill
+                                    '--' separator for '--'-leading text, same as fill;
+                                    long-form text (>2000 chars) is paste's job
   paste <match> [@ref|css] [--diff] [-- <text>]
                                     real-paste semantics into the focused (or given) field:
                                     editors that own their model (Quill, Reddit/LinkedIn
@@ -489,7 +490,13 @@ async function run(cmdName, args) {
       // not data — without this guard it gets typed into the user's real form.
       const stray = rest.slice(2).find((a) => a.startsWith('--'));
       if (stray) fail(`unknown flag ${stray} (flags: --diff; a value starting with '--' goes after a bare '--' separator)`);
-      print(await cmd({ type: cmdName, urlMatch: rest[0], target: rest[1], value: [...rest.slice(2), ...valuePart].join(' '), ...(flagged.includes('--diff') ? { diff: true } : {}) }));
+      const value = [...rest.slice(2), ...valuePart].join(' ');
+      // Per-char typing is for autocomplete/keystroke UIs — a 2000+ char type
+      // is per-keystroke cost on the page's clock and blows the 70s command
+      // cap on heavy composers. Long-form content is paste's job (one shot).
+      if (cmdName === 'type' && value.length > 2000)
+        fail(`text is ${value.length} chars — type is per-char for short interactive text; use: paste <match> <@ref|css> -- <text>`);
+      print(await cmd({ type: cmdName, urlMatch: rest[0], target: rest[1], value, ...(flagged.includes('--diff') ? { diff: true } : {}) }));
       break;
     }
 

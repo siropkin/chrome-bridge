@@ -77,7 +77,8 @@ fill <match> <@ref|css> <value> [--diff]   set input value (React-safe); on a na
                                   a value starting with '--' goes after a bare '--' separator:
                                   fill <match> <ref> -- <value>
 type <match> <@ref|css> <text> [--diff]    per-char typing — triggers autocomplete/keystroke UIs;
-                                  '--' separator for '--'-leading text, same as fill
+                                  '--' separator for '--'-leading text, same as fill;
+                                  long-form text (>2000 chars) is paste's job
 paste <match> [@ref|css] [--diff] [-- <text>]
                                   real-paste semantics into the focused (or given) field —
                                   editors that own their model (Quill, Reddit/LinkedIn rich

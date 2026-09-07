@@ -947,6 +947,10 @@ const SNAP_SRC = (scope, diff, href) => `(() => {
   }
   function walk(el, depth) {
     if (lines.length >= MAX) { truncated = true; return; }
+    // The bridge's own UI is not page content: the pill is a role=button
+    // whose label mutates every command — it would mint a ref and own the
+    // --diff output. Skip it (and the cursor/grid overlays) entirely.
+    if (el.id === 'bridge-banner' || el.id === 'bridge-grid' || el.id === 'bridge-cursor') return;
     if (hidden(el)) return;
     const role = roleOf(el);
     let childDepth = depth;
@@ -1052,6 +1056,7 @@ const CURSOR_SRC = `
       document.documentElement.appendChild(st);
     }
     const c = document.createElement('div');
+    c.id = 'bridge-cursor'; // id'd so the settle filter can ignore its mutations
     c.style.cssText =
       'position:fixed;z-index:2147483647;pointer-events:none;left:' + x + 'px;top:' + y +
       'px;animation:bridge-cursor-fade .3s .9s forwards';
@@ -1194,7 +1199,11 @@ const typeSrc = (target, text) => `(async () => {
       el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ch }));
     }
     el.dispatchEvent(new KeyboardEvent('keyup', o));
-    await new Promise((r) => setTimeout(r, 25));
+    // The 25ms cadence is for autocomplete/keystroke UIs (short interactive
+    // text). Cap the total sleep budget at ~15s — a flat 25ms × 1200 chars is
+    // 30s of pure sleep before the page's own per-keystroke cost, which is
+    // what blew the 70s cap on heavy composers. Long-form text is paste's job.
+    await new Promise((r) => setTimeout(r, Math.min(25, 15000 / text.length)));
   }
   el.dispatchEvent(new Event('change', { bubbles: true }));
   const got = el.isContentEditable ? el.innerText : el.value;
@@ -1396,14 +1405,24 @@ const waitSrc = ({ selector, text, timeout }) => `(async () => {
 // been quiet for 100ms, capped at 3s — a --diff observation then reads the
 // finished state instead of a half-updated page.
 const SETTLE_SRC = `(async () => {
+  // The bridge's own UI mutates the DOM on a schedule (pill ticker every 5s,
+  // cursor ripple, grid) — a settle that counts it can never reach 100ms of
+  // quiet on a driven tab and every --diff observation eats the full 3s cap.
+  const BRIDGE_SEL = '#bridge-banner, #bridge-grid, #bridge-cursor, link[data-bridge-made]';
+  const inBridge = (n) => {
+    const el = n.nodeType === 1 ? n : n.parentElement; // characterData mutations target text nodes
+    return !!el?.closest?.(BRIDGE_SEL);
+  };
   const t0 = Date.now();
   await new Promise((resolve) => {
     const done = () => { try { mo.disconnect(); } catch {} clearTimeout(t); clearInterval(iv); resolve(); };
     let t = null;
-    const mo = new MutationObserver(() => {
+    const mo = new MutationObserver((muts) => {
       if (Date.now() - t0 >= 3000) return done();
-      clearTimeout(t);
-      t = setTimeout(done, 100);
+      if (muts.some((m) => !inBridge(m.target) || [...m.addedNodes, ...m.removedNodes].some((n) => !inBridge(n)))) {
+        clearTimeout(t);
+        t = setTimeout(done, 100);
+      }
     });
     mo.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
     t = setTimeout(done, 100);
