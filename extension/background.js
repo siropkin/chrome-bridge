@@ -601,7 +601,7 @@ chrome.tabs.onUpdated.addListener((tabId, info) => {
   // A new document kills the pinned diff frame — its page-absolute clip and
   // baseline died with the old page; re-baseline instead of garbage-diffing.
   if (info.url) shotBaselines.delete(tabId);
-  if (info.status === 'complete' && drivenTabs.has(tabId)) {
+  if (info.status === 'complete' && drivenTabs.has(tabId) && !bannerSuppressed.has(tabId)) {
     chrome.scripting
       .executeScript({ target: { tabId }, func: injectBanner })
       .catch(() => {});
@@ -2268,7 +2268,15 @@ async function waitHuman(tab, msg) {
 // runs (sub-second) and for the length of a pixel-change wait — favicon ⏳
 // and the 🟣 tab group still show driven-ness; a pill that fabricates the
 // very change being watched is worse.
+// Tabs whose banner is currently removed for a capture window. The
+// tabs.onUpdated re-banner hook fires status 'complete' ~0.5-1s after the
+// debugger attaches (not just on loads — caught live via a page-side
+// MutationObserver mid-wait --pixel-change) and would re-inject the banner
+// straight into the diff frame, re-poisoning the very capture the removal
+// was for. The hook checks this set.
+const bannerSuppressed = new Set();
 const removeBannerForCapture = async (tabId) => {
+  bannerSuppressed.add(tabId); // BEFORE the removal — the onUpdated race is async
   try {
     const r = await chrome.scripting.executeScript({
       target: { tabId },
@@ -2284,9 +2292,16 @@ const removeBannerForCapture = async (tabId) => {
     return false; // chrome:// page etc. — no banner to worry about
   }
 };
-const restoreBanner = async (tabId) => {
-  await chrome.scripting.executeScript({ target: { tabId }, func: injectBanner }).catch(() => {});
-  await chrome.scripting.executeScript({ target: { tabId }, func: pillInject, args: [idleLabel(tabId), tabActivity.get(tabId) || [], null, false] }).catch(() => {});
+const restoreBanner = async (tabId, existed) => {
+  // Re-inject only if the banner existed before the capture window: the ✕
+  // promise ("hidden until the next navigation") must survive a shot, and a
+  // chrome:// tab never had one. The suppression flag ALWAYS clears — a stuck
+  // flag would silence the onUpdated re-banner forever after.
+  if (existed) {
+    await chrome.scripting.executeScript({ target: { tabId }, func: injectBanner }).catch(() => {});
+    await chrome.scripting.executeScript({ target: { tabId }, func: pillInject, args: [idleLabel(tabId), tabActivity.get(tabId) || [], null, false] }).catch(() => {});
+  }
+  bannerSuppressed.delete(tabId);
 };
 
 // wait --pixel-change: the canvas watcher — polls the viewport until pixels
@@ -2327,7 +2342,7 @@ async function waitPixel(tab, msg) {
       }
     } finally {
       bmp0?.close();
-      if (bannered) await restoreBanner(tab.id);
+      await restoreBanner(tab.id, bannered);
       await detachDbg(tab.id);
     }
   });
@@ -2838,7 +2853,7 @@ async function handle(msg) {
       const res = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.captureScreenshot', params);
       return `data:image/${format};base64,${res.data}`;
       } finally {
-        if (bannered) await restoreBanner(tab.id);
+        await restoreBanner(tab.id, bannered);
       }
     } catch (e) {
       // debugger unavailable (chrome:// pages etc.) — fall back to captureVisibleTab
