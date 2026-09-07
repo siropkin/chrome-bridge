@@ -1974,8 +1974,25 @@ const WALL_SRC = `(() => {
 // reason; a diff costs fewer tokens than the full snap it replaces.
 async function observeDiff(tabId, actionResult, url0) {
   try {
-    await runEval(tabId, SETTLE_SRC);
-    const url1 = (await chrome.tabs.get(tabId).catch(() => null))?.url;
+    const url = () => chrome.tabs.get(tabId).then((t) => t.url).catch(() => null);
+    // Navigation verdict: an executeScript on an uncommitted navigation pends
+    // FOREVER (open()'s lesson) — wait for the load, then read the NEW page.
+    const navVerdict = async (u1) => {
+      await waitForLoad(tabId, 8000, true);
+      const wall = await runEval(tabId, WALL_SRC).catch(() => ({}));
+      if (wall.captcha) return `needs_human · ${actionResult} — bot wall: ${wall.captcha} — hand off: wait <match> --human`;
+      if (wall.block) return `blocked · ${actionResult} — ${wall.block}`;
+      if (wall.login) return `needs_human · ${actionResult} — login/2FA wall — hand off: wait <match> --human`;
+      const snap = await runEval(tabId, SNAP_SRC(null, false, false));
+      return `succeeded · ${actionResult} — navigated to ${u1.slice(0, 60)} — fresh snap (refs are new):\n${snap}`;
+    };
+    let url1 = await url();
+    if (url1 && url0 && url1 !== url0) return await navVerdict(url1);
+    // Bound the settle: a click that starts a navigation mid-settle leaves the
+    // eval pending on the dying document — race it, then re-check the URL.
+    await Promise.race([runEval(tabId, SETTLE_SRC).catch(() => null), new Promise((r) => setTimeout(r, 10_000))]);
+    url1 = await url();
+    if (url1 && url0 && url1 !== url0) return await navVerdict(url1);
     const wall = await runEval(tabId, WALL_SRC);
     const snap = await runEval(tabId, SNAP_SRC(null, true, false));
     // Verdict (neobrowser VERIFIED-ACTIONS style): the first word of the
@@ -1989,31 +2006,16 @@ async function observeDiff(tabId, actionResult, url0) {
     } else if (wall.block) {
       status = 'blocked';
       why = wall.block;
-    } else if (wall.login && url1 !== url0) {
-      status = 'needs_human';
-      why = 'login/2FA wall — hand off: wait <match> --human';
-    } else if (url1 && url0 && url1 !== url0) {
-      status = 'succeeded';
-      why = 'navigated to ' + url1.slice(0, 60) + ' — refs are new';
     } else if (/^\(no changes since last snap\)/.test(snap)) {
       status = 'uncertain';
       why = 'no observable change after the action — the event dispatched; verify via console/net/shot, or act again with a different target';
     } else {
       status = 'succeeded';
     }
-    const body =
-      status === 'uncertain'
-        ? ''
-        : url1 && url0 && url1 !== url0
-          ? 'fresh snap (refs are new):\n' + (await runEval(tabId, SNAP_SRC(null, false, false)))
-          : /^\(no changes since last snap\)/.test(snap)
-            ? ''
-            : snap;
-    return `${status} · ${actionResult}${why ? ' — ' + why : ''}${body ? '\n' + body : ''}`;
+    return `${status} · ${actionResult}${why ? ' — ' + why : ''}${status === 'uncertain' || /^\(no changes since last snap\)/.test(snap) ? '' : '\n' + snap}`;
   } catch (e) {
-    // The action worked; only the observation failed (e.g. it navigated and
-    // tore the context mid-settle). Don't turn a success into an error — but
-    // never claim the verdict either.
+    // The action worked; only the observation failed. Don't turn a success
+    // into an error — but never claim the verdict either.
     return 'uncertain · ' + actionResult + ' — observation unavailable: ' + String(e).slice(0, 120) + ' — re-snap; refs expired on navigation';
   }
 }
