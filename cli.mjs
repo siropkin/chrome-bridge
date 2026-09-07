@@ -712,6 +712,8 @@ async function run(cmdName, args) {
       if (msg.full && msg.crop) fail('--full and --crop are mutually exclusive');
       // --diff compares whole-viewport shots — crop/full have no baseline to diff
       if (msg.diff && (msg.full || msg.crop)) fail('--diff is exclusive with --full/--crop');
+      // The diff path always captures png — jpeg/quality would be silently dropped.
+      if (msg.diff && (msg.format === 'jpeg' || msg.quality !== undefined)) fail('--diff is exclusive with --format jpeg/--quality (the diff captures png)');
       for (const k of ['max', 'scale', 'quality']) if (msg[k] !== undefined && !Number.isFinite(msg[k])) fail(`flag --${k} needs a number`);
       // Ranges, mirroring emulate/wait/net: out-of-range values used to pass
       // and silently degrade to a different screenshot on the CDP fallback path.

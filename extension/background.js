@@ -598,6 +598,9 @@ async function releaseTab(tabId) {
 // Re-banner a driven tab after every load (navigations wipe the DOM marker),
 // and re-apply the status favicon (loads reset it to the site's own).
 chrome.tabs.onUpdated.addListener((tabId, info) => {
+  // A new document kills the pinned diff frame — its page-absolute clip and
+  // baseline died with the old page; re-baseline instead of garbage-diffing.
+  if (info.url) shotBaselines.delete(tabId);
   if (info.status === 'complete' && drivenTabs.has(tabId)) {
     chrome.scripting
       .executeScript({ target: { tabId }, func: injectBanner })
@@ -621,6 +624,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   cdpRefs.delete(tabId); // debugger auto-detaches on close
   cdpQ.delete(tabId);
   emulatedTabs.delete(tabId);
+  shotBaselines.delete(tabId); // full-png baselines must not outlive their tab
   persist();
 });
 
@@ -1443,7 +1447,7 @@ const pasteSrc = (target, value) => `(async () => {
 // Zero-dep: createImageBitmap + OffscreenCanvas run in the SW — no page round
 // trip, no permission. shotBaselines holds the last --diff capture per tab
 // (memory-only: an SW restart re-baselines, like the rest of the SW state).
-const shotBaselines = new Map(); // tabId -> base64 png of the last --diff shot
+const shotBaselines = new Map(); // tabId -> { b64, clip } of the last --diff shot
 
 async function pngBitmap(b64) {
   const raw = atob(b64);
@@ -1454,12 +1458,14 @@ async function pngBitmap(b64) {
 
 // Compare two captures (channel-sum tolerance 24 ≈ antialiasing jitter).
 // Returns stats in CAPTURE pixel coordinates plus the second bitmap, for
-// cropping the changed region without a re-capture.
-async function pixelDiff(b64A, b64B) {
-  const bmpA = await pngBitmap(b64A);
-  const bmpB = await pngBitmap(b64B);
-  if (bmpA.width !== bmpB.width || bmpA.height !== bmpB.height)
+// cropping the changed region without a re-capture. Bitmap ownership: the
+// caller owns bmpB on success (close it when done); the error path closes
+// bmpB here, and pixelDiff's wrapper always closes bmpA.
+async function diffBmp(bmpA, bmpB) {
+  if (bmpA.width !== bmpB.width || bmpA.height !== bmpB.height) {
+    bmpB.close();
     return { error: 'viewport size changed between shots — no pixel diff; the new shot is now the baseline' };
+  }
   const read = (bmp) => {
     const oc = new OffscreenCanvas(bmp.width, bmp.height);
     const ctx = oc.getContext('2d', { willReadFrequently: true });
@@ -1487,6 +1493,17 @@ async function pixelDiff(b64A, b64B) {
   return { changed, pct: ((changed / (A.length / 4)) * 100).toFixed(1), minX, minY, maxX, maxY, bmp: bmpB };
 }
 
+// b64 convenience wrapper — the waitPixel poll loop decodes its baseline ONCE
+// and calls diffBmp directly instead of re-decoding a multi-MB png per poll.
+async function pixelDiff(b64A, b64B) {
+  const bmpA = await pngBitmap(b64A);
+  try {
+    return await diffBmp(bmpA, await pngBitmap(b64B));
+  } finally {
+    bmpA.close(); // fully copied into ImageData by diffBmp — release the handle
+  }
+}
+
 async function cropDataUrl(bmp, x, y, w, h) {
   const oc = new OffscreenCanvas(w, h);
   oc.getContext('2d').drawImage(bmp, x, y, w, h, 0, 0, w, h);
@@ -1507,31 +1524,51 @@ const changedBox = (cmp, bmp) => ({
   h: Math.min(bmp.height, cmp.maxY + PAD) - Math.max(0, cmp.minY - PAD),
 });
 
+// Changed-box capture px → viewport-relative CSS coords. measure and --crop
+// both speak viewport-relative, and box.x is an offset into cap's bitmap
+// whose page origin is cap.clip.x — the PINNED frame while diffing — so
+// subtract the CURRENT scroll (cap.v.pageX) to land where the caller crops.
+const cssBox = (cap, box) => {
+  const k = cap.s * cap.dpr; // capture px → CSS px
+  return {
+    x: Math.round(cap.clip.x - cap.v.pageX + box.x / k),
+    y: Math.round(cap.clip.y - cap.v.pageY + box.y / k),
+  };
+};
+
+// Shared capture budget helpers — captureViewport and shot's --full/--crop
+// paths must agree on dpr and the --max scale budget, one derivation each.
+const dprOf = (m) => (m.visualViewport?.clientWidth && m.cssVisualViewport?.clientWidth ? m.visualViewport.clientWidth / m.cssVisualViewport.clientWidth : 1);
+const maxOf = (msg) => {
+  const n = Number(msg.max);
+  return msg.max == null || Number.isNaN(n) ? 1280 : n === 0 ? Infinity : Math.abs(n);
+};
+
 // Whole-viewport capture shared by shot's viewport path and the pixel-diff
 // machinery. Caller owns the debugger session (withCdp + attachDbg).
 async function captureViewport(tabId, msg, reuseClip) {
   const params = { format: msg.format === 'jpeg' ? 'jpeg' : 'png' };
   if (params.format === 'jpeg') params.quality = msg.quality ?? 80;
-  let dpr = 1;
   const m = await chrome.debugger.sendCommand({ tabId }, 'Page.getLayoutMetrics');
   const v = m.cssVisualViewport;
-  if (m.visualViewport?.clientWidth && v?.clientWidth) dpr = m.visualViewport.clientWidth / v.clientWidth;
-  const maxN = Number(msg.max);
-  const max = msg.max == null || Number.isNaN(maxN) ? 1280 : maxN === 0 ? Infinity : Math.abs(maxN);
+  const dpr = dprOf(m);
+  const max = maxOf(msg);
   // Captures render at devicePixelRatio, so budget max/dpr CSS px to keep
   // the OUTPUT long edge <= max.
   const s = Math.min(msg.scale || 1, max / (Math.max(v.clientWidth, v.clientHeight) * dpr));
-  const clip = { x: v.pageX, y: v.pageY, width: v.clientWidth, height: v.clientHeight, scale: s };
   // reuseClip: the --diff/--pixel-change machinery re-captures the EXACT
   // frame the baseline captured — the debugging infobar appearing/vanishing
   // resizes the viewport (~52px) and would otherwise randomize consecutive
-  // diffs into 'viewport size changed'.
+  // diffs into 'viewport size changed'. The returned clip is ALWAYS the one
+  // that framed the b64 — the diff baseline stores this pair, and the
+  // changed-region math uses clip.x/y as the capture's page origin.
+  const clip = reuseClip || { x: v.pageX, y: v.pageY, width: v.clientWidth, height: v.clientHeight, scale: s };
   if (s !== 1 || reuseClip) {
     params.captureBeyondViewport = true;
-    params.clip = reuseClip || clip;
+    params.clip = clip;
   }
   const res = await chrome.debugger.sendCommand({ tabId }, 'Page.captureScreenshot', params);
-  return { b64: res.data, format: params.format, v, dpr, s: (reuseClip || clip).scale, clip };
+  return { b64: res.data, format: params.format, v, dpr, s: clip.scale, clip };
 }
 
 // --- trusted input (--trusted): CDP Input.dispatch* ---------------------------
@@ -2222,26 +2259,33 @@ async function waitPixel(tab, msg) {
   const t0 = Date.now();
   return await withCdp(tab.id, async () => {
     await attachDbg(tab.id);
+    const pngMsg = { ...msg, format: 'png' };
+    let bmp0 = null;
     try {
-      const cap0 = await captureViewport(tab.id, { ...msg, format: 'png' });
+      const cap0 = await captureViewport(tab.id, pngMsg);
+      // Decode the baseline ONCE — re-decoding a multi-MB png every 800ms poll
+      // was pure waste (found by review).
+      bmp0 = await pngBitmap(cap0.b64);
       for (;;) {
         if (Date.now() - t0 >= timeout) throw new Error('timeout after ' + timeout + 'ms — no pixel change detected');
         await new Promise((r) => setTimeout(r, 800));
         // Reuse the baseline's exact frame — the infobar attach/detach would
         // otherwise resize the viewport between polls (found live in the
         // shot --diff verification).
-        const cap = await captureViewport(tab.id, { ...msg, format: 'png' }, cap0.clip);
-        const cmp = await pixelDiff(cap0.b64, cap.b64);
+        const cap = await captureViewport(tab.id, pngMsg, cap0.clip);
+        const cmp = await diffBmp(bmp0, await pngBitmap(cap.b64));
         if (cmp.error) throw new Error(cmp.error);
         if (cmp.changed) {
           const box = changedBox(cmp, cmp.bmp);
+          const { x: cssX, y: cssY } = cssBox(cap, box);
           const k = cap.s * cap.dpr; // capture px → CSS px
-          const cssX = Math.round(cap.v.pageX + box.x / k);
-          const cssY = Math.round(cap.v.pageY + box.y / k);
+          cmp.bmp.close();
           return `pixels changed after ${((Date.now() - t0) / 1000).toFixed(1)}s: ${cmp.pct}% of the viewport — region ${box.w}×${box.h}px at CSS x=${cssX}, y=${cssY} (see it: shot <match> out.png --crop ${cssX},${cssY},${Math.max(1, Math.round(box.w / k))},${Math.max(1, Math.round(box.h / k))})`;
         }
+        cmp.bmp.close();
       }
     } finally {
+      bmp0?.close();
       await detachDbg(tab.id);
     }
   });
@@ -2674,21 +2718,16 @@ async function handle(msg) {
       // Downscale to a long edge of `max` px (0 = native). Claude resizes
       // anything past ~1568px on read anyway, so a native-res capture of a big
       // window buys file size, never detail — smaller capture, same answer.
-      const maxN = Number(msg.max);
-      const max = msg.max == null || Number.isNaN(maxN) ? 1280 : maxN === 0 ? Infinity : Math.abs(maxN);
+      const max = maxOf(msg);
       // Captures render at devicePixelRatio, so budget max/dpr CSS px to keep
       // the OUTPUT long edge <= max (visualViewport is in device px).
       let dpr = 1;
-      const dprFrom = (m) => {
-        const d = m.visualViewport?.clientWidth, c = m.cssVisualViewport?.clientWidth;
-        if (d && c) dpr = d / c;
-      };
       const cap = (w, h) => Math.min(msg.scale || 1, max / (Math.max(w, h) * dpr));
       if (msg.full) {
         // Full page: render beyond the viewport, clip to the CSS content size.
         const m = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.getLayoutMetrics');
         const c = m.cssContentSize;
-        dprFrom(m);
+        dpr = dprOf(m);
         params.captureBeyondViewport = true;
         const w = Math.ceil(c.width), h = Math.min(Math.ceil(c.height), 16384);
         params.clip = { x: 0, y: 0, width: w, height: h, scale: cap(w, h) };
@@ -2696,7 +2735,7 @@ async function handle(msg) {
         // --crop x,y are viewport-relative (measure output); clip is page-absolute.
         const m = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.getLayoutMetrics');
         const v = m.cssVisualViewport;
-        dprFrom(m);
+        dpr = dprOf(m);
         params.captureBeyondViewport = true;
         params.clip = { x: msg.crop[0] + v.pageX, y: msg.crop[1] + v.pageY, width: msg.crop[2], height: msg.crop[3], scale: cap(msg.crop[2], msg.crop[3]) };
       } else {
@@ -2710,15 +2749,30 @@ async function handle(msg) {
           const prev = shotBaselines.get(tab.id);
           const cap = await captureViewport(tab.id, { ...msg, format: 'png' }, prev?.clip);
           const full = 'data:image/png;base64,' + cap.b64;
-          shotBaselines.set(tab.id, { b64: cap.b64, clip: cap.clip });
-          if (!prev) return { note: 'diff: baseline saved — run the action, then shot <match> <out> --diff again; this file is the full capture', data: full };
+          const setBase = () => shotBaselines.set(tab.id, { b64: cap.b64, clip: cap.clip });
+          if (!prev) {
+            setBase();
+            return { note: 'diff: baseline saved — run the action, then shot <match> <out> --diff again; this file is the full capture', data: full };
+          }
+          // Commit the baseline only once the comparison (and the crop) has
+          // actually run — a throw mid-diff must not swallow the observed
+          // change into the baseline, or the retry would report 'no change'
+          // (found by review).
           const cmp = await pixelDiff(prev.b64, cap.b64);
-          if (cmp.error) return { note: 'diff: ' + cmp.error, data: full };
-          if (!cmp.changed) return { note: 'diff: no pixel change since the previous shot (baseline updated)', data: full };
+          if (cmp.error) {
+            setBase();
+            return { note: 'diff: ' + cmp.error, data: full };
+          }
+          if (!cmp.changed) {
+            cmp.bmp.close();
+            setBase();
+            return { note: 'diff: no pixel change since the previous shot (baseline updated)', data: full };
+          }
           const box = changedBox(cmp, cmp.bmp);
           const data = await cropDataUrl(cmp.bmp, box.x, box.y, box.w, box.h);
-          const cssX = Math.round(cap.v.pageX + box.x / (cap.s * cap.dpr));
-          const cssY = Math.round(cap.v.pageY + box.y / (cap.s * cap.dpr));
+          cmp.bmp.close();
+          setBase();
+          const { x: cssX, y: cssY } = cssBox(cap, box);
           return {
             note: `diff: ${cmp.pct}% of pixels changed — the saved file is the changed region (${box.w}×${box.h}px; CSS offset x=${cssX}, y=${cssY} for measure/crop). Baseline is now THIS shot.`,
             data,
@@ -2741,7 +2795,11 @@ async function handle(msg) {
       await chrome.tabs.update(tab.id, { active: true });
       try {
         await new Promise((r) => setTimeout(r, 400));
-        return await chrome.tabs.captureVisibleTab(tab.windowId, { format, ...(format === 'jpeg' ? { quality: msg.quality ?? 80 } : {}) });
+        const png = await chrome.tabs.captureVisibleTab(tab.windowId, { format, ...(format === 'jpeg' ? { quality: msg.quality ?? 80 } : {}) });
+        // --diff can't run without CDP — say so instead of silently handing
+        // back a plain shot the agent would read as a completed diff cycle.
+        if (msg.diff) return { note: 'diff skipped — cdp unavailable on this page; this file is a plain fallback shot and the baseline is unchanged', data: png };
+        return png;
       } finally {
         if (prev && prev.id !== tab.id) await chrome.tabs.update(prev.id, { active: true }).catch(() => {});
       }
