@@ -2347,6 +2347,22 @@ async function waitPixel(tab, msg) {
         const cmp = await diffBmp(bmp0, await pngBitmap(cap.b64));
         if (cmp.error) throw new Error(cmp.error);
         if (cmp.changed) {
+          // Confirm before firing: background-window raster state is not
+          // pixel-stable over time — a focus/occlusion change re-AA's
+          // high-contrast edges ONCE (found live: a fixed header's 1px
+          // bottom edge, 1280px row, 0.2% false fire — and whole-px clip
+          // origins did NOT prevent it). A real change persists; a transient
+          // raster flip is gone by the next capture. One confirmation
+          // capture (~200ms) instead of chasing render determinism.
+          await removeBannerForCapture(tab.id);
+          const cap2 = await captureViewport(tab.id, pngMsg, cap0.clip);
+          const cmp2 = await diffBmp(bmp0, await pngBitmap(cap2.b64));
+          if (!cmp2.error && !cmp2.changed) {
+            cmp2.bmp.close();
+            cmp.bmp.close();
+            continue; // transient render flip — keep watching
+          }
+          if (cmp2.changed) cmp2.bmp.close(); // confirmed; region reported from the first detection
           const box = changedBox(cmp, cmp.bmp);
           const { x: cssX, y: cssY } = cssBox(cap, box);
           const k = cap.s * cap.dpr; // capture px → CSS px
