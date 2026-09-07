@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>stress fixed header</title>
+</head>
+<body style="margin:0">
+  <div style="position:fixed; top:0; left:0; right:0; height:60px; background:#eee; border-bottom:2px solid #333;">Fixed header — the page below it must stay pixel-quiet</div>
+  <div style="padding-top:80px;">
+    <h1>Page with a position:fixed header</h1>
+    <p>Entirely static content. wait --pixel-change here must time out, not self-fire.</p>
+  </div>
+</body>
+</html>

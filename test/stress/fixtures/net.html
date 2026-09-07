@@ -1,0 +1,51 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>stress net</title>
+</head>
+<body>
+  <h1>Network fixture (file:// origin)</h1>
+  <button id="fire" onclick="fire()">Fire fetches + WS</button>
+  <div id="net-out" role="status" aria-live="polite">net: idle</div>
+  <script>
+    const BASE = 'http://localhost:9334';
+    async function fire () {
+      // progressive text updates: each fetch/ws result lands in #net-out as it
+      // resolves — an action whose only DOM change is 800ms of silence away is
+      // outside the --diff settle window by design (100ms DOM quiet)
+      const out = ['fire#' + (++window.__fires || (window.__fires = 1))];
+      const el = document.getElementById('net-out');
+      el.textContent = 'net: ' + out.join(' ');
+      try {
+        const r1 = await fetch(BASE + '/api/data');
+        out.push('data:' + (await r1.json()).ok);
+      } catch (e) { out.push('data-err:' + e.message); }
+      el.textContent = 'net: ' + out.join(' ');
+      try {
+        const r2 = await fetch(BASE + '/api/slow');
+        out.push('slow:' + (await r2.json()).ok);
+      } catch (e) { out.push('slow-err:' + e.message); }
+      el.textContent = 'net: ' + out.join(' ');
+      await ws();
+    }
+    // a WS echo exchange at load so net --ws has frames to see; again on fire
+    function ws () {
+      return new Promise(resolve => {
+        try {
+          const w = new WebSocket('ws://localhost:9334/echo');
+          w.onopen = () => w.send('hello');
+          w.onmessage = e => {
+            document.getElementById('net-out').textContent += ' ws:' + e.data;
+            w.close();
+            resolve(e.data);
+          };
+          w.onerror = () => { document.getElementById('net-out').textContent += ' ws-error'; resolve(null); };
+        } catch (e) { resolve(null); }
+      });
+    }
+    fire();
+    ws();
+  </script>
+</body>
+</html>

@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>stress big tree</title>
+</head>
+<body>
+  <h1>Big tree — 8 sections × 60 buttons</h1>
+  <div id="root"></div>
+  <script>
+    const root = document.getElementById('root');
+    for (let s = 1; s <= 8; s++) {
+      // one wrapper div puts sections at depth 3: the section + heading stay
+      // emitted, its button children (depth 4 > CUT=3) fold into '… N inside'
+      const wrap = document.createElement('div');
+      const sec = document.createElement('section');
+      wrap.appendChild(sec);
+      const h = document.createElement('h2');
+      h.textContent = 'Section ' + s;
+      sec.appendChild(h);
+      for (let i = 1; i <= 60; i++) {
+        const b = document.createElement('button');
+        b.textContent = 'Item ' + s + '-' + i;
+        b.dataset.id = s + '-' + i;
+        sec.appendChild(b);
+      }
+      root.appendChild(sec);
+    }
+  </script>
+</body>
+</html>

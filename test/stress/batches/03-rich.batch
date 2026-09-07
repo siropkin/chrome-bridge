@@ -1,0 +1,21 @@
+# S3 interaction battery on the rich fixture — CSS selectors, --diff verdicts.
+# Post-batch state assertions live in run.sh (eval reads).
+--profile @P1@ open @FX@/rich.html
+snap rich.html
+fill rich.html "#name" "Ivan Test" --diff
+fill rich.html "#notes" "long notes here" --diff
+click rich.html "#cb" --diff
+click rich.html "input[value=two]" --diff
+fill rich.html "#sel" "Beta" --diff
+click rich.html "#submit" --diff
+type rich.html "#auto" "ap" --diff
+press rich.html ArrowDown "#auto" --diff
+press rich.html Enter "#auto" --diff
+fill rich.html "#ce" "fill into ce" --diff
+paste rich.html "#ce" --diff -- "pasted via bridge"
+fill rich.html "#keybox" "k" --diff
+press rich.html Enter "#keybox" --diff
+hover rich.html "#hov" --diff
+scroll rich.html down --diff
+scroll rich.html top
+drag rich.html "#drag-src" "#drag-dst" --diff

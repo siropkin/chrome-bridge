@@ -1,0 +1,19 @@
+# S1 multi-profile: same URL in both profiles (for the refusal assertion,
+# which run.sh makes WITHOUT --profile) + per-profile counter tabs.
+# Sticky `--profile` lines alternate deliberately — routing must follow each.
+--profile @P1@ open @FX@/static.html?a=dual
+--profile @P2@ open @FX@/static.html?a=dual
+--profile @P1@ open @FX@/counter.html?a=p1
+--profile @P2@ open @FX@/counter.html?a=p2
+# interleave: each line routes to its own profile; counters are DOM-based
+# (the isolated world shares DOM but not page JS globals)
+--profile @P1@ eval "counter.html?a=p1" "const el=document.getElementById('c');el.textContent=String(+el.textContent+1);el.textContent"
+--profile @P2@ eval "counter.html?a=p2" "const el=document.getElementById('c');el.textContent=String(+el.textContent+1);el.textContent"
+--profile @P1@ eval "counter.html?a=p1" "const el=document.getElementById('c');el.textContent=String(+el.textContent+1);el.textContent"
+--profile @P2@ eval "counter.html?a=p2" "const el=document.getElementById('c');el.textContent=String(+el.textContent+1);el.textContent"
+--profile @P1@ eval "counter.html?a=p1" "const el=document.getElementById('c');el.textContent=String(+el.textContent+1);el.textContent"
+--profile @P2@ eval "counter.html?a=p2" "const el=document.getElementById('c');el.textContent=String(+el.textContent+1);el.textContent"
+--profile @P1@ eval "counter.html?a=p1" "const el=document.getElementById('c');el.textContent=String(+el.textContent+1);el.textContent"
+--profile @P2@ eval "counter.html?a=p2" "const el=document.getElementById('c');el.textContent=String(+el.textContent+1);el.textContent"
+--profile @P1@ eval "counter.html?a=p1" "const el=document.getElementById('c');el.textContent=String(+el.textContent+1);el.textContent"
+--profile @P2@ eval "counter.html?a=p2" "const el=document.getElementById('c');el.textContent=String(+el.textContent+1);el.textContent"

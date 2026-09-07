@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>stress change</title>
+</head>
+<body>
+  <h1>Change page</h1>
+  <div id="stable" style="border:1px solid #888; padding:10px;">Stable block — never changes</div>
+  <div id="mut" style="margin-top:200px; width:120px; height:80px; background:#3aa;">MUTABLE — click flips me</div>
+  <button id="flip" onclick="flip()">Flip the block</button>
+  <script>
+    function flip () {
+      const m = document.getElementById('mut');
+      m.style.background = m.style.background === 'rgb(51, 170, 170)' ? '#a33' : '#3aa';
+    }
+  </script>
+</body>
+</html>

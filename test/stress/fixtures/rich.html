@@ -1,0 +1,182 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>stress rich</title>
+</head>
+<body>
+  <h1>Rich interaction fixture</h1>
+
+  <form id="f" onsubmit="event.preventDefault(); status('submitted name=' + this.n.value + ' sel=' + this.sel.value + ' check=' + this.c.checked + ' radio=' + this.r.value)">
+    <label>Name <input name="n" id="name"></label><br>
+    <label>Notes <textarea name="t" id="notes"></textarea></label><br>
+    <label><input type="checkbox" name="c" id="cb"> Check me</label><br>
+    <label><input type="radio" name="r" value="one" checked> One</label>
+    <label><input type="radio" name="r" value="two"> Two</label><br>
+    <label>Select
+      <select name="sel" id="sel">
+        <option value="a">Alpha</option>
+        <option value="b">Beta</option>
+        <option value="g">Gamma</option>
+      </select>
+    </label><br>
+    <button type="submit" id="submit">Submit form</button>
+  </form>
+
+  <h2>Contenteditable</h2>
+  <div id="ce" contenteditable="true" style="border:1px solid #888; min-height:40px; padding:8px;">editable text</div>
+
+  <h2>Autocomplete</h2>
+  <label>City <input id="auto" autocomplete="off" role="combobox" aria-label="City combobox"></label>
+  <ul id="ac-list" role="listbox" style="display:none"></ul>
+
+  <h2>Shadow DOM</h2>
+  <rich-widget></rich-widget>
+
+  <h2>Canvas — untrusted clicks are recorded but NOT drawn</h2>
+  <canvas id="pad" role="img" aria-label="drawing pad" width="300" height="200" style="border:1px solid #000"></canvas>
+  <div id="pad-status" role="status">canvas idle</div>
+
+  <h2>Hover</h2>
+  <div id="hov" style="padding:20px; background:#eee;">Hover me <span id="hov-secret" style="display:none">HOVERED</span></div>
+  <!-- hover reveal is JS-driven (pointerover listener): synthetic hovers
+       don't apply CSS :hover, so the fixture must observe the event -->
+
+  <h2>Drag</h2>
+  <div id="drag-src" draggable="true" style="width:60px;height:40px;background:#a63;color:#fff;text-align:center">drag me</div>
+  <div id="drag-dst" style="width:120px;height:60px;border:2px dashed #333;margin-top:10px">drop here <span id="drop-state"></span></div>
+
+  <h2>Press</h2>
+  <label>Keybox <input id="keybox"></label>
+  <div id="key-status" role="status">no key yet</div>
+
+  <h2>Lazy scroll</h2>
+  <div id="tall" style="height:3000px; background:linear-gradient(#fff,#ccc)">
+    <div id="lazy"></div>
+  </div>
+
+  <div id="status" role="status" aria-live="polite" style="border:1px solid #363; padding:6px">status: none</div>
+
+  <script>
+    function status (s) {
+      document.getElementById('status').textContent = 'status: ' + s;
+    }
+    window.S = { clicks: 0 };
+
+    // autocomplete: per-char input events reveal the dropdown
+    const CITIES = ['apple valley', 'apex', 'austin', 'boston', 'chicago', 'denver'];
+    const auto = document.getElementById('auto');
+    const list = document.getElementById('ac-list');
+    let acSel = -1;
+    auto.addEventListener('input', () => {
+      const q = auto.value.toLowerCase();
+      const hits = CITIES.filter(c => c.startsWith(q));
+      list.innerHTML = '';
+      hits.forEach(h => {
+        const li = document.createElement('li');
+        li.setAttribute('role', 'option');
+        li.setAttribute('aria-selected', 'false');
+        li.textContent = h;
+        li.onclick = () => { auto.value = h; list.style.display = 'none'; status('ac picked ' + h); };
+        list.appendChild(li);
+      });
+      list.style.display = hits.length ? 'block' : 'none';
+      acSel = -1;
+    });
+    auto.addEventListener('keydown', e => {
+      if (list.style.display === 'none') return;
+      const items = [...list.children];
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        acSel += e.key === 'ArrowDown' ? 1 : -1;
+        acSel = Math.max(0, Math.min(items.length - 1, acSel));
+        items.forEach((li, i) => {
+          li.style.background = i === acSel ? '#cdf' : '';
+          li.setAttribute('aria-selected', i === acSel ? 'true' : 'false');
+        });
+      } else if (e.key === 'Enter' && acSel >= 0) {
+        e.preventDefault();
+        auto.value = items[acSel].textContent;
+        list.style.display = 'none';
+        status('ac typed-pick ' + auto.value);
+      }
+    });
+
+    // open shadow DOM
+    class RichWidget extends HTMLElement {
+      connectedCallback () {
+        const sr = this.attachShadow({ mode: 'open' });
+        sr.innerHTML = `
+          <div>
+            <label>Shadow input <input id="sin"></label>
+            <button id="sbtn">Shadow button</button>
+            <div id="sout" role="status">shadow: none</div>
+          </div>`;
+        sr.querySelector('#sbtn').onclick = () => {
+          sr.querySelector('#sout').textContent = 'shadow: clicked, sin=' + sr.querySelector('#sin').value;
+        };
+        this._sr = sr;
+      }
+    }
+    customElements.define('rich-widget', RichWidget);
+
+    // canvas: draws only for trusted events (like real canvas tools)
+    const pad = document.getElementById('pad');
+    const ctx = pad.getContext('2d');
+    pad.addEventListener('click', e => {
+      document.getElementById('pad-status').textContent =
+        'canvas click isTrusted=' + e.isTrusted + ' at ' + Math.round(e.offsetX) + ',' + Math.round(e.offsetY);
+      if (!e.isTrusted) return; // synthetic clicks recorded, not drawn
+      ctx.fillStyle = '#c33';
+      ctx.beginPath();
+      ctx.arc(e.offsetX, e.offsetY, 12, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    // drag: pointer-sequence aware + HTML5 legacy
+    const src = document.getElementById('drag-src');
+    const dst = document.getElementById('drag-dst');
+    dst.addEventListener('pointerup', () => {
+      const r = dst.getBoundingClientRect();
+      document.getElementById('drop-state').textContent = ' POINTER-DROPPED';
+      status('pointer drop on target');
+    });
+    dst.addEventListener('dragover', e => e.preventDefault());
+    dst.addEventListener('drop', e => {
+      document.getElementById('drop-state').textContent = ' HTML5-DROPPED';
+      status('html5 drop on target');
+    });
+
+    // press
+    const keybox = document.getElementById('keybox');
+    keybox.addEventListener('keydown', e => {
+      document.getElementById('key-status').textContent = 'key: ' + e.key + ' (isTrusted=' + e.isTrusted + ')';
+    });
+
+    // lazy load on scroll EVENTS (not IntersectionObserver — background
+    // windows suspend rendering and IO never fires there; a scroll listener
+    // is deterministic wherever the tab is)
+    let loaded = 0;
+    window.addEventListener('scroll', () => {
+      if (loaded < 12) {
+        loaded += 3;
+        const z = document.getElementById('lazy');
+        for (let i = 0; i < 3; i++) {
+          const b = document.createElement('button');
+          b.textContent = 'Lazy item ' + (z.children.length + 1);
+          z.appendChild(b);
+        }
+      }
+    });
+
+    // hover reveal — JS-driven so synthetic (untrusted) hovers register too
+    document.getElementById('hov').addEventListener('pointerover', () => {
+      document.getElementById('hov-secret').style.display = 'inline';
+      status('hovered');
+    });
+
+    // paste target readiness
+    document.getElementById('ce').addEventListener('paste', () => status('paste landed in ce'));
+  </script>
+</body>
+</html>

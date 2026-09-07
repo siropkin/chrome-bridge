@@ -3,3 +3,4 @@ shots/
 *.log
 nohup.out
 .DS_Store
+test/stress/out/
