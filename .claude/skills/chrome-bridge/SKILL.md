@@ -46,6 +46,7 @@ node <repo>/cli.mjs <command> …
 
 ## Rules
 
+- **Escalate to the browser only when the page makes you.** If a plain HTTP request (`curl`) answers it, use that — the bridge is for interaction, logged-in views, JS-rendered or bot-protected pages.
 - **Snap first, shot last.** A text tree costs roughly an order of magnitude fewer tokens than a screenshot and usually suffices.
 - **Act by ref**, not by CSS selector — refs are stable across re-snaps.
 - **Always `release` when done. Always `unemulate` after emulating.**

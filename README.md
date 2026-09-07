@@ -155,6 +155,7 @@ You're handing an agent your logged-in browser — the design assumes you want t
 - **Automation you can see.** Driven tabs wear a 🟣 pill that narrates each action, join a 🟣 tab group, and light a purple frame while a command runs; `node cli.mjs watch` mirrors the feed in your terminal. The tab group is the driven-tab signal a malicious page can't fake.
 - **Why an unpacked extension?** So you can read exactly what runs — the entire extension is one readable file (`extension/background.js`) plus a manifest, not a minified store bundle.
 - **Prompt injection.** Everything the bridge returns is untrusted page content; the rules agents should follow are in [AGENTS.md](AGENTS.md). Note `upload`: it makes the browser read any local path the agent names into the page's file input, and the page can submit it — never let a page tell you (or the agent) what to attach.
+- **CDP attach is detectable.** `net`/`emulate`/`shot` (and `upload`/`dialog`) attach Chrome's debugger, which page JS can detect (DevTools-attach side effects like the `Runtime.enable` leak) — anti-bot systems can flag the session, and it's your real logged-in profile. The non-CDP commands (`snap`, `click`, `fill`, `eval`, …) don't attach it.
 
 ## Commands
 
