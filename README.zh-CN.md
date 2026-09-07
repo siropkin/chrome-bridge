@@ -175,9 +175,9 @@ HTTP API 只有一个命令端点:`POST /cmd`,Body 如 `{"type": "snap", "urlMat
 | `scroll <match> <up\|down\|top\|bottom\|@ref\|css> [--diff]` | 滚动——自动找到真正的滚动容器(Linear、Gmail 这类应用外壳滚动的是内部面板,不是窗口) |
 | `upload <match> <@ref\|css> <file...> [--diff]` | 通过 CDP 设置文件输入框的文件——隐藏输入框也可用;目标是输入框或包裹它的元素 |
 | `ask <match> <question>` | *(实验性)* 本地 Gemini Nano 根据页面文本回答——无云端 token,质量仅供预筛 |
-| `wait <match> <css\|--text t\|--human> [--timeout ms]` | 等待元素或可见文本出现(MutationObserver 驱动,页面一变即返回;默认 10 秒,上限 60 秒)。`--human` 把标签页交给你——验证码/两步验证/登录墙:小标签提示轮到你了,命令阻塞到你完成操作(默认 2 分钟),然后返回你所做改动的快照 diff |
+| `wait <match> <css\|--text t\|--human\|--pixel-change> [--timeout ms]` | 等待元素或可见文本出现(MutationObserver 驱动,页面一变即返回;默认 10 秒,上限 60 秒)。`--human` 把标签页交给你——验证码/两步验证/登录墙:小标签提示轮到你了,命令阻塞到你完成操作(默认 2 分钟),然后返回你所做改动的快照 diff。`--pixel-change` 轮询直到像素变化(无障碍树看不到的画布变化) |
 | `eval <match> <js\|-> [--world main\|isolated]` | 在页面中执行 JS;`-` 从 stdin 读取 |
-| `shot <match> <out> [--max px] [--scale N] [--format jpeg] [--quality N] [--crop x,y,w,h] [--full]` | CDP 截图。长边默认限制为 `--max` 1280px(`0` = 原始分辨率)——模型读取大图时本来就会缩小,原图只增加文件体积不增加细节。`--full` = 整页高度 |
+| `shot <match> <out> [--max px] [--scale N] [--format jpeg] [--quality N] [--crop x,y,w,h] [--full] [--diff]` | CDP 截图。长边默认限制为 `--max` 1280px(`0` = 原始分辨率)——模型读取大图时本来就会缩小,原图只增加文件体积不增加细节。`--full` = 整页高度。`--diff` 与上一次 `--diff` 截图对比,只保存变化的区域——无障碍树看不到的画布/像素变化 |
 | `net <match> [--dur ms] [--filter s] [--body s] [--ws] [--har out.har]` | CDP 网络抓包(单次 ≤30 秒)——每个请求一行紧凑输出,并标注发起者(`⟵ api-client.js:88`);`--ws` 同时抓取 WebSocket 帧(`→` 发送 / `←` 接收——聊天/流式应用);`--body s` 附加匹配的 JSON/文本响应体;`--har out.har` 把抓包存为可分享的 HAR 1.2(DevTools/Burp 可打开) |
 | `fetch <match> <url> [--out file]` | 在页面内发 fetch,复用登录会话——需要登录的 JSON/信息源直接可取,无需 eval 拼接;二进制响应必须 `--out`,文本打印截断在 5 万字符(`--out` 保存完整内容) |
 | `measure <match> <css>` | 元素位置 + 计算样式,JSON 输出——不看像素也能知道布局真相 |

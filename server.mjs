@@ -212,8 +212,8 @@ const CLI_LINES = {
   ask: (m) => `ask ${shellq(m.urlMatch)} ${shellq(m.question)}`,
   wait: (m) =>
     `wait ${shellq(m.urlMatch)}${m.selector ? ' ' + shellq(m.selector) : ''}${m.text ? ' --text ' + shellq(m.text) : ''}${
-      m.timeout != null && m.timeout !== 10000 ? ' --timeout ' + m.timeout : ''
-    }`,
+      m.human ? ' --human' : ''
+    }${m.pixel ? ' --pixel-change' : ''}${m.timeout != null && m.timeout !== 10000 && !m.human ? ' --timeout ' + m.timeout : ''}`,
   // Multiline code can't be one batch line — null drops it to a comment.
   eval: (m) =>
     m.code.includes('\n')
@@ -223,7 +223,7 @@ const CLI_LINES = {
   shot: (m) =>
     `shot ${shellq(m.urlMatch)} shot-replay.png${m.full ? ' --full' : ''}${m.crop ? ' --crop ' + m.crop.join(',') : ''}` +
     `${m.max != null ? ' --max ' + m.max : ''}${m.scale != null ? ' --scale ' + m.scale : ''}` +
-    `${m.format ? ' --format ' + m.format : ''}${m.quality != null ? ' --quality ' + m.quality : ''}`,
+    `${m.format ? ' --format ' + m.format : ''}${m.quality != null ? ' --quality ' + m.quality : ''}${m.diff ? ' --diff' : ''}`,
   net: (m) =>
     `net ${shellq(m.urlMatch)}${m.duration != null ? ' --dur ' + m.duration : ''}${m.filter ? ' --filter ' + shellq(m.filter) : ''}${
       m.body ? ' --body ' + shellq(m.body) : ''

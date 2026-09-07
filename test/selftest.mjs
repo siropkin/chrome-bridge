@@ -167,7 +167,13 @@ try {
       );
     if (msg.type === 'eval') return respond({ echo: msg.code.length, world: msg.world, match: msg.urlMatch, label: msg.label || null });
     if (msg.type === 'big') return respond('x'.repeat(3 * 1024 * 1024)); // 3 MB — exercises 64-bit frames
-    if (msg.type === 'shot') { lastShot = msg; return respond('data:image/png;base64,' + PNG1x1.toString('base64')); }
+    if (msg.type === 'shot') {
+      lastShot = msg;
+      // --diff returns the {note, data} shape the CLI writes to the file
+      // (crop on change, full capture on baseline/no-change).
+      if (msg.diff) return respond({ note: 'diff: 2.1% of pixels changed — the saved file is the changed region', data: 'data:image/png;base64,' + PNG1x1.toString('base64') });
+      return respond('data:image/png;base64,' + PNG1x1.toString('base64'));
+    }
     if (msg.type === 'ansierr') return ext.send({ id: msg.id, ok: false, error: 'bad \x1b[31mRED\x1b[0m\nforged line' });
     // fetch answers with the result shape the CLI processes (status/ct/body),
     // binary when asked — the --out decode and the binary-requires---out
@@ -259,6 +265,25 @@ try {
   const shotMax = await cli('shot', 'example.com', shotPath, '--max', '800');
   assert(shotMax.status === 0 && lastShot?.max === 800, 'cli shot --max parses and reaches the extension', shotMax.stderr + JSON.stringify(lastShot));
   fs.unlinkSync(shotPath);
+
+  // shot --diff: the {note, data} result — the note explains the file, the
+  // CLI writes the (cropped) image and prints the dims of what it wrote.
+  const shotDiffPath = '/tmp/chrome-bridge-selftest-diff.png';
+  const shotDiff = await cli('shot', 'example.com', shotDiffPath, '--diff');
+  assert(
+    shotDiff.status === 0 && fs.readFileSync(shotDiffPath).equals(PNG1x1) && shotDiff.stdout.includes('changed region') && shotDiff.stdout.includes('saved '),
+    'cli shot --diff writes the returned image and prints the note',
+    shotDiff.stdout + shotDiff.stderr
+  );
+  fs.unlinkSync(shotDiffPath);
+  const shotDiffExcl = await cli('shot', 'example.com', shotDiffPath, '--diff', '--full');
+  assert(shotDiffExcl.status !== 0 && shotDiffExcl.stderr.includes('--diff is exclusive'), 'cli shot --diff is exclusive with --full/--crop', shotDiffExcl.stdout + shotDiffExcl.stderr);
+
+  // wait --pixel-change: rides as a predicate-less mode like --human
+  const waitPix = await cli('wait', 'example.com', '--pixel-change', '--timeout', '500');
+  assert(waitPix.status === 0 && waitPix.stdout.includes('"pixel":true') && waitPix.stdout.includes('"timeout":500'), 'cli wait --pixel-change rides with --timeout', waitPix.stdout + waitPix.stderr);
+  const waitPixMix = await cli('wait', 'example.com', '--pixel-change', '--text', 'x');
+  assert(waitPixMix.status !== 0 && waitPixMix.stderr.includes('usage: wait'), 'cli wait --pixel-change is exclusive with --text/selector', waitPixMix.stdout + waitPixMix.stderr);
 
   const shotBad = await cli('shot', 'example.com', shotPath, '--max', '--full');
   assert(shotBad.status !== 0 && shotBad.stderr.includes('--max needs a value'), 'cli shot rejects flag-as-value', shotBad.stdout + shotBad.stderr);
@@ -521,7 +546,7 @@ try {
     // sendCommand tore the shared session mid-flight (5.5% of interleaved
     // CDP commands in stress). (6 wrap sites: upload/net/emulate/unemulate/
     // shot/dialog.)
-    assert(bg.split('withCdp(').length === 10, 'ext: CDP handlers serialize per tab (helper + 8 wrap sites)');
+    assert(bg.split('withCdp(').length === 11, 'ext: CDP handlers serialize per tab (helper + 9 wrap sites)');
     // open must not await the favicon/banner marking — executeScript sits
     // pending forever on an uncommitted navigation (unreachable URL), which
     // hung open past its 8s cap to the server's 70s timeout. The response
@@ -675,6 +700,14 @@ try {
       bg.includes('reCAPTCHA') && bg.includes('Cloudflare Turnstile') && bg.includes('DataDome'),
       'ext: the wall scan names the common bot walls (reCAPTCHA, Turnstile, DataDome, PerimeterX, Arkose)'
     );
+    // Pixel diff (#16): PNGs decoded in the SW (OffscreenCanvas — zero deps),
+    // per-pixel compare with an antialiasing tolerance, changed-region crop,
+    // and the pixel-change poll for canvas.
+    assert(
+      bg.includes('OffscreenCanvas') && bg.includes('pixelDiff') && bg.includes('changedBox') && bg.includes('cropDataUrl'),
+      'ext: shot --diff / wait --pixel-change decode + compare + crop PNGs in the service worker'
+    );
+    assert(bg.includes('shotBaselines'), 'ext: pixel diff baselines are compare-to-previous (like snap --diff), memory-only per tab');
     // --skeleton: past the depth cut, count instead of emit — cut containers
     // read '… N inside' (self-describing truncation, deterministic drill via
     // the positional @ref scope), and skeleton diffs keep their own store.

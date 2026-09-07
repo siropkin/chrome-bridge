@@ -1437,6 +1437,98 @@ const pasteSrc = (target, value) => `(async () => {
   return 'pasted ' + text.length + ' chars into ' + (sel || '<' + el.tagName.toLowerCase() + '>') + (handled ? ' (editor paste handler)' : '');
 })()`;
 
+// --- pixel diff: decode PNGs in the service worker (OffscreenCanvas) ---------
+// The a11y tree can't see canvas or plain-text changes (bklapholz's
+// salesforce pilot watched the screen at 1 FPS for exactly this reason).
+// Zero-dep: createImageBitmap + OffscreenCanvas run in the SW — no page round
+// trip, no permission. shotBaselines holds the last --diff capture per tab
+// (memory-only: an SW restart re-baselines, like the rest of the SW state).
+const shotBaselines = new Map(); // tabId -> base64 png of the last --diff shot
+
+async function pngBitmap(b64) {
+  const raw = atob(b64);
+  const buf = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) buf[i] = raw.charCodeAt(i);
+  return await createImageBitmap(new Blob([buf], { type: 'image/png' }));
+}
+
+// Compare two captures (channel-sum tolerance 24 ≈ antialiasing jitter).
+// Returns stats in CAPTURE pixel coordinates plus the second bitmap, for
+// cropping the changed region without a re-capture.
+async function pixelDiff(b64A, b64B) {
+  const bmpA = await pngBitmap(b64A);
+  const bmpB = await pngBitmap(b64B);
+  if (bmpA.width !== bmpB.width || bmpA.height !== bmpB.height)
+    return { error: 'viewport size changed between shots — no pixel diff; the new shot is now the baseline' };
+  const read = (bmp) => {
+    const oc = new OffscreenCanvas(bmp.width, bmp.height);
+    const ctx = oc.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(bmp, 0, 0);
+    return ctx.getImageData(0, 0, bmp.width, bmp.height).data;
+  };
+  const A = read(bmpA);
+  const B = read(bmpB);
+  let changed = 0;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -1;
+  let maxY = -1;
+  for (let i = 0, px = 0; i < A.length; i += 4, px++) {
+    if (Math.abs(A[i] - B[i]) + Math.abs(A[i + 1] - B[i + 1]) + Math.abs(A[i + 2] - B[i + 2]) <= 24) continue;
+    changed++;
+    const x = px % bmpB.width;
+    const y = (px / bmpB.width) | 0;
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  if (!changed) return { changed: 0, pct: '0.0', bmp: bmpB };
+  return { changed, pct: ((changed / (A.length / 4)) * 100).toFixed(1), minX, minY, maxX, maxY, bmp: bmpB };
+}
+
+async function cropDataUrl(bmp, x, y, w, h) {
+  const oc = new OffscreenCanvas(w, h);
+  oc.getContext('2d').drawImage(bmp, x, y, w, h, 0, 0, w, h);
+  const blob = await oc.convertToBlob({ type: 'image/png' });
+  const buf = new Uint8Array(await blob.arrayBuffer());
+  let bin = '';
+  for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+  return 'data:image/png;base64,' + btoa(bin);
+}
+
+// The changed region with padding, clamped to the capture — a 1px crop is
+// useless to look at.
+const PAD = 12;
+const changedBox = (cmp, bmp) => ({
+  x: Math.max(0, cmp.minX - PAD),
+  y: Math.max(0, cmp.minY - PAD),
+  w: Math.min(bmp.width, cmp.maxX + PAD) - Math.max(0, cmp.minX - PAD),
+  h: Math.min(bmp.height, cmp.maxY + PAD) - Math.max(0, cmp.minY - PAD),
+});
+
+// Whole-viewport capture shared by shot's viewport path and the pixel-diff
+// machinery. Caller owns the debugger session (withCdp + attachDbg).
+async function captureViewport(tabId, msg) {
+  const params = { format: msg.format === 'jpeg' ? 'jpeg' : 'png' };
+  if (params.format === 'jpeg') params.quality = msg.quality ?? 80;
+  let dpr = 1;
+  const m = await chrome.debugger.sendCommand({ tabId }, 'Page.getLayoutMetrics');
+  const v = m.cssVisualViewport;
+  if (m.visualViewport?.clientWidth && v?.clientWidth) dpr = m.visualViewport.clientWidth / v.clientWidth;
+  const maxN = Number(msg.max);
+  const max = msg.max == null || Number.isNaN(maxN) ? 1280 : maxN === 0 ? Infinity : Math.abs(maxN);
+  // Captures render at devicePixelRatio, so budget max/dpr CSS px to keep
+  // the OUTPUT long edge <= max.
+  const s = Math.min(msg.scale || 1, max / (Math.max(v.clientWidth, v.clientHeight) * dpr));
+  if (s !== 1) {
+    params.captureBeyondViewport = true;
+    params.clip = { x: v.pageX, y: v.pageY, width: v.clientWidth, height: v.clientHeight, scale: s };
+  }
+  const res = await chrome.debugger.sendCommand({ tabId }, 'Page.captureScreenshot', params);
+  return { b64: res.data, format: params.format, v, dpr, s };
+}
+
 // --- trusted input (--trusted): CDP Input.dispatch* ---------------------------
 // isTrusted=true events — the one thing synthetic dispatchEvent can't fake
 // (canvas tools, Figma, browser defaults like Enter submitting a form).
@@ -2115,6 +2207,38 @@ async function waitHuman(tab, msg) {
   return 'the human acted:\n' + (await runEval(tab.id, SNAP_SRC(null, true, false)));
 }
 
+// wait --pixel-change: the canvas watcher — polls the viewport until pixels
+// move (the a11y tree can't see canvas; bklapholz's salesforce pilot watched
+// at 1 FPS for exactly this). Attaches CDP for the duration (infobar +
+// detectability gotcha). Text-only result: the region is reported, shot
+// --crop shows it — wait stays image-free.
+async function waitPixel(tab, msg) {
+  const timeout = msg.timeout || 10000;
+  const t0 = Date.now();
+  return await withCdp(tab.id, async () => {
+    await attachDbg(tab.id);
+    try {
+      const cap0 = await captureViewport(tab.id, { ...msg, format: 'png' });
+      for (;;) {
+        if (Date.now() - t0 >= timeout) throw new Error('timeout after ' + timeout + 'ms — no pixel change detected');
+        await new Promise((r) => setTimeout(r, 800));
+        const cap = await captureViewport(tab.id, { ...msg, format: 'png' });
+        const cmp = await pixelDiff(cap0.b64, cap.b64);
+        if (cmp.error) throw new Error(cmp.error);
+        if (cmp.changed) {
+          const box = changedBox(cmp, cmp.bmp);
+          const k = cap.s * cap.dpr; // capture px → CSS px
+          const cssX = Math.round(cap.v.pageX + box.x / k);
+          const cssY = Math.round(cap.v.pageY + box.y / k);
+          return `pixels changed after ${((Date.now() - t0) / 1000).toFixed(1)}s: ${cmp.pct}% of the viewport — region ${box.w}×${box.h}px at CSS x=${cssX}, y=${cssY} (see it: shot <match> out.png --crop ${cssX},${cssY},${Math.max(1, Math.round(box.w / k))},${Math.max(1, Math.round(box.h / k))})`;
+        }
+      }
+    } finally {
+      await detachDbg(tab.id);
+    }
+  });
+}
+
 // --- Commands ---------------------------------------------------------------
 
 // Commands that act as the user or run code in the page — these auto-mark an
@@ -2486,6 +2610,7 @@ async function handle(msg) {
   if (msg.type === 'wait') {
     const tab = await findTab(msg);
     if (msg.human) return await waitHuman(tab, msg);
+    if (msg.pixel) return await waitPixel(tab, msg);
     return await runEval(tab.id, waitSrc(msg));
   }
 
@@ -2569,14 +2694,30 @@ async function handle(msg) {
       } else {
         // Viewport: cssVisualViewport fields are pageX/pageY/clientWidth/
         // clientHeight (no x/y/width/height — that's what broke --scale).
-        const m = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.getLayoutMetrics');
-        const v = m.cssVisualViewport;
-        dprFrom(m);
-        const s = cap(v.clientWidth, v.clientHeight);
-        if (s !== 1) {
-          params.captureBeyondViewport = true;
-          params.clip = { x: v.pageX, y: v.pageY, width: v.clientWidth, height: v.clientHeight, scale: s };
+        if (msg.diff) {
+          // --diff: whole-viewport png compared against the previous --diff
+          // shot of this tab (baseline updates every call, like snap --diff).
+          // On change the saved file is the CHANGED REGION only — the one
+          // thing a canvas-watcher actually wants to look at.
+          const cap = await captureViewport(tab.id, { ...msg, format: 'png' });
+          const full = 'data:image/png;base64,' + cap.b64;
+          const prev = shotBaselines.get(tab.id);
+          shotBaselines.set(tab.id, cap.b64);
+          if (!prev) return { note: 'diff: baseline saved — run the action, then shot <match> <out> --diff again; this file is the full capture', data: full };
+          const cmp = await pixelDiff(prev, cap.b64);
+          if (cmp.error) return { note: 'diff: ' + cmp.error, data: full };
+          if (!cmp.changed) return { note: 'diff: no pixel change since the previous shot (baseline updated)', data: full };
+          const box = changedBox(cmp, cmp.bmp);
+          const data = await cropDataUrl(cmp.bmp, box.x, box.y, box.w, box.h);
+          const cssX = Math.round(cap.v.pageX + box.x / (cap.s * cap.dpr));
+          const cssY = Math.round(cap.v.pageY + box.y / (cap.s * cap.dpr));
+          return {
+            note: `diff: ${cmp.pct}% of pixels changed — the saved file is the changed region (${box.w}×${box.h}px; CSS offset x=${cssX}, y=${cssY} for measure/crop). Baseline is now THIS shot.`,
+            data,
+          };
         }
+        const cap = await captureViewport(tab.id, msg);
+        return `data:image/${cap.format};base64,${cap.b64}`;
       }
       const res = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.captureScreenshot', params);
       return `data:image/${format};base64,${res.data}`;

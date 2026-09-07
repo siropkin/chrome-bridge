@@ -28,7 +28,7 @@ node <repo>/cli.mjs <command> …
 - `paste <match> @e2 -- "long text"` — real-paste semantics for editors that revert `fill` (Quill, Reddit/LinkedIn rich composers); without `-- <text>` it pastes the OS clipboard.
 - `upload <match> @e5 ./report.pdf` — set a file input's files (CDP — hidden inputs work; target the input or an element wrapping it).
 - `nav <match> <url>` / `open <url>` / `close <match>` — tab lifecycle.
-- `wait <match> --text "Saved"` — wait after actions that trigger loads. `wait <match> --human` — hand CAPTCHA/2FA/login walls to the user: the pill tells them it's their turn; blocks until they act (default 2 min, max ~4.5 min), returns the diff of what they did.
+- `wait <match> --text "Saved"` — wait after actions that trigger loads. `wait <match> --human` — hand CAPTCHA/2FA/login walls to the user: the pill tells them it's their turn; blocks until they act (default 2 min, max ~4.5 min), returns the diff of what they did. `wait <match> --pixel-change` — poll until pixels move (canvas changes the tree can't see); `shot <match> out.png --diff` saves only the changed region.
 - `batch` — commands on stdin, one per line: `printf 'click m @e4\nwait m --text "Saved"\nsnap m --diff\n' | node cli.mjs batch` — dependent chains in one process, one shell call.
 - `shot <match> out.png [--max 800] [--format jpeg]` — only when pixels matter; `--max` caps the long edge (default 1280).
 - `eval <match> <js|->` — run JS in the page; `-` reads from stdin.

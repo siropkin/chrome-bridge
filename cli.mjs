@@ -157,15 +157,20 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     inputs; target the input or an element wrapping it)
   ask <match> <question>            (experimental) answer from page text with Chrome's
                                     built-in Gemini Nano — local, no cloud tokens
-  wait <match> <css|--text t|--human> [--timeout ms]
+  wait <match> <css|--text t|--human|--pixel-change> [--timeout ms]
                                     wait for element or visible text (timeout default 10s,
                                     max 60s); --human hands the tab to the user — CAPTCHA/
                                     2FA/login walls — the pill asks them to act, the command
                                     blocks until trusted input or navigation (default 120s,
-                                    max 280s), then returns the snap-diff of what they did
+                                    max 280s), then returns the snap-diff of what they did;
+                                    --pixel-change polls the viewport until pixels move
+                                    (canvas changes the tree can't see; attaches CDP)
   eval <match> <js|-> [--world main|isolated]     '-' reads JS from stdin
-  shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full]
-                                    --max caps the long edge (default 1280, 0 = native res)
+  shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full] [--diff]
+                                    --max caps the long edge (default 1280, 0 = native res);
+                                    --diff compares against the previous --diff shot and, on
+                                    change, saves ONLY the changed region (canvas/pixel changes
+                                    the tree can't see)
   net <match> [--dur ms] [--filter s] [--body s] [--ws] [--har out.har]
                                     capture network for N ms, capped at 30s (CDP, one line per
                                     request, each naming its initiator: ⟵ script:line);
@@ -640,17 +645,19 @@ async function run(cmdName, args) {
       let text = null;
       let timeout = 10000;
       let human = false;
+      let pixel = false;
       const pos = [];
       for (let i = 0; i < rest.length; i++) {
         if (rest[i] === '--text') text = rest[++i];
         else if (rest[i] === '--timeout') timeout = Number(rest[++i]);
         else if (rest[i] === '--human') human = true;
-        else if (rest[i].startsWith('--')) fail(`unknown flag ${rest[i]} (flags: --text, --timeout, --human)`);
+        else if (rest[i] === '--pixel-change') pixel = true;
+        else if (rest[i].startsWith('--')) fail(`unknown flag ${rest[i]} (flags: --text, --timeout, --human, --pixel-change)`);
         else pos.push(rest[i]);
       }
       const selector = pos[0] || null;
-      if (!match || (!selector && !text && !human)) fail('usage: wait <match> [css|--text t|--human] [--timeout ms]');
-      if (human && (selector || text)) fail('usage: wait <match> --human [--timeout ms] — --human waits for the human, not the page');
+      if (!match || (!selector && !text && !human && !pixel)) fail('usage: wait <match> [css|--text t|--human|--pixel-change] [--timeout ms]');
+      if ((human || pixel) && (selector || text)) fail('usage: wait <match> --human|--pixel-change [--timeout ms] — those wait without a page predicate');
       // Above 60s the server's 70s command cap fires first and the caller gets
       // a misleading 'extension timeout' for a healthy wait — fail here instead.
       // --human extends past that cap (server-side) but not past the CLI HTTP
@@ -659,7 +666,7 @@ async function run(cmdName, args) {
       if (!human && timeout > 60000) fail('--timeout must be 1..60000 ms (the server kills commands at 70s)');
       if (human && timeout > 280000) fail('--timeout must be 1..280000 ms with --human (the HTTP client gives up at 5 min — start another wait for a longer handoff)');
       if (human && timeout === 10000) timeout = 120000; // a human needs more than a page does
-      print(await cmd({ type: 'wait', urlMatch: match, selector, text, timeout, ...(human ? { human: true } : {}) }));
+      print(await cmd({ type: 'wait', urlMatch: match, selector, text, timeout, ...(human ? { human: true } : {}), ...(pixel ? { pixel: true } : {}) }));
       break;
     }
 
@@ -687,11 +694,12 @@ async function run(cmdName, args) {
 
     case 'shot': {
       const [match, out, ...rest] = args;
-      if (!match || !out) fail('usage: shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full]');
+      if (!match || !out) fail('usage: shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full] [--diff]');
       const msg = { type: 'shot', urlMatch: match };
       for (let i = 0; i < rest.length; i++) {
         const k = rest[i];
         if (k === '--full') { msg.full = true; continue; }
+        if (k === '--diff') { msg.diff = true; continue; }
         const v = rest[++i];
         if (v === undefined || v.startsWith('--')) fail(`flag ${k} needs a value`);
         if (k === '--max') msg.max = Number(v);
@@ -702,6 +710,8 @@ async function run(cmdName, args) {
         else fail(`unknown flag ${k}`);
       }
       if (msg.full && msg.crop) fail('--full and --crop are mutually exclusive');
+      // --diff compares whole-viewport shots — crop/full have no baseline to diff
+      if (msg.diff && (msg.full || msg.crop)) fail('--diff is exclusive with --full/--crop');
       for (const k of ['max', 'scale', 'quality']) if (msg[k] !== undefined && !Number.isFinite(msg[k])) fail(`flag --${k} needs a number`);
       // Ranges, mirroring emulate/wait/net: out-of-range values used to pass
       // and silently degrade to a different screenshot on the CDP fallback path.
@@ -711,11 +721,16 @@ async function run(cmdName, args) {
       if (msg.format && !['png', 'jpeg'].includes(msg.format)) fail('--format must be png|jpeg');
       if (msg.crop && (msg.crop.length !== 4 || msg.crop.some((n) => !Number.isFinite(n)))) fail('--crop needs 4 numbers: x,y,w,h');
       if (msg.crop && (msg.crop[0] < 0 || msg.crop[1] < 0 || msg.crop[2] < 1 || msg.crop[3] < 1)) fail('--crop needs x,y >= 0 and w,h >= 1');
-      const dataUrl = await cmd(msg);
+      const result = await cmd(msg);
+      // --diff returns { note, data } — the note explains what the file holds
+      // (baseline / full capture / the changed region only).
+      const note = result && typeof result === 'object' ? result.note : null;
+      const dataUrl = note ? result.data : result;
       const b64 = dataUrl.includes(',') ? dataUrl.split(',', 2)[1] : dataUrl;
       const buf = Buffer.from(b64, 'base64');
       fs.writeFileSync(out, buf);
       const d = imgDims(buf);
+      if (note) console.log(note);
       console.log(`saved ${out} (${Math.round(buf.length / 1024)} KB${d ? `, ${d}` : ''})`);
       break;
     }
