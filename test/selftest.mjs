@@ -601,6 +601,10 @@ try {
     // deep walk on a miss).
     assert(bg.includes('const DEEPQ') && bg.split('deepQuery(sel').length >= 11, 'ext: action targets pierce open shadow roots (deepQuery at every resolution site)', `deepQuery sites: ${bg.split('deepQuery(sel').length}`);
     assert(bg.includes('deepAll(') && bg.includes("deepAll(${JSON.stringify(sel)}, document)"), 'ext: measure matches inside open shadow roots too');
+    // net: the initiator (already arriving on requestWillBeSent) rides the
+    // line — the request→issuing-script jump, nearly free with the debugger
+    // already attached.
+    assert(bg.includes('params.initiator') && bg.includes('⟵ '), 'ext: net lines carry the request initiator (⟵ script:line)');
 
     // The service worker is never executed here (the fake extension plays it)
     // — a syntax error in it would otherwise ship green, as would one in

@@ -800,7 +800,18 @@ chrome.debugger.onEvent.addListener((src, method, params) => {
   const c = netCollectors.get(src.tabId);
   if (!c) return;
   if (method === 'Network.requestWillBeSent') {
-    c.set(params.requestId, { t: Date.now(), method: params.request.method, url: params.request.url });
+    // Initiator (already on the wire): the request→issuing-script jump —
+    // first stack frame with a URL, or the parser's URL. 'other' with no URL
+    // adds nothing and stays off the line.
+    const i = params.initiator || {};
+    let init = '';
+    const tail = (u, ln) => u.split('/').pop().slice(0, 40) + (ln != null ? ':' + ln : '');
+    if (i.type === 'script' && i.stack?.callFrames) {
+      const fr = i.stack.callFrames.find((f) => f.url && !f.url.startsWith('chrome-extension://'));
+      if (fr) init = ' ⟵ ' + tail(fr.url, fr.lineNumber);
+    } else if (i.url) init = ' ⟵ ' + tail(i.url, i.lineNumber);
+    else if (i.type && i.type !== 'other') init = ' ⟵ ' + i.type;
+    c.set(params.requestId, { t: Date.now(), method: params.request.method, url: params.request.url, init });
   } else if (method === 'Network.responseReceived') {
     const r = c.get(params.requestId);
     if (r) { r.status = params.response.status; r.mime = params.response.mimeType; }
@@ -856,7 +867,7 @@ async function captureNetwork(tabId, duration, filter, bodyFilter) {
     const status = r.error ? 'ERR:' + r.error : r.status || '…';
     const kb = r.size !== undefined ? ' ' + (r.size > 1024 ? Math.round(r.size / 1024) + 'kB' : r.size + 'B') : '';
     const ms = r.ms !== undefined ? ' ' + r.ms + 'ms' : '';
-    lines.push(`${r.method} ${status} ${u}${kb}${ms}`);
+    lines.push(`${r.method} ${status} ${u}${kb}${ms}${r.init || ''}`);
     if (r.body) lines.push('  ↳ ' + r.body.replace(/\s+/g, ' ').trim());
     if (lines.length >= 100) { lines.push('… truncated at 100 requests — use --filter'); break; }
   }

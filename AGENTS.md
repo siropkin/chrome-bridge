@@ -162,7 +162,7 @@ Always `fill`, never set `.value` in `eval` — `fill` uses the native value set
 
 ### Watch network requests
 
-`net <match> [--dur ms] [--filter /api] [--body /api]` — attaches CDP for N ms (default 4000, the "debugging" infobar shows while attached), returns one line per request: `POST 200 /api/graphql 2kB 341ms`. Trigger the action first, then read the list. `--body <substr>` appends the response body (JSON/text only, ≤8 requests, 1500 chars each) under each matching line and implies `--filter`; for anything it skips (binary, unavailable), replay the request with `fetch <match> <url> [--out file]` — it runs in the page, so the logged-in session rides it.
+`net <match> [--dur ms] [--filter /api] [--body /api]` — attaches CDP for N ms (default 4000, the "debugging" infobar shows while attached), returns one line per request: `POST 200 /api/graphql 2kB 341ms ⟵ api-client.js:88` (the `⟵` names the initiator — the script file:line that issued the request). Trigger the action first, then read the list. `--body <substr>` appends the response body (JSON/text only, ≤8 requests, 1500 chars each) under each matching line and implies `--filter`; for anything it skips (binary, unavailable), replay the request with `fetch <match> <url> [--out file]` — it runs in the page, so the logged-in session rides it.
 
 ### Fake API data
 

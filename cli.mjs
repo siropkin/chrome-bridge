@@ -156,7 +156,8 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
   shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full]
                                     --max caps the long edge (default 1280, 0 = native res)
   net <match> [--dur ms] [--filter s] [--body s]
-                                    capture network for N ms, capped at 30s (CDP, one line per request);
+                                    capture network for N ms, capped at 30s (CDP, one line per
+                                    request, each naming its initiator: ⟵ script:line);
                                     --body s also captures JSON/text response bodies for URLs
                                     containing s (≤8, 1500 chars each; implies --filter s)
   fetch <match> <url> [--out file]  in-page fetch riding the logged-in session — login-walled
