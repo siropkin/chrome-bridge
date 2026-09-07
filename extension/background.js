@@ -1568,7 +1568,15 @@ async function captureViewport(tabId, msg, reuseClip, forceClip) {
   // vs a beyond-viewport compare renders the scrollbar differently and
   // reports a phantom changed strip on a static page (found live: 30×407px
   // right-edge band, two consecutive --diff --max 0 calls, nothing moved).
-  const clip = reuseClip ? { ...reuseClip, x: v.pageX, y: v.pageY } : { x: v.pageX, y: v.pageY, width: v.clientWidth, height: v.clientHeight, scale: s };
+  // The origin is ROUNDED to whole CSS px: it's the one unpinned input on
+  // pinned re-captures, and its fractional part drifts when the debugger
+  // infobar's visual-viewport offset settles (variable timing, 0.5-7s after
+  // attach — found live: the flip re-AA'd a fixed header's dark-on-white
+  // bottom edge, a 1280×1px row, and false-fired the wait; channel-sum
+  // tolerance can't absorb a high-contrast edge). Whole-px origins keep
+  // consecutive renders deterministic no matter when the settle lands.
+  const ox = Math.round(v.pageX), oy = Math.round(v.pageY);
+  const clip = reuseClip ? { ...reuseClip, x: ox, y: oy } : { x: ox, y: oy, width: v.clientWidth, height: v.clientHeight, scale: s };
   if (forceClip || reuseClip || s !== 1) {
     params.captureBeyondViewport = true;
     params.clip = clip;
@@ -2806,11 +2814,14 @@ async function handle(msg) {
         params.clip = { x: 0, y: 0, width: w, height: h, scale: cap(w, h) };
       } else if (msg.crop) {
         // --crop x,y are viewport-relative (measure output); clip is page-absolute.
+        // Same whole-px rounding as captureViewport — fractional viewport
+        // offsets (infobar settle) would otherwise re-AA high-contrast edges
+        // between captures.
         const m = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.getLayoutMetrics');
         const v = m.cssVisualViewport;
         dpr = dprOf(m);
         params.captureBeyondViewport = true;
-        params.clip = { x: msg.crop[0] + v.pageX, y: msg.crop[1] + v.pageY, width: msg.crop[2], height: msg.crop[3], scale: cap(msg.crop[2], msg.crop[3]) };
+        params.clip = { x: Math.round(msg.crop[0] + v.pageX), y: Math.round(msg.crop[1] + v.pageY), width: msg.crop[2], height: msg.crop[3], scale: cap(msg.crop[2], msg.crop[3]) };
       } else {
         // Viewport: cssVisualViewport fields are pageX/pageY/clientWidth/
         // clientHeight (no x/y/width/height — that's what broke --scale).
