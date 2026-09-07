@@ -40,7 +40,7 @@ The bridge is for pages a plain HTTP request can't handle — interaction (click
 6. `wait <match> --text "Saved"` only when you need something specific without acting. Chain other dependent steps in one `batch` — stdin, one command per line — one process and one shell call instead of several.
 
 7. `shot <match> out.png` only when you need pixels. The long edge is capped at 1280px by default (models downscale bigger images on read anyway) — `--max 0` for native res, `--max 800 --format jpeg` for a cheap glance. Read screenshots in a subagent to keep image tokens out of the main context.
-8. **Always `release <match>` (or `close <match>`) when done. Always `unemulate` after emulating.**
+8. **Always `release <match>` (or `close <match>`) when done. Always `unemulate` after emulating.** Tabs you only *read* (`snap`/`measure`/`console`/`net`) — `release` them; tabs you *opened* (`open`) — `close` them. The human comes back to a browser full of purple pills and mystery tabs otherwise; leaving either is a bug in your session, not their mess to clean.
 
 ## Commands
 
