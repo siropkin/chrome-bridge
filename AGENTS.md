@@ -109,10 +109,12 @@ shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--c
 fetch <match> <url> [--out file]  in-page fetch riding the logged-in session — login-walled
                                   JSON/feeds answer it without eval plumbing; binary needs
                                   --out, text prints capped at 50K chars (--out: full body)
-net <match> [--dur ms] [--filter s] [--body s]
+net <match> [--dur ms] [--filter s] [--body s] [--har out.har]
                                   capture network for N ms, capped at 30s (CDP; one line per
                                   request) — run successive captures for longer windows;
-                                  --body s appends response bodies for URLs containing s (≤8)
+                                  --body s appends response bodies for URLs containing s (≤8);
+                                  --har out.har also saves the capture as HAR 1.2 (DevTools/
+                                  Burp open it; bodies land in the file, not the lines)
 measure <match> <css>             rect + computed styles as JSON
 console <match> [--clear] [--ask [q]]   page console + errors (hook installs on first call);
                                   --ask triages the log with local Nano — only the verdict costs cloud tokens

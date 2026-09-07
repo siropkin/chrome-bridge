@@ -811,16 +811,25 @@ chrome.debugger.onEvent.addListener((src, method, params) => {
       if (fr) init = ' ⟵ ' + tail(fr.url, fr.lineNumber);
     } else if (i.url) init = ' ⟵ ' + tail(i.url, i.lineNumber);
     else if (i.type && i.type !== 'other') init = ' ⟵ ' + i.type;
-    c.set(params.requestId, { t: Date.now(), method: params.request.method, url: params.request.url, init });
+    // req/wallTime/initiator ride the entry for the HAR export (--har) — the
+    // payloads are already in this event, keeping them costs nothing.
+    c.set(params.requestId, { t: Date.now(), wall: params.wallTime, method: params.request.method, url: params.request.url, init, req: params.request, initObj: params.initiator });
   } else if (method === 'Network.responseReceived') {
     const r = c.get(params.requestId);
-    if (r) { r.status = params.response.status; r.mime = params.response.mimeType; }
+    if (r) { r.status = params.response.status; r.mime = params.response.mimeType; r.res = params.response; }
   } else if (method === 'Network.loadingFinished') {
     const r = c.get(params.requestId);
     if (r) {
       r.ms = Date.now() - r.t; r.size = params.encodedDataLength;
-      if (c.bodyFilter && (c.bodyCount || 0) < 8 && r.url.includes(c.bodyFilter) && /json|text|xml|javascript/.test(r.mime || '')) {
+      // --body: filtered bodies append to the printed lines (agent context —
+      // 8 max). --har: text/JSON bodies go into the FILE (50 max, they don't
+      // cost context), the lines stay untouched.
+      const textish = /json|text|xml|javascript/.test(r.mime || '');
+      const forLine = !!(c.bodyFilter && (c.bodyCount || 0) < 8 && r.url.includes(c.bodyFilter));
+      const forHar = !!(c.har && (c.bodyCount || 0) < 50);
+      if (textish && (forLine || forHar)) {
         c.bodyCount = (c.bodyCount || 0) + 1;
+        r.lineBody = forLine;
         r.bodyP = chrome.debugger.sendCommand(src, 'Network.getResponseBody', { requestId: params.requestId }).catch(() => null);
       }
     }
@@ -830,10 +839,11 @@ chrome.debugger.onEvent.addListener((src, method, params) => {
   }
 });
 
-async function captureNetwork(tabId, duration, filter, bodyFilter) {
+async function captureNetwork(tabId, duration, filter, bodyFilter, har) {
   await attachDbg(tabId);
   const c = new Map();
   c.bodyFilter = bodyFilter;
+  c.har = har;
   netCollectors.set(tabId, c);
   try {
     await chrome.debugger.sendCommand({ tabId }, 'Network.enable', {
@@ -841,12 +851,13 @@ async function captureNetwork(tabId, duration, filter, bodyFilter) {
       maxResourceBufferSize: 5_000_000,
     });
     await new Promise((r) => setTimeout(r, Math.min(duration || 4000, 30000)));
-    if (bodyFilter)
+    if (bodyFilter || har)
       // Await body fetches while still attached — they fail after detach.
       for (const r of c.values())
         if (r.bodyP) {
           const b = await r.bodyP;
-          r.body = !b ? '(body unavailable)' : b.base64Encoded ? '(binary body)' : b.body.slice(0, 1500);
+          if (b) r.bodyRaw = b; // kept whole for the HAR (base64 flag and all)
+          if (r.lineBody) r.body = !b ? '(body unavailable)' : b.base64Encoded ? '(binary body)' : b.body.slice(0, 1500);
         }
     await chrome.debugger.sendCommand({ tabId }, 'Network.disable').catch(() => {});
   } finally {
@@ -875,7 +886,64 @@ async function captureNetwork(tabId, duration, filter, bodyFilter) {
   // out the full duration but events stopped — say so, don't pass the partial
   // list off as a full capture.
   if (c.detached) lines.push('⚠ capture cut short — debugger detached mid-capture');
-  return lines.join('\n') || '(no requests captured — is the page idle? trigger the action, then run net again)';
+  const text = lines.join('\n') || '(no requests captured — is the page idle? trigger the action, then run net again)';
+  if (!har) return text;
+  // HAR 1.2 (DevTools/Burp/Caido open it): everything here was already riding
+  // the events — headers, postData, wallTime, initiator (#11 → the standard
+  // _initiator field). Bodies ride content.text (base64-encoded flagged) for
+  // the requests the capture fetched them for.
+  const H = (hdrs) => Object.entries(hdrs || {}).map(([name, value]) => ({ name, value: Array.isArray(value) ? value.join('\n') : String(value) }));
+  const qs = (u) => {
+    try {
+      return [...new URL(u).searchParams].map(([name, value]) => ({ name, value }));
+    } catch {
+      return [];
+    }
+  };
+  return {
+    lines: text,
+    har: {
+      log: {
+        version: '1.2',
+        creator: { name: 'chrome-bridge', version: chrome.runtime.getManifest().version },
+        entries: [...c.values()].map((r) => ({
+          startedDateTime: r.wall != null ? new Date(r.wall * 1000).toISOString() : new Date(r.t).toISOString(),
+          time: r.ms || 0,
+          request: {
+            method: r.method,
+            url: r.url,
+            httpVersion: r.req?.protocol || 'HTTP/1.1',
+            headers: H(r.req?.headers),
+            queryString: qs(r.url),
+            cookies: [],
+            headersSize: -1,
+            bodySize: -1,
+            ...(r.req?.postData ? { postData: { mimeType: r.req.postData.mimeType || '', text: String(r.req.postData.text || '').slice(0, 100_000) } } : {}),
+          },
+          response: r.res
+            ? {
+                status: r.res.status,
+                statusText: r.res.statusText || '',
+                httpVersion: r.res.protocol || 'HTTP/1.1',
+                headers: H(r.res.headers),
+                cookies: [],
+                content: {
+                  size: r.size || 0,
+                  mimeType: r.res.mimeType || '',
+                  ...(r.bodyRaw ? (r.bodyRaw.base64Encoded ? { text: r.bodyRaw.body.slice(0, 300_000), encoding: 'base64' } : { text: r.bodyRaw.body.slice(0, 300_000) }) : {}),
+                },
+                redirectURL: '',
+                headersSize: -1,
+                bodySize: r.size ?? -1,
+              }
+            : { status: 0, statusText: r.error || '(no response)', httpVersion: '', headers: [], cookies: [], content: { size: 0, mimeType: '' }, redirectURL: '', headersSize: -1, bodySize: -1 },
+          cache: {},
+          timings: { send: 0, wait: r.ms || 0, receive: 0 },
+          _initiator: { type: r.initObj?.type || 'other', ...(r.initObj?.url ? { url: r.initObj.url } : {}), ...(r.initObj?.stack?.callFrames?.[0]?.url ? { frame: r.initObj.stack.callFrames[0].url + ':' + r.initObj.stack.callFrames[0].lineNumber } : {}) },
+        })),
+      },
+    },
+  };
 }
 
 // --- Page-side scripts ------------------------------------------------------
@@ -2107,7 +2175,7 @@ async function handle(msg) {
 
   if (msg.type === 'net') {
     const tab = await findTab(msg);
-    return await withCdp(tab.id, () => captureNetwork(tab.id, msg.duration, msg.filter, msg.body));
+    return await withCdp(tab.id, () => captureNetwork(tab.id, msg.duration, msg.filter, msg.body, msg.har));
   }
 
   if (msg.type === 'wait') {

@@ -177,6 +177,12 @@ try {
         return respond({ status: 200, ct: 'application/pdf', binary: true, body: Buffer.from('PDFBYTES').toString('base64'), truncated: false });
       return respond({ status: 200, ct: 'application/json', binary: false, body: '{"a":1}', truncated: false });
     }
+    // net --har answers with the {lines, har} shape the CLI writes to the file.
+    if (msg.type === 'net' && msg.har)
+      return respond({
+        lines: 'GET 200 /x ⟵ a.js:1',
+        har: { log: { version: '1.2', creator: { name: 'chrome-bridge', version: '9' }, entries: [{ startedDateTime: '2026-09-07T00:00:00.000Z', request: { method: 'GET', url: 'https://x/' } }] } },
+      });
     // snap with scope 'trunc' answers a STRING (the real one does when the
     // tree truncates) — cli must echo the truncation line to stderr (it dies
     // in a `snap | grep` pipe otherwise) while stdout carries the tree.
@@ -293,6 +299,15 @@ try {
 
   const netc = await cli('net', 'example.com', '--dur', '500', '--filter', '/api');
   assert(netc.status === 0 && netc.stdout.includes('"duration":500') && netc.stdout.includes('"filter":"/api"'), 'cli net flags', netc.stdout + netc.stderr);
+  // --har: the {lines, har} shape lands in a file; the lines print unchanged
+  const harPath = '/tmp/chrome-bridge-selftest.har';
+  const netHar = await cli('net', 'example.com', '--dur', '500', '--har', harPath);
+  assert(
+    netHar.status === 0 && netHar.stdout.includes('GET 200 /x') && fs.readFileSync(harPath, 'utf8').includes('"version": "1.2"') && netHar.stderr.includes('HAR 1.2, 1 entries'),
+    'cli net --har writes the HAR file and prints the lines',
+    netHar.stdout + netHar.stderr
+  );
+  fs.unlinkSync(harPath);
   // --dur caps at 30s — the extension silently clamps, so fail here instead
   const netCap = await cli('net', 'example.com', '--dur', '60000');
   assert(netCap.status !== 0 && netCap.stderr.includes('--dur max is 30000'), 'cli net rejects --dur above the 30s cap', netCap.stdout + netCap.stderr);
@@ -605,6 +620,10 @@ try {
     // line — the request→issuing-script jump, nearly free with the debugger
     // already attached.
     assert(bg.includes('params.initiator') && bg.includes('⟵ '), 'ext: net lines carry the request initiator (⟵ script:line)');
+    // HAR 1.2 export: entries built from the payloads already riding the
+    // capture events (headers, postData, wallTime), bodies with base64
+    // encoding flagged, initiator as the standard _initiator field.
+    assert(bg.includes("version: '1.2'") && bg.includes('_initiator') && bg.includes('encoding:'), 'ext: net --har builds a real HAR 1.2 log (creator, entries, _initiator, base64 bodies)');
 
     // The service worker is never executed here (the fake extension plays it)
     // — a syntax error in it would otherwise ship green, as would one in

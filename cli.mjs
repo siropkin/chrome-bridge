@@ -155,11 +155,13 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
   eval <match> <js|-> [--world main|isolated]     '-' reads JS from stdin
   shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full]
                                     --max caps the long edge (default 1280, 0 = native res)
-  net <match> [--dur ms] [--filter s] [--body s]
+  net <match> [--dur ms] [--filter s] [--body s] [--har out.har]
                                     capture network for N ms, capped at 30s (CDP, one line per
                                     request, each naming its initiator: ⟵ script:line);
                                     --body s also captures JSON/text response bodies for URLs
-                                    containing s (≤8, 1500 chars each; implies --filter s)
+                                    containing s (≤8, 1500 chars each; implies --filter s);
+                                    --har out.har saves the capture as HAR 1.2 (DevTools/Burp
+                                    open it; text/JSON bodies land in the file, not the lines)
   fetch <match> <url> [--out file]  in-page fetch riding the logged-in session — login-walled
                                     JSON/feeds answer it; binary responses need --out, text
                                     prints capped at 50K chars (--out gets the full body)
@@ -576,6 +578,7 @@ async function run(cmdName, args) {
       let duration = null;
       let filter = null;
       let body = null;
+      let har = null;
       for (let i = 0; i < rest.length; i++) {
         if (rest[i] === '--dur') {
           duration = Number(rest[++i]);
@@ -585,11 +588,23 @@ async function run(cmdName, args) {
           if (duration > 30000) fail('--dur max is 30000 ms — run successive captures for longer windows');
         } else if (rest[i] === '--filter') filter = rest[++i];
         else if (rest[i] === '--body') body = rest[++i];
-        else fail(`unknown flag ${rest[i]}`);
+        else if (rest[i] === '--har') {
+          har = rest[++i];
+          if (har === undefined) fail('--har needs a file path');
+        } else fail(`unknown flag ${rest[i]}`);
       }
-      if (!match) fail('usage: net <match> [--dur ms] [--filter s] [--body s]');
+      if (!match) fail('usage: net <match> [--dur ms] [--filter s] [--body s] [--har out.har]');
       if (body && !filter) filter = body; // --body implies you only want those lines
-      print(await cmd({ type: 'net', urlMatch: match, duration, filter, body }));
+      const out = await cmd({ type: 'net', urlMatch: match, duration, filter, body, ...(har ? { har: true } : {}) });
+      if (har) {
+        // The capture as a persisted, shareable HAR 1.2 — DevTools/Burp/Caido
+        // open it; text/JSON response bodies land in the file (50 max), the
+        // printed lines stay exactly as without the flag.
+        if (!out?.har) fail('the extension did not return a HAR (older version? reload it at chrome://extensions)');
+        fs.writeFileSync(har, JSON.stringify(out.har, null, 1));
+        print(out.lines);
+        console.error(`saved ${har} (HAR 1.2, ${out.har.log.entries.length} entries)`);
+      } else print(out);
       break;
     }
 
