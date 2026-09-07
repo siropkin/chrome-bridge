@@ -2322,11 +2322,18 @@ async function waitPixel(tab, msg) {
   const t0 = Date.now();
   return await withCdp(tab.id, async () => {
     await attachDbg(tab.id);
-    const pngMsg = { ...msg, format: 'png' };
+    // PLAIN native captures, not the pinned clip: captureBeyondViewport
+    // renders are not pixel-stable on background windows (found live — the
+    // AA of a fixed header's edge flipped once, persistently, 0.9-7.1s after
+    // attach, surviving origin-rounding, settling, and confirmation). The
+    // live-compositor plain path is byte-stable (verified: 5 captures, 1s
+    // apart, identical md5). A viewport resize mid-wait — the thing the clip
+    // pin was invented for — is handled as re-baseline-and-continue below.
+    const pngMsg = { ...msg, format: 'png', max: 0 };
     const bannered = await removeBannerForCapture(tab.id); // the pill ticks pixels — keep it out of the baseline AND the polls
     let bmp0 = null;
     try {
-      const cap0 = await captureViewport(tab.id, pngMsg, undefined, true);
+      const cap0 = await captureViewport(tab.id, pngMsg);
       // Decode the baseline ONCE — re-decoding a multi-MB png every 800ms poll
       // was pure waste (found by review).
       bmp0 = await pngBitmap(cap0.b64);
@@ -2334,18 +2341,24 @@ async function waitPixel(tab, msg) {
         if (Date.now() - t0 >= timeout) throw new Error('timeout after ' + timeout + 'ms — no pixel change detected');
         await new Promise((r) => setTimeout(r, 800));
         // Remove the banner again before EVERY capture: the mark/pill
-        // executeScripts are fire-and-forget and land ~1s-or-later into this
-        // wait (observed live via a page-side MutationObserver: the auto-
-        // mark's injectBanner ADD at 1.00s mid-wait — after removal,
-        // suppression, and a settle-delay all failed to cover the jitter).
-        // A capture that follows a mid-sleep injection by even one poll
-        // would false-fire from the bridge's own UI; enforcement at the
+        // executeScripts are fire-and-forget and can land ~1s-or-later into
+        // this wait. A capture that follows a mid-sleep injection by even one
+        // poll would false-fire from the bridge's own UI; enforcement at the
         // capture is the only timing-proof invariant.
         await removeBannerForCapture(tab.id);
-        // Reuse the baseline's size/scale, follow the current origin.
-        const cap = await captureViewport(tab.id, pngMsg, cap0.clip);
+        // Plain capture: the frame is whatever the viewport is NOW — scroll
+        // and resize follow natively, no pin to maintain.
+        const cap = await captureViewport(tab.id, pngMsg);
         const cmp = await diffBmp(bmp0, await pngBitmap(cap.b64));
-        if (cmp.error) throw new Error(cmp.error);
+        if (cmp.error) {
+          // Viewport resized mid-wait (window resize / infobar settle where
+          // Chrome resizes): a diff across geometries is meaningless — adopt
+          // the new frame as baseline and keep watching, instead of dying
+          // the way the old pinned path did.
+          bmp0.close();
+          bmp0 = await pngBitmap(cap.b64);
+          continue;
+        }
         if (cmp.changed) {
           // Confirm before firing: background-window raster state is not
           // pixel-stable over time — a focus/occlusion change re-AA's
@@ -2355,7 +2368,7 @@ async function waitPixel(tab, msg) {
           // raster flip is gone by the next capture. One confirmation
           // capture (~200ms) instead of chasing render determinism.
           await removeBannerForCapture(tab.id);
-          const cap2 = await captureViewport(tab.id, pngMsg, cap0.clip);
+          const cap2 = await captureViewport(tab.id, pngMsg);
           const cmp2 = await diffBmp(bmp0, await pngBitmap(cap2.b64));
           if (!cmp2.error && !cmp2.changed) {
             cmp2.bmp.close();
