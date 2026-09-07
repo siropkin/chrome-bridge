@@ -659,6 +659,22 @@ try {
     // --skeleton: past the depth cut, count instead of emit — cut containers
     // read '… N inside' (self-describing truncation, deterministic drill via
     // the positional @ref scope), and skeleton diffs keep their own store.
+    // --diff actions carry a verdict (#8, neobrowser VERIFIED-ACTIONS style):
+    // first word of the result. The wall scan names bot walls; a pre-action
+    // baseline makes the diff read exactly the action's effects; uncertain is
+    // never promoted to succeeded.
+    assert(
+      bg.includes('WALL_SRC') && bg.includes('needs_human') && bg.includes('blocked') && bg.includes('uncertain') && bg.includes('succeeded'),
+      'ext: --diff actions return verdict statuses (succeeded/needs_human/blocked/uncertain)'
+    );
+    assert(
+      bg.includes('actAndVerify') && bg.includes('pre-action baseline'),
+      'ext: verdicts diff against a pre-action baseline (not the last snap — click A used to bleed into click B --diff)'
+    );
+    assert(
+      bg.includes('reCAPTCHA') && bg.includes('Cloudflare Turnstile') && bg.includes('DataDome'),
+      'ext: the wall scan names the common bot walls (reCAPTCHA, Turnstile, DataDome, PerimeterX, Arkose)'
+    );
     // --skeleton: past the depth cut, count instead of emit — cut containers
     // read '… N inside' (self-describing truncation, deterministic drill via
     // the positional @ref scope), and skeleton diffs keep their own store.

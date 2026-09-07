@@ -1563,7 +1563,7 @@ async function trustedInput(tab, msg) {
       await detachDbg(tab.id);
     }
   });
-  return msg.diff ? await observeDiff(tab.id, res) : res;
+  return res;
 }
 
 // Key press on the focused element (or a target). Synthetic keys are untrusted:
@@ -1940,22 +1940,94 @@ async function runEval(tabId, code, world = 'auto') {
   }
 }
 
+// Bot-wall / login-wall detection (#8, folded into the verdict pipeline): a
+// short scan of iframe srcs, URL, title and page text. Captcha walls →
+// needs_human (the human solves them — wait --human); rate-limit patterns →
+// blocked (retrying blindly or waiting for a human won't help); login walls →
+// needs_human. Signatures are deliberately cheap substring matches — naming
+// the wall is worth far more than classifying it perfectly.
+const WALL_SRC = `(() => {
+  const hay = (
+    [...document.querySelectorAll('iframe')].map((f) => f.src || '').join(' ') + ' ' + location.href + ' ' + (document.title || '') + ' ' +
+    (document.body?.innerText || '').slice(0, 3000)
+  ).toLowerCase();
+  const out = {};
+  const walls = [
+    [/recaptcha/, 'reCAPTCHA'],
+    [/challenges\\.cloudflare\\.com|turnstile/, 'Cloudflare Turnstile'],
+    [/datadome/, 'DataDome'],
+    [/perimeterx|humansecurity|px-captcha/, 'PerimeterX'],
+    [/arkose|funcaptcha/, 'Arkose'],
+  ];
+  const hit = walls.filter(([re]) => re.test(hay)).map(([, n]) => n);
+  if (hit.length) out.captcha = hit.join(', ');
+  if (/unusual traffic|too many requests|rate.?limit|access denied|request blocked/.test(hay)) out.block = 'rate limit / bot wall';
+  if (/(\\/|^)log[-_]?in|\\/sign[-_]?in|accounts\\.google\\.com/.test(location.href.toLowerCase())) out.login = true;
+  return out;
+})()`;
+
 // --- --diff on actions: observe in the same round trip ----------------------
 // The core agent loop collapses from click → wait → snap --diff (3 shell
 // calls, ~1s harness round trip each) to `click <match> @e3 --diff` (1 call):
 // settle, then diff-snap, appended to the action result. playwright-mcp and
 // BrowserMCP return a post-action snapshot with every action for the same
 // reason; a diff costs fewer tokens than the full snap it replaces.
-async function observeDiff(tabId, actionResult) {
+async function observeDiff(tabId, actionResult, url0) {
   try {
     await runEval(tabId, SETTLE_SRC);
+    const url1 = (await chrome.tabs.get(tabId).catch(() => null))?.url;
+    const wall = await runEval(tabId, WALL_SRC);
     const snap = await runEval(tabId, SNAP_SRC(null, true, false));
-    return actionResult + '\n' + snap;
+    // Verdict (neobrowser VERIFIED-ACTIONS style): the first word of the
+    // result. Order matters — a wall overrides anything the diff says, and
+    // uncertain is never promoted to succeeded: a bare return must never be
+    // readable as "ok".
+    let status, why;
+    if (wall.captcha) {
+      status = 'needs_human';
+      why = 'bot wall: ' + wall.captcha + ' — hand off: wait <match> --human';
+    } else if (wall.block) {
+      status = 'blocked';
+      why = wall.block;
+    } else if (wall.login && url1 !== url0) {
+      status = 'needs_human';
+      why = 'login/2FA wall — hand off: wait <match> --human';
+    } else if (url1 && url0 && url1 !== url0) {
+      status = 'succeeded';
+      why = 'navigated to ' + url1.slice(0, 60) + ' — refs are new';
+    } else if (/^\(no changes since last snap\)/.test(snap)) {
+      status = 'uncertain';
+      why = 'no observable change after the action — the event dispatched; verify via console/net/shot, or act again with a different target';
+    } else {
+      status = 'succeeded';
+    }
+    const body =
+      status === 'uncertain'
+        ? ''
+        : url1 && url0 && url1 !== url0
+          ? 'fresh snap (refs are new):\n' + (await runEval(tabId, SNAP_SRC(null, false, false)))
+          : /^\(no changes since last snap\)/.test(snap)
+            ? ''
+            : snap;
+    return `${status} · ${actionResult}${why ? ' — ' + why : ''}${body ? '\n' + body : ''}`;
   } catch (e) {
     // The action worked; only the observation failed (e.g. it navigated and
-    // tore the context mid-settle). Don't turn a success into an error.
-    return actionResult + '\n(observation unavailable: ' + String(e).slice(0, 120) + ' — re-snap; refs expired on navigation)';
+    // tore the context mid-settle). Don't turn a success into an error — but
+    // never claim the verdict either.
+    return 'uncertain · ' + actionResult + ' — observation unavailable: ' + String(e).slice(0, 120) + ' — re-snap; refs expired on navigation';
   }
+}
+
+// --diff actions run baseline → act → observe: the diff then reads exactly the
+// ACTION's effects. It used to diff against "whatever the agent last snapped"
+// — click A, then click B --diff showed A's effects in B's diff, and with no
+// prior snap it returned a full tree labeled as a diff.
+async function actAndVerify(tabId, msg, run) {
+  if (!msg.diff) return await run();
+  const url0 = (await chrome.tabs.get(tabId)).url;
+  await runEval(tabId, SNAP_SRC(null, false, false)); // pre-action baseline
+  const result = await run();
+  return await observeDiff(tabId, result, url0);
 }
 
 // Bounded wait for a tab to reach status 'complete' — nav/open then read as
@@ -2184,7 +2256,16 @@ async function handle(msg) {
     await chrome.tabs.update(tab.id, { url: msg.url });
     await markTab(tab.id);
     const complete = await loaded;
-    if (msg.diff) return await observeDiff(tab.id, `navigated${complete ? '' : ' (still loading)'}`);
+    // nav --diff carries the verdict too — no baseline diff (the page is
+    // replaced), so: walls first, then a fresh snap as the body.
+    if (msg.diff) {
+      const wall = await runEval(tab.id, WALL_SRC).catch(() => ({}));
+      if (wall.captcha) return `needs_human · navigated — bot wall: ${wall.captcha} — hand off: wait <match> --human`;
+      if (wall.block) return `blocked · navigated — ${wall.block}`;
+      if (wall.login) return 'needs_human · navigated to a login/2FA wall — hand off: wait <match> --human';
+      const snap = await runEval(tab.id, SNAP_SRC(null, false, false));
+      return `succeeded · navigated${complete ? '' : ' (still loading)'} — fresh snap (refs are new):\n${snap}`;
+    }
     return { id: tab.id, loaded: complete };
   }
 
@@ -2283,7 +2364,7 @@ async function handle(msg) {
   // (isTrusted=true events). Before the synthetic group so the flag wins.
   if (msg.trusted && ['click', 'press', 'type', 'hover', 'drag'].includes(msg.type)) {
     const tab = await findTab(msg);
-    return await trustedInput(tab, msg);
+    return await actAndVerify(tab.id, msg, () => trustedInput(tab, msg));
   }
 
   if (['click', 'fill', 'type', 'press', 'hover'].includes(msg.type)) {
@@ -2294,20 +2375,17 @@ async function handle(msg) {
       msg.type === 'type' ? typeSrc(msg.target, msg.value) :
       msg.type === 'press' ? pressSrc(msg.key, msg.target) :
       hoverSrc(msg.target);
-    const result = await runEval(tab.id, src);
-    return msg.diff ? await observeDiff(tab.id, result) : result;
+    return await actAndVerify(tab.id, msg, () => runEval(tab.id, src));
   }
 
   if (msg.type === 'paste') {
     const tab = await findTab(msg);
-    const result = await runEval(tab.id, pasteSrc(msg.target, msg.value));
-    return msg.diff ? await observeDiff(tab.id, result) : result;
+    return await actAndVerify(tab.id, msg, () => runEval(tab.id, pasteSrc(msg.target, msg.value)));
   }
 
   if (msg.type === 'drag') {
     const tab = await findTab(msg);
-    const result = await runEval(tab.id, dragSrc(msg.from, msg.to));
-    return msg.diff ? await observeDiff(tab.id, result) : result;
+    return await actAndVerify(tab.id, msg, () => runEval(tab.id, dragSrc(msg.from, msg.to)));
   }
 
   // A JS dialog (alert/confirm/prompt) blocks the renderer: every eval and
@@ -2332,10 +2410,9 @@ async function handle(msg) {
 
   if (msg.type === 'scroll') {
     const tab = await findTab(msg);
-    const result = await runEval(tab.id, scrollSrc(msg.target));
     // --diff shines here: lazy-loaded content is DOM mutations, so the
     // settle + snap-diff returns exactly what the scroll revealed.
-    return msg.diff ? await observeDiff(tab.id, result) : result;
+    return await actAndVerify(tab.id, msg, () => runEval(tab.id, scrollSrc(msg.target)));
   }
 
   // File upload: eval can't touch <input type=file> (JS-set values are ignored
@@ -2348,9 +2425,12 @@ async function handle(msg) {
   if (msg.type === 'upload') {
     const tab = await findTab(msg);
     const TAG = 'data-bridge-upload';
-    const mode = await runEval(
-      tab.id,
-      `(() => {
+    // The whole body rides actAndVerify so the verdict baseline precedes the
+    // CDP mutation (setFileInputFiles fires real input/change events).
+    return await actAndVerify(tab.id, msg, async () => {
+      const mode = await runEval(
+        tab.id,
+        `(() => {
         ${DEEPQ}
         const sel = ${JSON.stringify(msg.target)};
         const el = deepQuery(sel);
@@ -2362,32 +2442,32 @@ async function handle(msg) {
         input.setAttribute(${JSON.stringify(TAG)}, '');
         return input.multiple ? 'multiple' : 'single';
       })()`
-    );
-    if (mode === 'single' && msg.files.length > 1) {
-      await runEval(tab.id, `document.querySelector('[${TAG}]')?.removeAttribute('${TAG}')`).catch(() => {});
-      throw new Error('input has no "multiple" attribute — pass one file');
-    }
-    try {
-      await withCdp(tab.id, async () => {
-        try {
-          await attachDbg(tab.id);
-          const { root } = await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.getDocument', { depth: 1 });
-      const { nodeId } = await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.querySelector', {
-        nodeId: root.nodeId,
-        selector: `[${TAG}]`,
-      });
-          if (!nodeId) throw new Error('tagged input vanished mid-upload — re-snap and retry');
-          await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.setFileInputFiles', { nodeId, files: msg.files });
-        } finally {
-          await detachDbg(tab.id);
-        }
-      });
-    } finally {
-      await runEval(tab.id, `document.querySelector('[${TAG}]')?.removeAttribute('${TAG}')`).catch(() => {});
-    }
-    const names = msg.files.map((f) => f.split('/').pop()).join(', ');
-    const result = `uploaded ${msg.files.length} file(s) to ${msg.target}: ${names}`;
-    return msg.diff ? await observeDiff(tab.id, result) : result;
+      );
+      if (mode === 'single' && msg.files.length > 1) {
+        await runEval(tab.id, `document.querySelector('[${TAG}]')?.removeAttribute('${TAG}')`).catch(() => {});
+        throw new Error('input has no "multiple" attribute — pass one file');
+      }
+      try {
+        await withCdp(tab.id, async () => {
+          try {
+            await attachDbg(tab.id);
+            const { root } = await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.getDocument', { depth: 1 });
+            const { nodeId } = await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.querySelector', {
+              nodeId: root.nodeId,
+              selector: `[${TAG}]`,
+            });
+            if (!nodeId) throw new Error('tagged input vanished mid-upload — re-snap and retry');
+            await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.setFileInputFiles', { nodeId, files: msg.files });
+          } finally {
+            await detachDbg(tab.id);
+          }
+        });
+      } finally {
+        await runEval(tab.id, `document.querySelector('[${TAG}]')?.removeAttribute('${TAG}')`).catch(() => {});
+      }
+      const names = msg.files.map((f) => f.split('/').pop()).join(', ');
+      return `uploaded ${msg.files.length} file(s) to ${msg.target}: ${names}`;
+    });
   }
 
   if (msg.type === 'ask') {

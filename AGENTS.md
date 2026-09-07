@@ -36,7 +36,7 @@ The bridge is for pages a plain HTTP request can't handle — interaction (click
 2. `open <url>` / `nav <match> <url>` — auto-marks the tab (🟣 corner tag + tab group). Mutating commands (`click`/`fill`/`type`/`press`/`upload`/`eval`/`hover`/`scroll`/`grid`/`emulate`/`resize`/`drag`/`dialog`) auto-mark too — any tab you act in, or that visibly changes, shows the pill.
 3. **`snap <match>` — always snap before shooting.** The a11y tree with `@eN` refs is ~10× cheaper than a screenshot and usually answers the question. Only interactive/landmark elements appear — static text (`<p>`, `<div>`, `<pre>`) is not in the tree, so `--diff` can't see text changes; verify those with `wait --text` or `eval`. Trees truncate at 300 nodes: on a big page, `grep`/`--find` over a full snap can silently miss what's past the cut — take a `--skeleton` map first (cut subtrees read `… N inside`), or scope it: `snap <match> "[role=dialog]"` / `snap <match> @e12`. Re-checking after an action? `snap <match> --diff` prints only what changed. Looking for one thing? `snap <match> | grep -i save` — or, when you don't know what it's called, `snap <match> --find "the cancel button"` (local Nano picks matching lines, ~2s warm / ~20s first call while it loads; verify the shortlist). Link URLs are omitted except on nameless links (they were most of the bytes — you click refs, not URLs); add `--href` only if you truly need them.
 4. `click <match> @e3` / `fill <match> @e2 "value"` — refs **survive re-snaps** (an element keeps its @eN while its role+name are unchanged) but expire on navigation; re-snap after `nav`.
-5. **Act + observe in one call: `click <match> @e3 --diff`** — the action settles (waits for the DOM to go quiet, 3s cap), then the snap-diff (only what changed) rides along in the same result. No separate `wait` + `snap --diff` round trips. If there was no earlier snap, the full tree is returned instead — that's your baseline.
+5. **Act + observe in one call: `click <match> @e3 --diff`** — the action settles (waits for the DOM to go quiet, 3s cap), then the diff of exactly the action's effects rides along in the same result, prefixed with a **verdict**: `succeeded` (observable change / navigation), `needs_human` (bot wall named — hand off with `wait <match> --human`), `blocked` (rate limit), `uncertain` (dispatched, nothing observable changed — verify with console/net/shot; never read it as ok). No separate `wait` + `snap --diff` round trips.
 6. `wait <match> --text "Saved"` only when you need something specific without acting. Chain other dependent steps in one `batch` — stdin, one command per line — one process and one shell call instead of several.
 
 7. `shot <match> out.png` only when you need pixels. The long edge is capped at 1280px by default (models downscale bigger images on read anyway) — `--max 0` for native res, `--max 800 --format jpeg` for a cheap glance. Read screenshots in a subagent to keep image tokens out of the main context.
@@ -104,8 +104,11 @@ scroll <match> <up|down|top|bottom|@ref|css> [--diff]
                                   scroll (finds the real scroller — app shells like
                                   Linear/Gmail scroll an inner panel, not the window);
                                   --diff shows what lazy-loaded in
-                                  [--diff] on an action: settle (100ms DOM quiet, 3s cap), then
-                                  append the snap-diff — act + observe in one call
+                                  [--diff] on an action: baseline snap, act, settle (100ms DOM
+                                  quiet, 3s cap), then the diff of exactly the action's effects,
+                                  prefixed with a VERDICT — succeeded / needs_human / blocked /
+                                  uncertain (bot walls named; uncertain means nothing observable
+                                  changed — never read it as ok)
 ask <match> <question>              (experimental) local Gemini Nano answers from page
                                   text — no cloud tokens; pre-filter quality, not truth
 wait <match> <css|--text t|--human> [--timeout ms]

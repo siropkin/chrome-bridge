@@ -213,7 +213,7 @@ node cli.mjs unemulate news.ycombinator.com                # 恢复正常
 
 1. **先 `snap`**——文本树的 token 开销比截图低大约一个数量级,而且通常已经能回答问题。
 2. 保持小巧:`snap <match> "dialog"` 限定子树;操作之后用 `snap --diff` 只返回变化的部分(引用跨快照保持稳定)。
-3. **操作 + 观察合为一次调用**:`click <match> @e4 --diff` 执行点击、等待 DOM 安静(3 秒上限),然后在同一结果里附上快照差异——不需要单独的 `wait` 和 `snap` 往返。
+3. **操作 + 观察合为一次调用**:`click <match> @e4 --diff` 执行点击、等待 DOM 安静(3 秒上限),然后在同一结果里附上本次动作效果的差异,并带一个**判定**——`succeeded` / `needs_human`(指出具体机器人墙)/ `blocked`(限流)/ `uncertain`(无可观察变化——绝不要当成成功)——不需要单独的 `wait` 和 `snap` 往返。
 4. 只有需要像素时才 `shot`,且尽量便宜:`--max 800 --format jpeg`,或 `--crop` 到组件区域。
 5. 布局问题("这个居中了吗?")相信 `measure` 的数字,而不是肉眼。
 6. 有依赖关系的步骤用 `batch` 串起来——`printf 'click m @e4\nwait m --text "Saved"\nsnap m --diff\n' | node cli.mjs batch`,整个序列只占一个进程、一次 shell 调用。

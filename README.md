@@ -215,7 +215,7 @@ node cli.mjs unemulate news.ycombinator.com                # back to normal
 
 1. **`snap` first** — a text tree costs roughly an order of magnitude fewer tokens than a screenshot and usually answers the question.
 2. Keep it small: `snap <match> "dialog"` scopes to a subtree; after an action, `snap --diff` returns only what changed (refs stay stable across snaps).
-3. **Act + observe in one call**: `click <match> @e4 --diff` runs the click, settles (waits for the DOM to go quiet, 3s cap), and returns the snap-diff in the same result — no separate `wait` and `snap` round trips.
+3. **Act + observe in one call**: `click <match> @e4 --diff` runs the click, settles (waits for the DOM to go quiet, 3s cap), and returns the diff of exactly the action's effects in the same result, prefixed with a **verdict** — `succeeded` / `needs_human` (bot walls are named) / `blocked` (rate limit) / `uncertain` (nothing observable changed — never read it as ok). No separate `wait` and `snap` round trips.
 4. `shot` only when pixels matter, and then cheap: `--max 800 --format jpeg`, or `--crop` to the component.
 5. For layout questions ("is this centered?") trust `measure` numbers, not eyeballs.
 6. Batch independent steps — `printf 'click m @e4\nfill m @e2 "hi"\n' \| node cli.mjs batch` — one process and one shell call for the whole sequence.

@@ -147,8 +147,11 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
   scroll <match> <up|down|top|bottom|@ref|css> [--diff]
                                     scroll the page (or an element into view); --diff
                                     shows what lazy-loaded in
-                                    [--diff] on an action: settle (100ms DOM quiet, 3s cap), then
-                                    append the snap-diff to the result — act + observe in one call
+                                    [--diff] on an action: baseline snap, act, settle (100ms DOM
+                                    quiet, 3s cap), then the diff of exactly the action's effects,
+                                    prefixed with a VERDICT — succeeded / needs_human / blocked /
+                                    uncertain (bot walls named; uncertain means nothing observable
+                                    changed — never read it as ok)
   upload <match> <@ref|css> <file...> [--diff]
                                     set a file input's files (CDP — works on hidden
                                     inputs; target the input or an element wrapping it)
