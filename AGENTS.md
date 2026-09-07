@@ -103,6 +103,11 @@ note <match> <text>               narrate to the human: text shows in the driven
                                   The user sees every command in the pill anyway; note adds intent.
 watch                            live feed of every bridge command (terminal twin of the pill) —
                                   for the human watching you; you already see command results
+history [match] [-n N] [--batch out]
+                                  what already ran on this machine (the server ring holds the
+                                  last 300 commands) — post-mortems and session handoffs;
+                                  --batch out writes a replayable batch script (failed commands
+                                  commented out; shot paths and multiline eval don't survive)
 swlogs                            service-worker console tail (errors/warnings)
 emulate <match> <w> <h> [mobile]  CDP device view (no window resize)
 unemulate <match>                 clear emulation + detach debugger

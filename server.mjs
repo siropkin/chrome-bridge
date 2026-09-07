@@ -162,6 +162,66 @@ async function route(msg) {
 // Ring of 300; `since` in GET /log picks up only the new lines.
 const activity = [];
 let actSeq = 0;
+
+// Replayable CLI line for the ring, rebuilt from the command at relay time —
+// `history --batch` turns the ring into a script. shellq matches cli batch's
+// tokenizer ("double"/'single' quotes, glued to bare words): a token is bare
+// only when whitespace/quotes can't split it and it isn't flag-shaped (a fill
+// value like '--draft' must ride quoted or the fill parser rejects it as a
+// flag). The ring is memory-only — server.log keeps the value-free display
+// line, so fill values still never reach the durable log (same local trust
+// line as /cmd itself).
+const shellq = (s) => {
+  s = String(s);
+  return /[\s'"#]/.test(s) || /^--/.test(s) ? (s.includes('"') ? `'${s}'` : `"${s}"`) : s;
+};
+const D = (m) => (m.diff ? ' --diff' : '');
+const CLI_LINES = {
+  open: (m) => `open ${shellq(m.url)}`,
+  navigate: (m) => `nav ${shellq(m.urlMatch)} ${shellq(m.url)}${D(m)}`,
+  close: (m) => `close ${shellq(m.urlMatch)}`,
+  mark: (m) => `mark ${shellq(m.urlMatch)}`,
+  release: (m) => `release ${shellq(m.urlMatch)}`,
+  unemulate: (m) => `unemulate ${shellq(m.urlMatch)}`,
+  tabs: (m) => `tabs${m.urlMatch ? ' ' + shellq(m.urlMatch) : ''}`,
+  swlogs: () => 'swlogs',
+  snap: (m) =>
+    `snap ${shellq(m.urlMatch)}${m.scope ? ' ' + shellq(m.scope) : ''}${m.href ? ' --href' : ''}${m.find ? ' --find ' + shellq(m.find) : ''}${D(m)}`,
+  click: (m) => `click ${shellq(m.urlMatch)} ${shellq(m.target)}${m.dbl ? ' --dbl' : ''}${D(m)}`,
+  drag: (m) => `drag ${shellq(m.urlMatch)} ${shellq(m.from)} ${shellq(m.to)}${D(m)}`,
+  dialog: (m) => `dialog ${shellq(m.urlMatch)} ${m.accept ? 'accept' : 'dismiss'}${m.text ? ' --text ' + shellq(m.text) : ''}`,
+  fill: (m) => `fill ${shellq(m.urlMatch)} ${shellq(m.target)} ${shellq(m.value)}${D(m)}`,
+  type: (m) => `type ${shellq(m.urlMatch)} ${shellq(m.target)} ${shellq(m.value)}${D(m)}`,
+  press: (m) => `press ${shellq(m.urlMatch)} ${shellq(m.key)}${m.target ? ' ' + shellq(m.target) : ''}${D(m)}`,
+  hover: (m) => `hover ${shellq(m.urlMatch)} ${shellq(m.target)}${D(m)}`,
+  scroll: (m) => `scroll ${shellq(m.urlMatch)} ${shellq(m.target)}${D(m)}`,
+  upload: (m) => `upload ${shellq(m.urlMatch)} ${shellq(m.target)} ${(m.files || []).map(shellq).join(' ')}${D(m)}`,
+  ask: (m) => `ask ${shellq(m.urlMatch)} ${shellq(m.question)}`,
+  wait: (m) =>
+    `wait ${shellq(m.urlMatch)}${m.selector ? ' ' + shellq(m.selector) : ''}${m.text ? ' --text ' + shellq(m.text) : ''}${
+      m.timeout != null && m.timeout !== 10000 ? ' --timeout ' + m.timeout : ''
+    }`,
+  // Multiline code can't be one batch line — null drops it to a comment.
+  eval: (m) =>
+    m.code.includes('\n')
+      ? null
+      : `eval ${shellq(m.urlMatch)} ${shellq(m.code)}${m.world && m.world !== 'auto' ? ' --world ' + m.world.toLowerCase() : ''}`,
+  // The output path is CLI-side and never rides the msg — placeholder name.
+  shot: (m) =>
+    `shot ${shellq(m.urlMatch)} shot-replay.png${m.full ? ' --full' : ''}${m.crop ? ' --crop ' + m.crop.join(',') : ''}` +
+    `${m.max != null ? ' --max ' + m.max : ''}${m.scale != null ? ' --scale ' + m.scale : ''}` +
+    `${m.format ? ' --format ' + m.format : ''}${m.quality != null ? ' --quality ' + m.quality : ''}`,
+  net: (m) =>
+    `net ${shellq(m.urlMatch)}${m.duration != null ? ' --dur ' + m.duration : ''}${m.filter ? ' --filter ' + shellq(m.filter) : ''}${
+      m.body ? ' --body ' + shellq(m.body) : ''
+    }`,
+  measure: (m) => `measure ${shellq(m.urlMatch)} ${shellq(m.selector)}`,
+  console: (m) => `console ${shellq(m.urlMatch)}${m.clear ? ' --clear' : ''}${m.ask ? (m.ask === true ? ' --ask' : ' --ask ' + shellq(m.ask)) : ''}`,
+  grid: (m) => `grid ${shellq(m.urlMatch)}`,
+  note: (m) => `note ${shellq(m.urlMatch)} ${shellq(m.text)}`,
+  emulate: (m) => `emulate ${shellq(m.urlMatch)} ${m.width} ${m.height}${m.mobile ? ' mobile' : ''}`,
+  resize: (m) => `resize ${shellq(m.urlMatch)} ${m.width} ${m.height}`,
+};
 // `watch` keys its `since` cursor on actSeq, which resets on restart — the
 // boot id lets it detect the reset instead of silently filtering out every
 // line until seq climbs back past the old high-water mark.
@@ -189,7 +249,12 @@ function pushAct(msg, out, ms) {
     // select option values) — strip control chars so a page can't inject ANSI
     // escapes or forged newlines into server.log / the `watch` terminal.
   ).replace(/[\x00-\x1f\x7f\x9b]/g, ' ');
-  activity.push({ seq: ++actSeq, line });
+  // The replayable form rides the ring (see CLI_LINES above); a failed command
+  // is commented out so a replayed script proceeds past it instead of dying.
+  const replay = CLI_LINES[msg.type]?.(msg);
+  const prof = msg.profile ? `--profile ${seatTag(msg.profile)} ` : '';
+  const cmd = replay == null ? null : out.ok ? prof + replay : `# failed · ${prof}${replay}`;
+  activity.push({ seq: ++actSeq, line, cmd });
   if (activity.length > 300) activity.shift();
   console.log('[act] ' + line); // server.log gets a durable copy for post-mortems
 }

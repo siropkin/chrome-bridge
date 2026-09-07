@@ -135,6 +135,13 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     (use sparingly: before a risky/long sequence, or to explain why)
   watch                            live feed of every bridge command — the terminal twin of the pill;
                                     for the human watching you, not for you (Ctrl-C to exit)
+  history [match] [-n N] [--batch out]
+                                    what the bridge already ran (the server ring holds the
+                                    last 300 commands): [match] filters, -n takes the newest N —
+                                    the same lines watch shows live, for post-mortems and session
+                                    handoffs; --batch out writes the recorded commands as a
+                                    replayable batch script (failed ones commented out; shot
+                                    output paths and multiline eval code don't survive)
   swlogs                            service-worker console tail (errors/warnings)
   emulate <match> <w> <h> [mobile]  CDP device view (no window resize)
   unemulate <match>                 clear emulation + detach debugger
@@ -281,6 +288,44 @@ async function run(cmdName, args) {
       }
     }
 
+    // Thin read over the server's activity ring — the same data `watch` tails,
+    // without having had a `watch` running: a fresh session or a post-mortem
+    // sees what was already done. `--batch out` turns the ring into a replay
+    // script (history --batch's own run lands in the ring AFTER the read, so
+    // the export never contains itself).
+    case 'history': {
+      let n = null;
+      let outFile = null;
+      let match = null;
+      for (let i = 0; i < args.length; i++) {
+        if (args[i] === '-n') n = Number(args[++i]);
+        else if (args[i] === '--batch') outFile = args[++i];
+        else if (args[i].startsWith('--')) fail(`unknown flag ${args[i]} (flags: -n N, --batch out)`);
+        else if (!match) match = args[i];
+        else fail('usage: history [match] [-n N] [--batch out]');
+      }
+      if (outFile === undefined || (n !== null && (!Number.isFinite(n) || n < 1)))
+        fail('usage: history [match] [-n N] [--batch out]');
+      let res;
+      try {
+        res = await fetch(`${BASE}/log`).then((r) => r.json());
+      } catch {
+        fail('bridge server not running — start it: node cli.mjs start');
+      }
+      let lines = res.lines.filter((a) => !match || a.line.includes(match));
+      if (n) lines = lines.slice(-n);
+      if (outFile) {
+        // Commands the ring couldn't replay (multiline eval, unknown types)
+        // stay visible as comments — a silent drop would read as "that
+        // command never ran".
+        fs.writeFileSync(outFile, lines.map((a) => a.cmd || '# ' + a.line).join('\n') + '\n');
+        console.log(`saved ${outFile} (${lines.length} lines — replay with: node cli.mjs batch < ${outFile})`);
+      } else {
+        print(lines.map((a) => a.line).join('\n') || '(no history — the ring holds the last 300 commands, and it is empty)');
+      }
+      break;
+    }
+
     case 'note': {
       if (args.length < 2) fail('usage: note <match> <text>');
       print(await cmd({ type: 'note', urlMatch: args[0], text: args.slice(1).join(' ') }));
@@ -296,7 +341,17 @@ async function run(cmdName, args) {
       const lines = (await stdin()).split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
       for (const line of lines) {
         console.error('$ ' + line); // stderr: stdout stays pure concatenated results (machine-parseable)
-        const [c, ...a] = tokenize(line);
+        const tokens = tokenize(line);
+        // A leading --profile routes this line (history --batch emits one per
+        // recorded command; without this the token reads as a command name) and
+        // holds for the rest of the script, like the original session had it.
+        if (tokens[0] === '--profile') {
+          if (!tokens[1] || tokens[1].startsWith('--')) fail('--profile needs an id or name (see: cli profiles)');
+          PROFILE = tokens[1];
+          tokens.splice(0, 2);
+        }
+        const [c, ...a] = tokens;
+        if (!c) continue;
         await run(c, a);
       }
       break;

@@ -369,6 +369,29 @@ try {
   );
   assert(batch.stderr.includes('$ tabs example.com'), 'cli batch echoes lines to stderr', batch.stderr);
 
+  // A leading --profile routes the batch's lines (history --batch emits one
+  // per recorded command) — it used to read as an unknown command name.
+  const batchProf = await cliStdin('--profile alpha-test\nsnap example.com\n', 'batch');
+  assert(batchProf.status === 0 && batchProf.stdout.includes('"urlMatch":"example.com"'), 'cli batch accepts a leading --profile', batchProf.stdout + batchProf.stderr);
+
+  // history: thin read over the server ring (the same data watch tails);
+  // --batch exports the replayable form the server rebuilt at relay time.
+  const hist = await cli('history');
+  assert(hist.status === 0 && hist.stdout.includes('eval example.com') && hist.stdout.includes('· ok'), 'cli history reads the server ring', hist.stdout + hist.stderr);
+  const histN = await cli('history', '-n', '1');
+  assert(histN.status === 0 && histN.stdout.trim().split('\n').length === 1, 'cli history -n takes the newest N', histN.stdout + histN.stderr);
+  const histBad = await cli('history', '--nope');
+  assert(histBad.status !== 0 && histBad.stderr.includes('unknown flag'), 'cli history rejects unknown flags', histBad.stdout + histBad.stderr);
+  const histPath = '/tmp/chrome-bridge-selftest.batch';
+  const histExport = await cli('history', 'example.com', '--batch', histPath);
+  const histScript = fs.readFileSync(histPath, 'utf8');
+  assert(
+    histExport.status === 0 && histScript.includes('fill example.com @e2 "hello world" --diff') && histScript.includes('eval example.com document.title'),
+    'cli history --batch exports replayable, quoted commands',
+    histExport.stdout + '\n' + histScript
+  );
+  fs.unlinkSync(histPath);
+
   const helpFlag = await cli('--help');
   assert(helpFlag.status === 0 && helpFlag.stdout.includes('chrome-bridge CLI'), 'cli --help prints usage, exit 0', helpFlag.stdout + helpFlag.stderr);
   const unknown = await cli('nope');
@@ -457,7 +480,7 @@ try {
     );
     // CLI-local commands (no wire type), the nav→navigate alias, and probe
     // (a server-internal routing query — no CLI surface).
-    const CLI_LOCAL = ['batch', 'health', 'start', 'stop', 'watch', 'profiles', 'probe'];
+    const CLI_LOCAL = ['batch', 'health', 'start', 'stop', 'watch', 'history', 'profiles', 'probe'];
     const usageWire = new Set([...usageCmds].filter((c) => !CLI_LOCAL.includes(c)).map((c) => (c === 'nav' ? 'navigate' : c)));
     assert(
       [...usageWire].sort().join() === [...handleTypes].filter((t) => t !== 'ping' && t !== 'probe').sort().join(),
@@ -660,6 +683,18 @@ try {
     // the activity feed names who acted
     const feed = (await fetch(`http://127.0.0.1:${PORT}/log`).then((r) => r.json())).lines;
     assert(feed.some((a) => a.line.includes('snap sample.org @beta')), 'feed: routed command carries the profile tag', JSON.stringify(feed.slice(-3)));
+
+    // The exported replay of a routed command carries --profile (batch accepts
+    // a leading one) — replaying it in a multi-profile setup lands in the same
+    // profile instead of relying on auto-routing.
+    const histPath2 = '/tmp/chrome-bridge-selftest2.batch';
+    await cli('history', '--batch', histPath2);
+    assert(
+      fs.readFileSync(histPath2, 'utf8').includes('--profile beta snap sample.org'),
+      'history --batch: routed commands carry --profile',
+      fs.readFileSync(histPath2, 'utf8')
+    );
+    fs.unlinkSync(histPath2);
 
     // --- human-facing profile names -------------------------------------------
     // The extension derives a stable word from its profile id (?name= in the WS

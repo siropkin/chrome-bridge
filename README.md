@@ -188,6 +188,7 @@ You're handing an agent your logged-in browser — the design assumes you want t
 | `mark <match>` · `release <match>` | Add/remove the driven-tab corner tag + 🟣 tab group |
 | `note <match> <text>` | Narrate to the human — the text appears in the driven tab's pill and its history (the pill already shows *what* runs; notes add *why*) |
 | `watch` | Live feed of every bridge command in your terminal — the twin of the in-page pill. Run it next to your agent session and follow along; Ctrl-C to exit |
+| `history [match] [-n N] [--batch out]` | What the bridge already ran on this machine (server ring, last 300 commands) — filter by match, take the newest N; `--batch out` exports it as a replayable batch script (failed commands commented out). Post-mortems and session handoffs |
 | `swlogs` | Service-worker console tail (errors/warnings) |
 | `start` · `stop` | Server lifecycle — `start` spawns it detached if down (agents can self-heal a dead server) |
 
