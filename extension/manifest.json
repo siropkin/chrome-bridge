@@ -3,7 +3,7 @@
   "name": "Chrome Bridge",
   "version": "1.18.11",
   "minimum_chrome_version": "117",
-  "description": "Lets a local agent drive this browser via the chrome-bridge server (127.0.0.1 only). Load while testing; unload when done.",
+  "description": "Let an AI agent drive this browser via the local chrome-bridge server (127.0.0.1 only). A 🟣 pill narrates what the agent does.",
   "icons": { "128": "icons/icon128.png", "48": "icons/icon48.png", "32": "icons/icon32.png", "16": "icons/icon16.png" },
   "permissions": ["tabs", "tabGroups", "scripting", "alarms", "debugger", "storage"],
   "host_permissions": ["<all_urls>"],
