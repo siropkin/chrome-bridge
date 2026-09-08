@@ -1,0 +1,82 @@
+# Release pipeline: triggered when a `v*` tag is pushed.
+#
+# Steps:
+#   1. Verify extension/manifest.json AND package.json versions match the tag
+#   2. Build a clean extension zip (manifest.json at zip root — CWS requirement)
+#   3. Create a GitHub Release: annotated-tag message as the body (it is the
+#      release record — there is no CHANGELOG), commit notes appended, zip attached
+#   4. (Optional) Upload to the Chrome Web Store as a draft
+#
+# To enable Chrome Web Store auto-upload, set repository variable
+# CHROME_PUBLISH=true and add four secrets:
+#   CHROME_EXTENSION_ID  — listing id from the developer dashboard URL
+#   CHROME_CLIENT_ID     — OAuth client id (Google Cloud Console)
+#   CHROME_CLIENT_SECRET — OAuth client secret
+#   CHROME_REFRESH_TOKEN — refresh token from the Web Store API quickstart
+# First listing upload must be manual via the dashboard (one-time $5 dev fee).
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Verify versions match tag
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          MANIFEST=$(node -p "require('./extension/manifest.json').version")
+          PACKAGE=$(node -p "require('./package.json').version")
+          if [ "$TAG" != "$MANIFEST" ] || [ "$TAG" != "$PACKAGE" ]; then
+            echo "::error::tag v$TAG vs manifest $MANIFEST / package $PACKAGE — bump BOTH extension/manifest.json and package.json (same value)"
+            exit 1
+          fi
+          echo "VERSION=$TAG" >> "$GITHUB_ENV"
+
+      - name: Build extension zip
+        run: |
+          ZIP_NAME="chrome-bridge-extension-v${VERSION}.zip"
+          (cd extension && zip -r "../$ZIP_NAME" .)
+          echo "ZIP_NAME=$ZIP_NAME" >> "$GITHUB_ENV"
+          ls -lh "$ZIP_NAME"
+
+      - name: Extract release notes from the annotated tag
+        run: |
+          {
+            echo "NOTES<<EOF"
+            git tag -l "v$VERSION" --format='%(contents)'
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: v${{ env.VERSION }}
+          body: ${{ env.NOTES }}
+          generate_release_notes: true
+          append_body: true
+          files: ${{ env.ZIP_NAME }}
+
+      - name: Upload to Chrome Web Store (draft)
+        if: ${{ vars.CHROME_PUBLISH == 'true' }}
+        uses: mnao305/chrome-extension-upload@v6.0.0
+        continue-on-error: true
+        with:
+          file-path: ${{ env.ZIP_NAME }}
+          extension-id: ${{ secrets.CHROME_EXTENSION_ID }}
+          client-id: ${{ secrets.CHROME_CLIENT_ID }}
+          client-secret: ${{ secrets.CHROME_CLIENT_SECRET }}
+          refresh-token: ${{ secrets.CHROME_REFRESH_TOKEN }}
+          # `publish: false` uploads as a draft — review in the CWS dashboard,
+          # then click Publish. Flip to `true` once you trust the pipeline.
+          publish: false
