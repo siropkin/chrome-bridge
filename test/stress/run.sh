@@ -297,8 +297,10 @@ s_marks() {
   "${CLI[@]}" tabs "static.html?x=marks" | grep -q '"driven":true' && ok "snap (read) re-marks the tab" || bad "snap does not mark"
   "${CLI[@]}" eval "static.html?x=marks" "!!document.getElementById('bridge-banner')" >"$OUT/07.log" 2>&1
   assert_grep "banner present on driven tab" "$OUT/07.log" '^true$'
+  "${CLI[@]}" tabs "static.html?x=marks" | grep -q '"group":"🟣 Bridge"' && ok "driven tab joins the 🟣 Bridge group" || bad "driven tab not grouped"
   "${CLI[@]}" release "static.html?x=marks" >/dev/null
   "${CLI[@]}" tabs "static.html?x=marks" | grep -q '"driven":true' && bad "final release failed" || ok "release clears again"
+  "${CLI[@]}" tabs "static.html?x=marks" | grep -q '"group"' && bad "release did not ungroup" || ok "release ungroups from the Bridge group"
 }
 
 # ---------------------------------------------------------------- section 8

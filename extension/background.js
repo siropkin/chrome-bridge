@@ -200,7 +200,6 @@ chrome.alarms.onAlarm.addListener(() => {
 // shared "🟣 Bridge" tab group, so the user can see at a glance what's being
 // driven. `release` undoes all of it.
 const drivenTabs = new Set();
-let drivenGroupId = null;
 
 // Per-tab bridge state lives in chrome.storage.session: it survives the MV3
 // service-worker cycle and dies with the browser — exactly the lifetime these
@@ -209,7 +208,15 @@ let drivenGroupId = null;
 // updates, release wouldn't clean up) and unemulate no-op'd on a still-live
 // override. The in-memory maps stay the fast path; persist() writes through.
 // (tabStatus/tabActivity are declared below; persist() only runs after them.)
+// False until the `ready` rehydration below completes. persist() during the
+// hydration window would serialize the half-empty maps over the good copy in
+// storage.session — and the wake-up event is often itself a tab close
+// (onRemoved fires before hydration fills drivenTabs). If the SW then dies
+// before the next command's persist, emulatedTabs is gone while the device
+// override is still live and unemulate no-ops forever.
+let hydrated = false;
 function persist() {
+  if (!hydrated) return;
   chrome.storage.session
     .set({
       drivenTabs: [...drivenTabs],
@@ -244,9 +251,15 @@ const ready = (async () => {
     for (const id of [...tabStatus.keys()]) if (!live.has(id)) tabStatus.delete(id);
     for (const id of [...tabActivity.keys()]) if (!live.has(id)) tabActivity.delete(id);
   } catch {}
+  // A ⏳ tabStatus outlived its worker: the finally that clears it died with
+  // the SW, and inflight is memory-only — nothing is running in this fresh
+  // worker. Reset the stale ones or onUpdated re-applies ⏳ after every
+  // navigation of that tab, forever.
+  for (const id of [...tabStatus.keys()]) if (tabStatus.get(id) === '⏳') setFavicon(id, null);
   // What survived the restart is THE diagnostic question after reload trouble
   // (storage.session dies on extension reload; only the group fallback then).
   logLine(`hydrated driven=${drivenTabs.size} emulated=${emulatedTabs.size}`);
+  hydrated = true; // persist() is safe from here on
 })();
 
 // Runs in the page; must be self-contained.
@@ -486,31 +499,56 @@ function activityPhrases(msg) {
   return { ing: cut(detail ? v[0] + ' ' + detail : v[0]), done: cut(detail ? v[1] + ' ' + detail : v[1]) };
 }
 
+// Serialized per window: two concurrent first-ever marks would both query
+// "no Bridge group yet" and each create one — tab groups never auto-dissolve,
+// so the duplicate would live forever.
+const groupChain = new Map(); // windowId -> in-flight grouping
 async function groupTab(tabId) {
+  let windowId;
   try {
-    if (drivenGroupId === null) {
-      // Service-worker restarts wipe drivenGroupId — recover the existing
-      // Bridge group in this window instead of spawning a duplicate.
-      const { windowId } = await chrome.tabs.get(tabId);
-      const groups = await chrome.tabGroups.query({ title: '🟣 Bridge', windowId });
-      drivenGroupId = groups[0]?.id ?? null;
-    }
-    if (drivenGroupId !== null) {
-      await chrome.tabs.group({ tabIds: tabId, groupId: drivenGroupId });
+    ({ windowId } = await chrome.tabs.get(tabId));
+  } catch {
+    return; // tab died mid-command — grouping is best-effort
+  }
+  const run = (groupChain.get(windowId) || Promise.resolve()).then(() =>
+    // Gate at resume: a release that landed while this mark sat queued must
+    // not be un-done by the queued grouping (markTab adds to drivenTabs
+    // synchronously before calling, so every call site passes the gate).
+    drivenTabs.has(tabId) ? groupTabNow(tabId) : null
+  );
+  const tail = run.catch(() => {});
+  groupChain.set(windowId, tail);
+  tail.then(() => groupChain.get(windowId) === tail && groupChain.delete(windowId)); // self-pruning; the identity guard keeps a newer in-flight chain's entry
+  try {
+    await run;
+  } catch {} // e.g. chrome:// pages can't be grouped
+}
+async function groupTabNow(tabId) {
+  // The Bridge group is ALWAYS re-derived from the tab's own window — a
+  // cached global id teleports tabs in multi-window sessions:
+  // chrome.tabs.group with a cross-window groupId does not throw, it MOVES
+  // the tab into the cached group's window (verified against Chromium's
+  // tabs_api.cc — found by the v1.18.12 flow review). Derived at EXECUTION
+  // time, not enqueue time: a tab dragged to another window while queued
+  // must group where it lives NOW, not where it lived when queued.
+  let windowId;
+  try {
+    ({ windowId } = await chrome.tabs.get(tabId));
+  } catch {
+    return;
+  }
+  try {
+    const groups = await chrome.tabGroups.query({ title: '🟣 Bridge', windowId });
+    if (groups[0]) {
+      await chrome.tabs.group({ tabIds: tabId, groupId: groups[0].id });
       return;
     }
-  } catch {
-    drivenGroupId = null; // group is gone or in another window — recreate
-  }
-  try {
-    drivenGroupId = await chrome.tabs.group({ tabIds: tabId });
-    await chrome.tabGroups.update(drivenGroupId, {
-      title: '🟣 Bridge',
-      color: 'purple',
-    });
-  } catch {
-    // Grouping is best-effort (e.g. chrome:// pages can't be grouped).
-  }
+  } catch {} // fall through to create
+  const gid = await chrome.tabs.group({ tabIds: tabId });
+  await chrome.tabGroups.update(gid, {
+    title: '🟣 Bridge',
+    color: 'purple',
+  });
 }
 
 // --- Status favicon ----------------------------------------------------------
@@ -565,6 +603,7 @@ async function markTab(tabId) {
   drivenTabs.add(tabId);
   persist();
   await groupTab(tabId);
+  if (!drivenTabs.has(tabId)) return; // a release landed mid-mark — don't resurrect the pill
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
@@ -578,6 +617,7 @@ async function markTab(tabId) {
 async function releaseTab(tabId) {
   drivenTabs.delete(tabId);
   tabActivity.delete(tabId); // else a re-mark resurrects the stale history ring
+  shotBaselines.delete(tabId); // else a later session's first --diff compares against a previous session's pixels
   pillSeq.delete(tabId);
   inflight.delete(tabId);
   failedSinceOk.delete(tabId);
@@ -591,7 +631,12 @@ async function releaseTab(tabId) {
     });
   } catch {}
   try {
-    await chrome.tabs.ungroup(tabId);
+    // Ungroup ONLY from the bridge's own group: release on a tab the bridge
+    // never drove (ambiguous <match>) must not yank it out of a group the
+    // USER made — everything else in releaseTab is a no-op on a non-driven
+    // tab; an unguarded ungroup wasn't.
+    const { groupId } = await chrome.tabs.get(tabId);
+    if (groupId !== -1 && (await chrome.tabGroups.get(groupId)).title === '🟣 Bridge') await chrome.tabs.ungroup(tabId);
   } catch {}
 }
 
@@ -620,12 +665,46 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   tabActivity.delete(tabId);
   pillSeq.delete(tabId);
   inflight.delete(tabId);
+  failedSinceOk.delete(tabId);
   worldCache.delete(tabId);
   cdpRefs.delete(tabId); // debugger auto-detaches on close
   cdpQ.delete(tabId);
   emulatedTabs.delete(tabId);
   shotBaselines.delete(tabId); // full-png baselines must not outlive their tab
   persist();
+});
+
+// Prerender/Instant swaps the tab id under us (onReplaced, NOT onRemoved —
+// onRemoved only fires on close): without a remap the new id drops out of
+// drivenTabs and sheds every marker (banner died with the old document;
+// onUpdated won't re-banner an id it has never seen) while the old id's
+// state leaks and the session still believes the tab is driven.
+//
+// Durable per-tab DATA follows the id; volatile command lifecycle does NOT:
+// commands in flight at swap time are keyed to the OLD id (msg._tabId) and
+// their finallys settle there — remapping their bookkeeping (inflight,
+// pillSeq, a mid-command ⏳ tabStatus) strands it on the new id forever, and
+// the debugger session died with the old renderer, so emulatedTabs/cdpQ/
+// cdpRefs must DROP, not follow (onDetach fires with the old id and would
+// miss entries that had already moved).
+chrome.tabs.onReplaced.addListener((newTabId, oldTabId) => {
+  stopTick(oldTabId); // the ticker would inject into a dead id
+  cdpRefs.delete(oldTabId);
+  cdpQ.delete(oldTabId); // the dead session's pending chain can only wedge the new id (up to 65s)
+  emulatedTabs.delete(oldTabId); // the override died with the old renderer — the new id is fresh for the next emulate
+  for (const m of [tabActivity, failedSinceOk, worldCache, shotBaselines]) {
+    if (m.has(oldTabId)) {
+      m.set(newTabId, m.get(oldTabId));
+      m.delete(oldTabId);
+    }
+  }
+  if (drivenTabs.delete(oldTabId)) {
+    drivenTabs.add(newTabId);
+    persist();
+    // Banner + group died with the old document — re-assert them on the new
+    // id, or the pill stays gone until the next navigation.
+    markTab(newTabId).catch(() => {});
+  }
 });
 
 // --- CDP debugger refcount ---------------------------------------------------
@@ -680,6 +759,11 @@ chrome.debugger.onDetach.addListener((src) => {
   if (cdpRefs.delete(src.tabId) || emulatedTabs.has(src.tabId)) logLine('dbg DETACHED EXTERNALLY ' + src.tabId);
   cdpRefs.delete(src.tabId);
   emulatedTabs.delete(src.tabId);
+  // Fired during the hydration window (often the very event that woke the
+  // SW): the delete hit the still-empty map, and hydration then resurrects
+  // the stale emulatedTabs entry from storage.session — re-apply once
+  // hydrated so the cleanup lands on the real map and persists.
+  if (!hydrated) ready.then(() => { emulatedTabs.delete(src.tabId); persist(); });
   persist();
   // A detach can drop an in-flight sendCommand's callback entirely — the
   // queued chain behind it would never advance, wedging every later CDP
@@ -1661,6 +1745,15 @@ async function captureViewport(tabId, msg, reuseClip, forceClip) {
     params.captureBeyondViewport = true;
     params.clip = clip;
   }
+  // Remove the banner again RIGHT AT the capture: the markTab/banner
+  // executeScripts are fire-and-forget and can land mid-capture (a first-ever
+  // shot fires markTab from findTab and its injection queues behind grouping
+  // round trips) — a caller's single removal at the start leaves a
+  // several-round-trip window for the pill to sneak into the saved shot and
+  // false-fire --diff. Enforcement at the capture is the only timing-proof
+  // invariant (found live by the flow review; waitPixel used to do this at
+  // every poll — now every capture does).
+  await removeBannerForCapture(tabId);
   const res = await chrome.debugger.sendCommand({ tabId }, 'Page.captureScreenshot', params);
   return { b64: res.data, format: params.format, v, dpr, s: clip.scale, clip };
 }
@@ -2396,11 +2489,15 @@ const removeBannerForCapture = async (tabId) => {
   }
 };
 const restoreBanner = async (tabId, existed) => {
-  // Re-inject only if the banner existed before the capture window: the ✕
-  // promise ("hidden until the next navigation") must survive a shot, and a
-  // chrome:// tab never had one. The suppression flag ALWAYS clears — a stuck
-  // flag would silence the onUpdated re-banner forever after.
-  if (existed) {
+  // Re-inject only if the banner existed before the capture window AND the
+  // tab is still driven: the ✕ promise ("hidden until the next navigation")
+  // must survive a shot, a chrome:// tab never had one, and a release that
+  // landed mid-capture (release takes no CDP lock; parallel agent calls are
+  // a supported pattern) must stick — restoring onto a released tab
+  // resurrects the pill with no cleanup path left (found by the flow review).
+  // The suppression flag ALWAYS clears — a stuck flag would silence the
+  // onUpdated re-banner forever after.
+  if (existed && drivenTabs.has(tabId)) {
     await chrome.scripting.executeScript({ target: { tabId }, func: injectBanner }).catch(() => {});
     await chrome.scripting.executeScript({ target: { tabId }, func: pillInject, args: [idleLabel(tabId), tabActivity.get(tabId) || [], null, false] }).catch(() => {});
   }
@@ -2435,14 +2532,9 @@ async function waitPixel(tab, msg) {
       for (;;) {
         if (Date.now() - t0 >= timeout) throw new Error('timeout after ' + timeout + 'ms — no pixel change detected');
         await new Promise((r) => setTimeout(r, 800));
-        // Remove the banner again before EVERY capture: the mark/pill
-        // executeScripts are fire-and-forget and can land ~1s-or-later into
-        // this wait. A capture that follows a mid-sleep injection by even one
-        // poll would false-fire from the bridge's own UI; enforcement at the
-        // capture is the only timing-proof invariant.
-        await removeBannerForCapture(tab.id);
         // Plain capture: the frame is whatever the viewport is NOW — scroll
-        // and resize follow natively, no pin to maintain.
+        // and resize follow natively, no pin to maintain. (No manual banner
+        // removal here: captureViewport removes at the capture itself.)
         const cap = await captureViewport(tab.id, pngMsg);
         const cmp = await diffBmp(bmp0, await pngBitmap(cap.b64));
         if (cmp.error) {
@@ -2462,7 +2554,6 @@ async function waitPixel(tab, msg) {
           // origins did NOT prevent it). A real change persists; a transient
           // raster flip is gone by the next capture. One confirmation
           // capture (~200ms) instead of chasing render determinism.
-          await removeBannerForCapture(tab.id);
           const cap2 = await captureViewport(tab.id, pngMsg);
           const cmp2 = await diffBmp(bmp0, await pngBitmap(cap2.b64));
           if (!cmp2.error && !cmp2.changed) {
@@ -2585,10 +2676,12 @@ async function handle(msg) {
 
   if (msg.type === 'tabs') {
     const tabs = await chrome.tabs.query({});
+    const gTitles = new Map((await chrome.tabGroups.query({})).map((g) => [g.id, g.title]));
     return tabs.map((t) => ({
       id: t.id,
       url: t.url, // whole — agents pick their <match> substring from this
       title: (t.title || '').slice(0, 80),
+      ...(t.groupId !== -1 ? { group: gTitles.get(t.groupId) ?? '' } : {}), // strip visibility: the Bridge group is one of the driven-tab markers
       ...(t.active ? { active: true } : {}),
       ...(drivenTabs.has(t.id) ? { driven: true } : {}),
     }));
@@ -2636,7 +2729,12 @@ async function handle(msg) {
     // tabs.update resolves, and a missed event would mean a wasted 8s wait.
     const loaded = waitForLoad(tab.id);
     await chrome.tabs.update(tab.id, { url: msg.url });
-    await markTab(tab.id);
+    // Fire-and-forget, like every other mark site: markTab's injectBanner can
+    // pend on the uncommitted navigation tabs.update just started (the same
+    // trap findTab's comment documents) — awaiting it would strand the whole
+    // command at the server's 70s cap while waitForLoad's 8s sat unawaited.
+    // onUpdated re-banners on 'complete' regardless.
+    markTab(tab.id).catch(() => {});
     const complete = await loaded;
     // nav --diff carries the verdict too — no baseline diff (the page is
     // replaced), so: walls first, then a fresh snap as the body.
@@ -3037,6 +3135,9 @@ async function handle(msg) {
         const cap = await captureViewport(tab.id, msg);
         return `data:image/${cap.format};base64,${cap.b64}`;
       }
+      // Raw path (full/crop): captureViewport re-removes at its own capture;
+      // this sendCommand doesn't go through it — same timing-proof removal.
+      await removeBannerForCapture(tab.id);
       const res = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.captureScreenshot', params);
       return `data:image/${format};base64,${res.data}`;
       } finally {

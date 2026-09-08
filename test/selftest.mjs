@@ -556,6 +556,14 @@ try {
     // External debugger detach must reset the refcount (infobar cancel,
     // DevTools opened) — else a stale count wedges the session until close.
     assert(bg.includes('chrome.debugger.onDetach.addListener'), 'ext: onDetach resets the CDP refcount');
+    // Prerender swaps the tab id under the driven-tab state (found by the
+    // v1.18.12 flow review): without the remap the new id sheds every
+    // marker while the old id's state leaks.
+    assert(bg.includes('chrome.tabs.onReplaced.addListener'), 'ext: prerender swap remaps tab state (onReplaced)');
+    // The Bridge group is per-window: a cached global groupId MOVES
+    // cross-window tabs into the wrong window (chrome.tabs.group relocates,
+    // it does not throw — verified against Chromium's tabs_api.cc).
+    assert(bg.includes("chrome.tabGroups.query({ title: '🟣 Bridge', windowId })"), 'ext: Bridge group derived per window, never from a cached id');
     // open/nav must reject a non-URL up front: tabs.create resolves such
     // strings relative to the extension itself (stress: open "::x" created a
     // driven chrome-extension://… tab and reported ok).

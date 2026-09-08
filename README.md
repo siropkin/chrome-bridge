@@ -164,7 +164,7 @@ You're handing an agent your logged-in browser — the design assumes you want t
 
 | Command | What it does |
 |---|---|
-| `tabs` | List tabs (id, url, title, driven flag); with several Chrome profiles connected, merged with a `profile` tag |
+| `tabs` | List tabs (id, url, title, driven flag, tab group when grouped); with several Chrome profiles connected, merged with a `profile` tag |
 | `profiles` | List connected Chrome profiles — id and name (for `--profile`) + version |
 | `open <url>` · `nav <match> <url> [--diff]` · `close <match>` | Tab lifecycle — `open`/`nav` wait for the page to load (8s cap) |
 | `snap <match> [css\|@ref] [--diff] [--href] [--skeleton] [--find "nl"]` | Accessibility-tree snapshot with `@eN` refs — **cheap; use it before screenshots**. Scope to a subtree (CSS or `@ref`), diff against the last snap, or include all link URLs with `--href`. `--skeleton` on dense pages: a depth-limited map where cut subtrees read `… N inside` (drill: `snap <match> @ref`) instead of silently missing the 300-node cut. `--find "the cancel button"` has local Gemini Nano (~2s, no cloud tokens) pick the matching lines — a shortlist to verify, not ground truth. Lines prefixed `*` are elements new since the previous snap |
