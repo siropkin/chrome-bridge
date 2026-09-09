@@ -1,16 +1,17 @@
-<!doctype html><title>tile</title><style>
+<!doctype html><meta charset="utf-8"><title>tile</title><style>
   html,body{margin:0}
-  .wrap{position:fixed;inset:0;background:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:24px;font:20px sans-serif;color:#1c1917}
+  .wrap{position:fixed;inset:0;background:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:24px;font:20px system-ui,sans-serif;color:#1c1917}
   img{width:96px;height:96px}
   .name{font-weight:700;font-size:26px}
   .tag{font-size:15px;color:#4b5563}
-  #pill{background:#a855f7;color:#fff;font:12px sans-serif;padding:3px 10px;border-radius:11px;box-shadow:0 1px 4px rgba(0,0,0,.4)}
+  .text{text-align:center}
+  #pill{background:#9333ea;color:#fff;font:12px system-ui,sans-serif;padding:3px 10px;border-radius:11px;box-shadow:0 1px 4px rgba(0,0,0,.4);width:fit-content;margin:12px auto 0}
 </style>
 <div class="wrap">
   <img src="../../extension/icons/icon128.png" alt="">
-  <div>
+  <div class="text">
     <div class="name">Chrome Bridge</div>
-    <div class="tag">AI agents drive the browser you're logged into. Everything stays on 127.0.0.1.</div>
-    <div id="pill">🟣 reading the front page for the agent… ✕</div>
+    <div class="tag">AI agents drive the browser you're logged into. Nothing leaves your computer.</div>
+    <div id="pill">🟣 reading page… ✕ ⏏</div>
   </div>
 </div>

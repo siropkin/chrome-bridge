@@ -13,6 +13,9 @@ command -v node >/dev/null || { echo "✗ Node.js >= 18 required: https://nodejs
 [ "$(node -p 'process.versions.node.split(".")[0]')" -ge 18 ] || { echo "✗ Node >= 18 required (you have $(node --version))"; exit 1; }
 echo "✓ Node $(node --version)"
 
+# Health probes go through Node's fetch (>= 18, enforced above) — no curl dependency.
+probe() { node -e 'fetch("http://"+process.argv[1],{signal:AbortSignal.timeout(2000)}).then(r=>{if(!r.ok)process.exit(1);return r.text()}).then(t=>process.stdout.write(t)).catch(()=>process.exit(1))' "$1"; }
+
 # The extension hardcodes port 9333 (extension/background.js WS_URL) — a custom
 # BRIDGE_PORT would split the stack and leave the extension dialing nothing.
 if [[ -n ${BRIDGE_PORT+x} && $PORT != 9333 ]]; then
@@ -20,7 +23,7 @@ if [[ -n ${BRIDGE_PORT+x} && $PORT != 9333 ]]; then
   exit 1
 fi
 
-if body=$(curl -sf -m 2 "$HEALTH") && [[ $body =~ $OK ]]; then
+if body=$(probe "$HEALTH") && [[ $body =~ $OK ]]; then
   echo "✓ server already running (localhost:$PORT)"
   # The running server is the one from when it was started — if the repo was
   # upgraded since, it's old code with a passing health check. Say so.
@@ -28,19 +31,27 @@ if body=$(curl -sf -m 2 "$HEALTH") && [[ $body =~ $OK ]]; then
 else
   nohup node server.mjs >> server.log 2>&1 &
   for ((i=0;i<20;i++)); do
-    body=$(curl -sf -m 2 "$HEALTH") && [[ $body =~ $OK ]] && break
+    body=$(probe "$HEALTH") && [[ $body =~ $OK ]] && break
     sleep 0.25
   done
-  [[ $body =~ $OK ]] || { echo "✗ server did not start — see $ROOT/server.log"; exit 1; }
+  [[ $body =~ $OK ]] || { echo "✗ server did not start — see $ROOT/server.log (EADDRINUSE? something else holds $PORT — find it: lsof -i :$PORT)"; exit 1; }
   echo "✓ server started (localhost:$PORT, log: $ROOT/server.log)"
 fi
 
-echo
-echo "One manual step left — load the Chrome extension:"
-echo "  1. open chrome://extensions"
-echo "  2. enable Developer mode (top right)"
-echo "  3. Load unpacked → $ROOT/extension/"
-[ "$(uname)" = "Darwin" ] && open -a "Google Chrome" "chrome://extensions" || true
+if [[ $body =~ $EXT ]]; then
+  # e.g. a Chrome Web Store install — loading the unpacked folder too would
+  # seat a second 'profile' in the same browser and every command would
+  # demand --profile. Skip the manual step.
+  echo "✓ extension already connected — nothing to load"
+else
+  echo
+  echo "One manual step left — load the Chrome extension:"
+  echo "  1. open chrome://extensions"
+  echo "  2. enable Developer mode (top right)"
+  echo "  3. Load unpacked → $ROOT/extension/"
+  echo "  (installed from the Chrome Web Store? skip this — the store copy connects on its own)"
+  [ "$(uname)" = "Darwin" ] && open -a "Google Chrome" "chrome://extensions" || true
+fi
 
 echo
 echo "Want the agent to install its own integration too (the Claude Code skill, or the one-liner below)?"
@@ -55,7 +66,7 @@ echo "  To drive my Chrome browser (real logged-in tabs), read $ROOT/AGENTS.md a
 echo
 printf "waiting for extension to connect"
 for ((i=0;i<45;i++)); do
-  body=$(curl -sf -m 2 "$HEALTH") && [[ $body =~ $EXT ]] && break
+  body=$(probe "$HEALTH") && [[ $body =~ $EXT ]] && break
   printf "."; sleep 2
 done
 echo

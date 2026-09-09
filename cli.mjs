@@ -5,6 +5,8 @@ import fs from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+// Port 9333 is hardcoded in THREE places: extension/background.js (WS_URL —
+// the extension can't read BRIDGE_PORT), server.mjs, here. Change all three.
 const PORT = process.env.BRIDGE_PORT || 9333;
 const BASE = `http://127.0.0.1:${PORT}`;
 
@@ -51,8 +53,12 @@ async function cmd(msg) {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(PROFILE ? { ...msg, profile: PROFILE } : msg),
     });
-  } catch {
-    fail('bridge server not running — start it: node cli.mjs start');
+  } catch (e) {
+    // ECONNREFUSED = the server was never there. Anything else (socket hangup,
+    // undici abort) = it DROPPED an in-flight command — different advice: the
+    // command may have partially run, so check history before retrying.
+    if (e?.cause?.code === 'ECONNREFUSED') fail('bridge server not running — start it: node cli.mjs start');
+    fail('bridge server dropped the connection mid-command (stopped or restarted) — the command may have partially run; after `node cli.mjs start`, check `history` before retrying');
   }
   const out = await res.json().catch(() => null);
   if (!out) fail(`unexpected response from bridge on port ${PORT} — is another server using it?`);
@@ -93,15 +99,42 @@ function readClipboard() {
 const tokenize = (line) =>
   (line.match(/(?:[^\s'"]+|"[^"]*"|'[^']*')+/g) || []).map((t) => t.replace(/"([^"]*)"|'([^']*)'/g, (_, d, s) => d ?? s));
 
+// Flag-strip + stray-flag scan shared by the flat-positional commands — the
+// hand-copied skeletons had already drifted once (a '--dfif' typo nearly got
+// typed into a real form). `known` flags are removed; the first remaining
+// '--x' at/after the positional slots fails loud instead of becoming data.
+function takeFlags(args, known, minPos, usage) {
+  const rest = args.filter((a) => !known.includes(a));
+  if (rest.length < minPos) fail(`usage: ${usage}`);
+  const stray = rest.slice(minPos).find((a) => a.startsWith('--'));
+  if (stray) fail(`unknown flag ${stray} (flags: ${known.join(', ')})`);
+  return rest;
+}
+
+// '--' = end of options (shell convention): everything after it is the value,
+// unscanned — pasted content can legitimately start with '--' (dev.to
+// front-matter died on this). Quotes can't be the signal for a direct shell
+// call: the shell strips them before argv exists.
+const splitDashDash = (args) => {
+  const sep = args.indexOf('--');
+  return { sep, flagged: sep < 0 ? args : args.slice(0, sep), valuePart: sep < 0 ? [] : args.slice(sep + 1) };
+};
+
+// Adding a command? SEVEN registries stay in sync (a missing one fails SILENTLY):
+// cli.mjs USAGE · cli.mjs run() · server.mjs CLI_LINES · server.mjs route() (only if it
+// needs special routing) · background.js handle() · ACT_VERBS (pill narration) · MUTATING.
 const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
 
   batch                             read commands from stdin, one per line ('#' = comment,
                                     quotes honored) — one process for N commands; stops on first error
   tabs [match]                      list tabs (compact JSON); [match] filters by URL/title substring;
                                     with multiple Chrome profiles connected, merged with a profile tag
-  profiles                          list connected Chrome profiles — id (for --profile) + version
-  open <url>                        open + mark a new tab (waits for load, 8s cap)
-  nav <match> <url> [--diff]        navigate matching tab (waits for load, 8s cap)
+  profiles                          list connected Chrome profiles — id and name (for --profile) + version
+  open <url>                        open + mark a new tab (waits for load, 8s cap; the reply's
+                                    loaded:false means the cap fired on a still-loading page —
+                                    snap/eval/wait --text work on what's there)
+  nav <match> <url> [--diff]        navigate matching tab (waits for load, 8s cap;
+                                    same loaded:false semantics as open)
   close <match>                     close matching tab
   snap <match> [css|@ref] [--diff] [--href] [--skeleton] [--find "nl"]
                                     a11y-tree snapshot with @eN refs (cheap — use before shot);
@@ -111,7 +144,8 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     --skeleton: depth-limited map — cut containers read '… N inside'
                                     (drill: snap <match> @ref) instead of a silent 300-node cut;
                                     --find asks local Gemini Nano to pick the lines matching a
-                                    natural-language query — a ~2s shortlist to VERIFY, not ground
+                                    natural-language query — a ~2s shortlist (~20s first call
+                                    while Nano loads) to VERIFY, not ground
                                     truth (~2/3 accurate in testing); lines prefixed '* ' are new
                                     since the previous snap; lines seen 3+ times collapse to
                                     '… N more · <line> → @refs'; trees truncate at 300 nodes —
@@ -138,7 +172,10 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     per-char typing — triggers autocomplete/keystroke UIs;
                                     '--' separator for '--'-leading text, same as fill;
                                     long-form text (>2000 chars) is paste's job; --trusted = CDP keys
-  press <match> <key> [@ref|css] [--diff] [--trusted]  key press on focused or given element (Enter/Tab/…);
+  press <match> <key> [@ref|css] [--diff] [--trusted]  key press on focused or given element
+                                    (Enter/Tab/Escape/Backspace/Delete/Insert/arrows/Home/End/
+                                    PageUp/PageDown, or one char — space = " "; unknown names
+                                    fail loud);
                                     combos like Control+k / Shift+Enter / Meta+k set the modifier flags;
                                     --trusted = CDP keys (isTrusted — Enter triggers browser defaults)
   hover <match> <@ref|css> [--diff] [--trusted]  hover an element (opens hover menus); --trusted = CDP Input
@@ -202,8 +239,9 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     last 300 commands): [match] filters, -n takes the newest N —
                                     the same lines watch shows live, for post-mortems and session
                                     handoffs; --batch out writes the recorded commands as a
-                                    replayable batch script (failed ones commented out; shot
-                                    output paths and multiline eval code don't survive)
+                                    replayable batch script (failed ones commented out;
+                                    fill/type/paste values redacted as '# secret ·' lines;
+                                    shot output paths and multiline eval code don't survive)
   swlogs                            service-worker console tail (errors/warnings)
   emulate <match> <w> <h> [mobile]  CDP device view (no window resize); 'focus' instead of
                                     <w> <h> emulates page focus (focus-gated work keeps running
@@ -214,8 +252,8 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
   start                             start the server (detached) if it's down
   stop                              stop the server
 
-<match> is a substring of the tab URL; a driven tab wins, then the most recently
-active. Ambiguous matches print a warning naming the other tabs — re-run with a
+<match> is a substring of the tab URL or title; a driven tab wins, then the most
+recently active. Ambiguous matches print a warning naming the other tabs — re-run with a
 longer match. Mutating commands (click/fill/type/press/upload/eval/hover/scroll/
 grid/emulate/resize/drag/dialog) auto-mark the tab (🟣 pill + tab group).
 Refs (@eN) come from snap; they survive re-snaps but expire on navigation.
@@ -225,7 +263,13 @@ Multiple Chrome profiles can be connected at once (one seat each). A <match>
 routes to the only profile that has a matching tab; a match in SEVERAL profiles
 is refused — name one with --profile <id or name> (an id prefix is enough; see: profiles).`;
 
+// Adding a command? SEVEN registries stay in sync (a missing one fails SILENTLY):
+// cli.mjs USAGE · cli.mjs run() · server.mjs CLI_LINES · server.mjs route() (only if it
+// needs special routing) · background.js handle() · ACT_VERBS (pill narration) · MUTATING.
 async function run(cmdName, args) {
+  // New flags parsed here must also land in server.mjs CLI_LINES — history
+  // --batch rebuilds replay lines there, and an unmirrored flag is silently
+  // dropped at replay.
   switch (cmdName) {
     case undefined:
     case 'help':
@@ -259,7 +303,7 @@ async function run(cmdName, args) {
     }
 
     case 'profiles': {
-      // Connected Chrome profiles (one WS seat each): id for --profile, version.
+      // Connected Chrome profiles (one WS seat each): id and name for --profile, version.
       try {
         const res = await fetch(`${BASE}/health`);
         const h = await res.json();
@@ -274,13 +318,14 @@ async function run(cmdName, args) {
       // Self-heal: an agent whose health check failed can bring the server up
       // itself instead of asking the user (the extension still needs a human
       // click at chrome://extensions — nothing here can do that).
-      try {
-        const res = await fetch(`${BASE}/health`);
-        if (res.ok) {
-          print('already running');
-          break;
-        }
-      } catch {}
+      // The body-shape check matters, not just any 200: a foreign server
+      // squatting on 9333 must not read as "bridge already running" (the
+      // spawned child would die on EADDRINUSE and start would lie 'started').
+      const bridgeUp = () => fetch(`${BASE}/health`).then((r) => r.json()).then((h) => h?.ok === true).catch(() => false);
+      if (await bridgeUp()) {
+        print('already running');
+        break;
+      }
       const logPath = fileURLToPath(new URL('./server.log', import.meta.url));
       // (size cap lives in server.mjs — it runs on every start path, not just this one)
       const log = fs.openSync(logPath, 'a');
@@ -293,7 +338,7 @@ async function run(cmdName, args) {
       let up = false;
       for (let i = 0; i < 20 && !up; i++) {
         await new Promise((r) => setTimeout(r, 250));
-        up = await fetch(`${BASE}/health`).then((r) => r.ok).catch(() => false);
+        up = await bridgeUp();
       }
       if (!up) fail('server did not come up in 5s — check ' + logPath);
       print('started (log: ' + logPath + ') — a loaded extension reconnects on its own');
@@ -468,6 +513,11 @@ async function run(cmdName, args) {
       // is "not reached". Echo it to stderr, which survives the pipe.
       const ti = typeof out === 'string' ? out.lastIndexOf('… truncated at') : -1;
       if (ti >= 0) console.error(out.slice(ti).split('\n')[0]);
+      // Same pipe-survival for the ambiguous-match warning: it trails the
+      // 300-line tree on stdout, where a grep pipe eats it — stderr keeps it
+      // visible. The stdout copy stays (full-output parsers see no change).
+      const warn = typeof out === 'string' ? out.split('\n').find((l) => l.startsWith('⚠ ')) : null;
+      if (warn) console.error(warn);
       break;
     }
 
@@ -476,10 +526,7 @@ async function run(cmdName, args) {
     // shell calls (click → wait → snap --diff becomes one command).
     case 'click':
     case 'hover': {
-      const rest = args.filter((a) => a !== '--diff' && a !== '--dbl' && a !== '--trusted');
-      if (!rest[0] || !rest[1]) fail(`usage: ${cmdName} <match> <@ref|css>${cmdName === 'click' ? ' [--dbl]' : ''} [--diff] [--trusted]`);
-      const stray = rest.slice(2).find((a) => a.startsWith('--'));
-      if (stray) fail(`unknown flag ${stray} (flags:${cmdName === 'click' ? ' --dbl,' : ''} --diff, --trusted)`);
+      const rest = takeFlags(args, cmdName === 'click' ? ['--diff', '--dbl', '--trusted'] : ['--diff', '--trusted'], 2, `${cmdName} <match> <@ref|css>${cmdName === 'click' ? ' [--dbl]' : ''} [--diff] [--trusted]`);
       print(await cmd({
         type: cmdName,
         urlMatch: rest[0],
@@ -492,10 +539,7 @@ async function run(cmdName, args) {
     }
 
     case 'drag': {
-      const rest = args.filter((a) => a !== '--diff' && a !== '--trusted');
-      if (!rest[0] || !rest[1] || !rest[2]) fail('usage: drag <match> <@ref|css> <@ref|css> [--diff] [--trusted]');
-      const stray = rest.slice(3).find((a) => a.startsWith('--'));
-      if (stray) fail(`unknown flag ${stray} (flags: --diff, --trusted)`);
+      const rest = takeFlags(args, ['--diff', '--trusted'], 3, 'drag <match> <@ref|css> <@ref|css> [--diff] [--trusted]');
       print(await cmd({ type: 'drag', urlMatch: rest[0], from: rest[1], to: rest[2], ...(args.includes('--diff') ? { diff: true } : {}), ...(args.includes('--trusted') ? { trusted: true } : {}) }));
       break;
     }
@@ -510,13 +554,7 @@ async function run(cmdName, args) {
 
     case 'fill':
     case 'type': {
-      // '--' = end of options (shell convention): everything after it is the
-      // value, unscanned — pasted content can legitimately start with '--'
-      // (dev.to front-matter died on this). Quotes can't be the signal for a
-      // direct shell call: the shell strips them before argv exists.
-      const sep = args.indexOf('--');
-      const flagged = sep < 0 ? args : args.slice(0, sep);
-      const valuePart = sep < 0 ? [] : args.slice(sep + 1);
+      const { sep, flagged, valuePart } = splitDashDash(args);
       const rest = flagged.filter((a) => a !== '--diff' && (cmdName !== 'type' || a !== '--trusted'));
       if (!rest[0] || !rest[1] || (rest[2] === undefined && !valuePart.length)) fail(`usage: ${cmdName} <match> <@ref|css> [--diff] -- <value>`);
       // A '--'-prefixed token BEFORE the separator is a fat-fingered flag,
@@ -544,9 +582,7 @@ async function run(cmdName, args) {
       // '--' = the text (may itself start with '--'), same separator as fill.
       // Without it, the OS clipboard is the source — the agent usually HAS
       // the text, but "paste what I just copied" needs the real clipboard.
-      const sep = args.indexOf('--');
-      const flagged = sep < 0 ? args : args.slice(0, sep);
-      const valuePart = sep < 0 ? [] : args.slice(sep + 1);
+      const { sep, flagged, valuePart } = splitDashDash(args);
       const rest = flagged.filter((a) => a !== '--diff');
       if (!rest[0] || rest[2] !== undefined || (sep >= 0 && !valuePart.length))
         fail('usage: paste <match> [@ref|css] [--diff] [-- <text>] — without -- <text> it reads the OS clipboard');
@@ -564,19 +600,15 @@ async function run(cmdName, args) {
     }
 
     case 'press': {
-      const rest = args.filter((a) => a !== '--diff' && a !== '--trusted');
-      if (!rest[0] || !rest[1]) fail('usage: press <match> <key> [@ref|css] [--diff] [--trusted]');
-      const stray = rest.slice(3).find((a) => a.startsWith('--'));
-      if (stray) fail(`unknown flag ${stray} (flags: --diff, --trusted)`);
+      // takeFlags scans from slot 2: a stray '--x' there used to slip through
+      // as the optional target (the hand-copied scan started one slot late).
+      const rest = takeFlags(args, ['--diff', '--trusted'], 2, 'press <match> <key> [@ref|css] [--diff] [--trusted]');
       print(await cmd({ type: 'press', urlMatch: rest[0], key: rest[1], target: rest[2] || null, ...(args.includes('--diff') ? { diff: true } : {}), ...(args.includes('--trusted') ? { trusted: true } : {}) }));
       break;
     }
 
     case 'scroll': {
-      const rest = args.filter((a) => a !== '--diff');
-      if (!rest[0] || !rest[1]) fail('usage: scroll <match> <up|down|top|bottom|@ref|css> [--diff]');
-      const stray = rest.slice(2).find((a) => a.startsWith('--'));
-      if (stray) fail(`unknown flag ${stray} (flags: --diff)`);
+      const rest = takeFlags(args, ['--diff'], 2, 'scroll <match> <up|down|top|bottom|@ref|css> [--diff]');
       print(await cmd({ type: 'scroll', urlMatch: rest[0], target: rest[1], ...(args.includes('--diff') ? { diff: true } : {}) }));
       break;
     }

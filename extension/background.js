@@ -1,4 +1,15 @@
+// Port 9333 is hardcoded in THREE places: here, cli.mjs, server.mjs. The extension
+// can't read BRIDGE_PORT — change all three together (README 'Install detail').
 const WS_URL = 'ws://127.0.0.1:9333/ws';
+
+// Section map (each '// ---' banner, in order):
+//   Service-worker log ring · Driven-tab marking (pill/banner injection) ·
+//   Live status in the corner pill (narration, ticker, activity ring) ·
+//   Status favicon · CDP debugger refcount · Device emulation · Boot hydration
+//   (storage.session restore) · Network capture · Page-side scripts (every
+//   injected JS template: snap/click/fill/…/find/measure/console/wall) ·
+//   pixel diff + capture (banner suppression lives here) · trusted input ·
+//   eval machinery · --diff on actions · wait --human · Commands (handle()).
 let ws = null;
 
 // Stable per-profile id (uuid, persisted): the server logs and /health report
@@ -27,9 +38,16 @@ const idReady = chrome.storage.local
 // The SW console is invisible to the CLI (it's not a tab); keep the tail so
 // `swlogs` can read it. Cleared on SW restart, like everything else here.
 const swLogs = [];
+// Write-through to storage.session (merged back in `ready`): a bare in-memory
+// ring dies with the worker — the one extension-side diagnostic, gone exactly
+// when the SW crashed. logsHydrated is its own flag (not `hydrated`, declared
+// far below): logLine runs at module load, before that declaration — touching
+// it here would TDZ-crash the worker.
+let logsHydrated = false;
 const logLine = (line) => {
   swLogs.push(new Date().toISOString().slice(11, 19) + ' ' + line);
   if (swLogs.length > 100) swLogs.shift();
+  if (logsHydrated) chrome.storage.session.set({ swLogs }).catch(() => {});
 };
 self.addEventListener('error', (e) => logLine('ERROR ' + e.message + (e.filename ? ` @${e.filename}:${e.lineno}` : '')));
 self.addEventListener('unhandledrejection', (e) => logLine('REJECT ' + String(e.reason)));
@@ -83,7 +101,7 @@ function connect() {
       // race — the server keeps ONE seat per profile). Intercept BEFORE
       // handle() (an unknown type there throws) and mark the socket: the
       // 500ms hot reconnect in onclose would churn the server at 2Hz — let
-      // the 24s keepalive alarm re-probe instead.
+      // the 30s keepalive alarm re-probe instead.
       s._seatTaken = true;
       ws = null;
       return;
@@ -102,13 +120,14 @@ function connect() {
       s.send(JSON.stringify({ id: msg.id, ok: true, result }));
     } catch (err) {
       failed = true;
+      const wrapped = wrapErr(err); // raw Chrome tab-gone noise → named cause + recovery
       // Failures belong in the human-visible history too — a red-ink line in
       // the pill log, not just an error back to the agent.
       if (msg._tabId != null && drivenTabs.has(msg._tabId)) {
         const { done } = activityPhrases(msg);
         // Same 'Error: Error:' dedup the CLI and the watch feed got (756df17)
         // — the pill history is the third place this line lands.
-        const lines = pushActivity(msg._tabId, '✗ ' + done + ' — ' + String(err).replace(/^(Error:\s*)+/, '').slice(0, 60));
+        const lines = pushActivity(msg._tabId, '✗ ' + done + ' — ' + humanizeErr(wrapped));
         chrome.scripting
           .executeScript({
             target: { tabId: msg._tabId },
@@ -121,7 +140,7 @@ function connect() {
           })
           .catch(() => {});
       }
-      s.send(JSON.stringify({ id: msg.id, ok: false, error: String(err) }));
+      s.send(JSON.stringify({ id: msg.id, ok: false, error: wrapped }));
     } finally {
       // ✅ when a command on a driven tab lands, ✗ when it failed — the strip
       // icon must not claim success on an error. Non-driven tabs are left
@@ -163,7 +182,7 @@ function connect() {
   s.onclose = () => {
     if (ws !== s) return; // a newer socket already took over — don't double-reconnect
     ws = null;
-    if (s._seatTaken) return; // lost the seat race — the 24s keepalive alarm re-probes
+    if (s._seatTaken) return; // lost the seat race — the 30s keepalive alarm re-probes
     // Say so in the pill: 'AI idle' during a bridge outage reads as "done,
     // waiting" — the human can't tell a dead server from a resting agent.
     // Injected once per outage (wasOffline), restored by s.onopen.
@@ -188,7 +207,8 @@ let wasOffline = false;
 idReady.then(connect);
 
 // Keep the service worker (and its WebSocket) alive; reconnect if dropped.
-chrome.alarms.create('keepalive', { periodInMinutes: 0.4 });
+// Chrome floors sub-30s alarm periods to 30s (and warns) — ask for 0.5 outright.
+chrome.alarms.create('keepalive', { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener(() => {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     connect();
@@ -219,70 +239,6 @@ let hydrated = false;
 // `ready` after the storage restore (the old id's state exists again) and
 // BEFORE the live prune (the old id is already gone from tabs.query; the
 // prune would delete the very state the replay needs to move).
-const pendingSwaps = [];
-function persist() {
-  if (!hydrated) return;
-  chrome.storage.session
-    .set({
-      drivenTabs: [...drivenTabs],
-      emulatedTabs: [...emulatedTabs],
-      tabStatus: Object.fromEntries(tabStatus),
-      tabActivity: Object.fromEntries(tabActivity),
-    })
-    .catch(() => {});
-}
-
-// SW restarts wipe the in-memory maps — rehydrate from storage.session and
-// prune ids of tabs that no longer exist. handle() awaits `ready` so no
-// command can observe a half-empty map. NOTE: the old belt-and-braces merge
-// from the 🟣 Bridge tab group is GONE on purpose: the group is a user-
-// editable strip object, so a human dragging a never-driven tab into it made
-// hydration resurrect the tab as driven — forever, with no release coming
-// (found by the flow review). Group membership is bridge-MADE state, not
-// bridge-proof state; storage.session is the only source of truth.
-const ready = (async () => {
-  try {
-    const s = await chrome.storage.session.get(['drivenTabs', 'emulatedTabs', 'tabStatus', 'tabActivity']);
-    for (const id of s.drivenTabs || []) drivenTabs.add(id);
-    for (const id of s.emulatedTabs || []) emulatedTabs.add(id);
-    for (const [k, v] of Object.entries(s.tabStatus || {})) tabStatus.set(Number(k), v);
-    for (const [k, v] of Object.entries(s.tabActivity || {})) tabActivity.set(Number(k), v);
-  } catch {}
-  // Prerender swaps that fired before hydration (the swap itself is often the
-  // wake event): replay now — restored old-id state moves to the live new id
-  // in time to survive the prune right below.
-  for (const [n, o] of pendingSwaps.splice(0)) remapTabId(n, o);
-  try {
-    const live = new Set((await chrome.tabs.query({})).map((t) => t.id));
-    for (const id of [...drivenTabs]) if (!live.has(id)) drivenTabs.delete(id);
-    for (const id of [...emulatedTabs]) if (!live.has(id)) emulatedTabs.delete(id);
-    for (const id of [...tabStatus.keys()]) if (!live.has(id)) tabStatus.delete(id);
-    for (const id of [...tabActivity.keys()]) if (!live.has(id)) tabActivity.delete(id);
-  } catch {}
-  // A ⏳ tabStatus outlived its worker: the finally that clears it died with
-  // the SW, and inflight is memory-only — nothing is running in this fresh
-  // worker. Reset the stale ones or onUpdated re-applies ⏳ after every
-  // navigation of that tab, forever.
-  for (const id of [...tabStatus.keys()]) if (tabStatus.get(id) === '⏳') setFavicon(id, null);
-  // What survived the restart is THE diagnostic question after reload trouble
-  // (storage.session dies on extension reload; the re-mark on the next command
-  // rebuilds the rest).
-  logLine(`hydrated driven=${drivenTabs.size} emulated=${emulatedTabs.size}`);
-  hydrated = true; // persist() is safe from here on — the catch-up below persists
-  // SW-death catch-up: a driven tab that navigated while the worker was dead
-  // lost its 'complete' event (never replayed) — findTab won't re-mark it
-  // (already driven) and pillInject no-ops without the banner, so the bridge
-  // could keep acting on a tab wearing NO markers. Re-assert banner, group
-  // and favicon on every driven tab each time the worker starts; convergence
-  // then holds across SW cycles no matter which events were lost — except a
-  // pill the human ✕'d on THIS document (respectHide), which stays hidden.
-  for (const id of [...drivenTabs]) {
-    groupTab(id).catch(() => {}); // strip marker, like markTab's
-    chrome.scripting.executeScript({ target: { tabId: id }, func: injectBanner, args: [true] }).catch(() => {});
-    if (tabStatus.get(id)) setFavicon(id, tabStatus.get(id));
-  }
-  persist(); // the ⏳ resets above became durable only now
-})();
 
 // Runs in the page; must be self-contained.
 // No document.title prefix: pages rewrite their title constantly (unread
@@ -297,7 +253,9 @@ function injectBanner(respectHide) {
   if (existing) {
     // A banner from a previous extension load carries handlers bound to a
     // dead service worker — ⏏/✕/history all dead after a reload. Rebuild.
-    if (existing.dataset.v === chrome.runtime.getManifest().version) return;
+    // dataset.fading: a '✓ released' pill mid-fade must not block a re-mark
+    // either — rebuild, or the re-driven tab keeps a dead 'released' pill.
+    if (existing.dataset.v === chrome.runtime.getManifest().version && !existing.dataset.fading) return;
     existing.remove();
   }
   if (respectHide && document.documentElement.dataset.bridgeHide === '1') return; // ✕'d this document, no navigation since
@@ -307,11 +265,15 @@ function injectBanner(respectHide) {
   // The viewport frame starts transparent: it lights up purple only while a
   // command is in flight (pillInject toggles it) — a peripheral "the agent is
   // acting RIGHT NOW" signal — while the pill carries identity + history and
-  // idle tabs stay clean. pointer-events: none, covers nothing.
-  d.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;border:3px solid transparent;border-radius:2px';
+  // idle tabs stay clean. pointer-events: none, covers nothing. The border
+  // transition keeps the on/off from snapping at command boundaries.
+  d.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;border:3px solid transparent;border-radius:2px;transition:border-color .15s ease';
   const pill = document.createElement('div');
+  // #9333ea over the old #a855f7: white 12px text passes WCAG AA (5.4:1, was
+  // 3.96:1) — the pill's whole job is being read at a glance. system-ui matches
+  // the OS face (SF/Segoe) next to native Chrome UI.
   pill.style.cssText =
-    'position:fixed;bottom:8px;right:8px;background:#a855f7;color:#fff;font:12px sans-serif;padding:3px 10px;border-radius:11px;pointer-events:auto;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.4);user-select:none';
+    'position:fixed;bottom:8px;right:8px;background:#9333ea;color:#fff;font:12px system-ui,sans-serif;padding:3px 10px;border-radius:11px;pointer-events:auto;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.4);user-select:none';
   // The pill is the product's trust surface — make it reachable and announced
   // for keyboard/screen-reader users (this tool's own pitch is an a11y tree).
   pill.setAttribute('role', 'button');
@@ -320,6 +282,9 @@ function injectBanner(respectHide) {
   const label = document.createElement('span');
   label.setAttribute('role', 'status'); // narration changes announced politely
   label.setAttribute('aria-live', 'polite');
+  // Long labels (a 90-char note) ellipsize instead of wrapping into a ragged
+  // two-line pill — and never clip the ✕/⏏ buttons (⏏ must stay clickable).
+  label.style.cssText = 'white-space:nowrap;max-width:min(60vw,480px);overflow:hidden;text-overflow:ellipsis;display:inline-block;vertical-align:bottom';
   label.textContent = '🟣 AI idle';
   const x = document.createElement('span');
   x.textContent = ' ✕';
@@ -345,7 +310,7 @@ function injectBanner(respectHide) {
       d.remove();
     }
   };
-  pill.title = 'An AI agent is driving this tab (chrome-bridge) — click for action history';
+  pill.title = 'An AI agent is driving this tab (chrome-bridge) — click for history · ✕ hides · ⏏ releases';
   // Click the pill body → a scrolling log of what the agent did on this tab
   // (pill.dataset.log, fed by pillInject). Click again to close. The ✕ span
   // keeps the old whole-pill click-to-hide behavior.
@@ -357,7 +322,7 @@ function injectBanner(respectHide) {
     const p = document.createElement('pre');
     p.id = 'bridge-log';
     p.style.cssText =
-      'position:fixed;bottom:36px;right:8px;width:380px;max-height:50vh;overflow:auto;margin:0;background:rgba(24,12,40,.94);color:#e9d5ff;font:11px/1.6 monospace;padding:8px 10px;border-radius:8px;pointer-events:auto;white-space:pre-wrap;box-shadow:0 2px 12px rgba(0,0,0,.5)';
+      'position:fixed;bottom:36px;right:8px;width:380px;max-width:calc(100vw - 16px);max-height:50vh;overflow:auto;margin:0;background:rgba(24,12,40,.94);color:#e9d5ff;font:11px/1.6 monospace;padding:8px 10px;border-radius:8px;pointer-events:auto;white-space:pre-wrap;box-shadow:0 2px 12px rgba(0,0,0,.5)';
     p.textContent = pill.dataset.log || '(no activity yet)';
     d.appendChild(p);
   };
@@ -401,6 +366,23 @@ function removeBanner() {
   document.getElementById('bridge-banner')?.remove();
 }
 
+// Runs in the page; must be self-contained. The human clicked ⏏: confirm the
+// release in place and let the pill fade out — a pill that just vanishes
+// reads as a glitch, not an acknowledgement. dataset.fading tells injectBanner
+// to rebuild (not early-return) if the agent re-marks inside the fade window.
+function flashReleased() {
+  const banner = document.getElementById('bridge-banner');
+  const pill = banner?.querySelector('div');
+  if (!pill) return;
+  banner.dataset.fading = '1';
+  banner.style.borderColor = 'transparent';
+  pill.firstChild.textContent = '🟣 ✓ released — this tab is yours again';
+  pill.title = 'released';
+  pill.style.pointerEvents = 'none';
+  document.getElementById('bridge-log')?.remove();
+  setTimeout(() => banner.remove(), 2000);
+}
+
 // --- Live status in the corner pill ------------------------------------------
 // The human watching the tab sees what the agent is doing, not just that it
 // is: every command re-labels the pill ("🟣 clicking @e4") and appends to a
@@ -416,9 +398,13 @@ const tabActivity = new Map(); // tabId -> last 30 "HH:MM:SS label" lines
 // lights the viewport frame for the duration of the command.
 function pillInject(label, lines, target, active) {
   const banner = document.getElementById('bridge-banner');
-  const pill = banner?.querySelector('div');
+  // Sentinels let the SW tell a page-deleted pill (rebuild it — a page or SPA
+  // re-render can wipe #bridge-banner mid-session) from the user's ✕ hide
+  // (respect it — bridgeHide is set only by the ✕ handler).
+  if (!banner) return document.documentElement.dataset.bridgeHide === '1' ? 'hid' : 'gone';
+  const pill = banner.querySelector('div');
   if (!pill) return;
-  banner.style.borderColor = active ? 'rgba(168,85,247,.75)' : 'transparent';
+  banner.style.borderColor = active ? 'rgba(147,51,234,.75)' : 'transparent';
   if (target && target.startsWith('@')) {
     const el = window.__bridgeRefs?.[target.slice(1)];
     const name = String(el?.getAttribute('aria-label') || el?.innerText || el?.placeholder || '').replace(/\s+/g, ' ').trim().slice(0, 24);
@@ -432,7 +418,9 @@ function pillInject(label, lines, target, active) {
   pill.firstChild.textContent = '🟣 ' + label;
   const log = lines.join('\n');
   pill.dataset.log = log;
-  pill.title = log + '\n(click for history · ✕ hides)';
+  // Fixed short hint naming all three affordances — a 30-line native tooltip
+  // doesn't scroll and duplicates the click-to-open panel that holds the log.
+  pill.title = 'AI is driving this tab — click for history · ✕ hides · ⏏ releases';
   const p = document.getElementById('bridge-log');
   if (p) {
     p.textContent = log || '(no activity yet)'; // panel open → live-update it
@@ -455,6 +443,27 @@ const idleLabel = (tabId) => {
   const n = failedSinceOk.get(tabId) || 0;
   return n ? `AI idle — ⚠ ${n} failed since last ok` : 'AI idle';
 };
+// The pill is read by the human, not the agent: raw Error text ('timeout
+// after 120000ms — nudge them (note <match> …)') is agent-speak on the
+// product's trust surface. Map the common failures to human words here, at
+// the single pill-bound site — the agent-facing error field stays verbatim.
+const humanizeErr = (err) => {
+  const s = String(err).replace(/^(Error:\s*)+/, '');
+  if (/timeout after \d+ms/.test(s)) return 'gave up waiting — time ran out';
+  if (/tab was closed/i.test(s)) return 'the tab was closed';
+  if (/debugger|detached|extension disconnected|not connected/i.test(s)) return 'lost the connection to the page';
+  return s.replace(/[;—] (use|nudge|re-run|tell the user|run) [\s\S]*$/i, '').slice(0, 60);
+};
+// Chrome's raw tab-gone errors ('No tab with id: …') read as internal noise —
+// name what happened and the recovery move, in the house style of findTab's
+// 'run tabs to re-find it'. 'Cannot access contents of' is a different beast:
+// the restricted-page rejection (chrome://, Web Store, PDF), not a gone tab.
+const wrapErr = (err) => {
+  const s = String(err);
+  if (/No tab with id|The frame was removed/i.test(s)) return 'the tab was closed (or navigated) mid-command — run tabs to re-find it';
+  if (/Cannot access contents of/i.test(s)) return 'that page is off-limits to extensions (chrome://, Web Store, PDF) — pick another tab';
+  return s;
+};
 // tabId -> interval re-labeling the pill with elapsed seconds while a command
 // runs. One 5s tick per tab (not per command): a 30s net capture stops
 // reading as "stuck" — the human sees honest progress without the DOM being
@@ -467,13 +476,15 @@ function startTick(tabId, msg, t0) {
     tabId,
     setInterval(() => {
       if (!inflight.get(tabId)) return stopTick(tabId);
+      const args = [`${ing}… ${Math.round((Date.now() - t0) / 1000)}s`, tabActivity.get(tabId) || [], msg.target || null, true];
       chrome.scripting
         .executeScript({
           target: { tabId },
           func: pillInject,
-          args: [`${ing}… ${Math.round((Date.now() - t0) / 1000)}s`, tabActivity.get(tabId) || [], msg.target || null, true],
+          args,
           world: worldCache.get(tabId) || 'MAIN',
         })
+        .then((res) => revivePill(tabId, res, args))
         .catch(() => {});
     }, 5000)
   );
@@ -492,6 +503,25 @@ function pushActivity(tabId, line) {
   return lines;
 }
 
+// The pill is page DOM — a page script or SPA re-render can delete
+// #bridge-banner mid-session, and every narration then no-ops silently while
+// the agent keeps driving. pillInject's 'gone' sentinel (vs 'hid' — the
+// user's ✕ sets bridgeHide, and that stays respected) re-asserts the banner
+// on the next narration, mirroring restoreBanner's two-call pattern.
+// bannerSuppressed gates this: never rebuild the pill into a shot/wait
+// capture window — the exact regression removeBannerForCapture exists to
+// prevent.
+function revivePill(tabId, res, args) {
+  if (res?.[0]?.result !== 'gone') return;
+  if (!drivenTabs.has(tabId) || bannerSuppressed.has(tabId)) return;
+  chrome.scripting
+    .executeScript({ target: { tabId }, func: injectBanner })
+    .then(() =>
+      chrome.scripting.executeScript({ target: { tabId }, func: pillInject, args, world: worldCache.get(tabId) || 'MAIN' })
+    )
+    .catch(() => {});
+}
+
 function recordActivity(tabId, msg) {
   const { ing, done } = activityPhrases(msg);
   const lines = pushActivity(tabId, done);
@@ -499,15 +529,17 @@ function recordActivity(tabId, msg) {
   msg._pill = true; // onmessage's finally decrements inflight only for commands that recorded
   inflight.set(tabId, (inflight.get(tabId) || 0) + 1);
   startTick(tabId, msg, Date.now());
+  const args = [ing + '…', lines, msg.target || null, true];
   chrome.scripting
     .executeScript({
       target: { tabId },
       func: pillInject,
-      args: [ing + '…', lines, msg.target || null, true],
+      args,
       // Refs live in the world snap ran in (worldCache); on CSP pages that's
       // MAIN — inject there or the pill falls back to raw '@e4' agent-speak.
       world: worldCache.get(tabId) || 'MAIN',
     })
+    .then((res) => revivePill(tabId, res, args))
     .catch(() => {}); // banner absent (user hid it / chrome:// page) — fine
 }
 
@@ -515,6 +547,9 @@ function recordActivity(tabId, msg) {
 // while the command runs ("taking screenshot…"), past tense for the tooltip
 // history ring. The user glances at the tab to see what the agent is doing
 // RIGHT NOW — agent-speak like "click @e4" doesn't answer that.
+// Adding a command? SEVEN registries stay in sync (a missing one fails SILENTLY):
+// cli.mjs USAGE · cli.mjs run() · server.mjs CLI_LINES · server.mjs route() (only if it
+// needs special routing) · background.js handle() · ACT_VERBS (pill narration) · MUTATING.
 const ACT_VERBS = {
   open: ['opening page', 'opened page'],
   navigate: ['opening page', 'opened page'],
@@ -677,7 +712,7 @@ async function markTab(tabId) {
   }
 }
 
-async function releaseTab(tabId) {
+async function releaseTab(tabId, opts = {}) {
   drivenTabs.delete(tabId);
   tabActivity.delete(tabId); // else a re-mark resurrects the stale history ring
   shotBaselines.delete(tabId); // else a later session's first --diff compares against a previous session's pixels
@@ -690,12 +725,15 @@ async function releaseTab(tabId) {
   // to explain why (found by the flow review) — same clear as unemulate,
   // serialized behind any in-flight CDP sibling.
   if (emulatedTabs.has(tabId)) await withCdp(tabId, () => clearEmulation(tabId)).catch(() => {}); // best-effort like every other step — a wedged CDP clear must not abort the release tail
+  if (drivenTabs.has(tabId)) return; // re-marked mid-release — the new mark owns the markers now (mirrors markTab's guard); stripping them here would leave a naked driven tab
   await setFavicon(tabId, null); // restore the site's own favicon
   persist();
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
-      func: removeBanner,
+      // The human's own ⏏ click gets a '✓ released' fade instead of a silent
+      // vanish — an acknowledgement, not a glitch.
+      func: opts.flash ? flashReleased : removeBanner,
     });
   } catch {}
   try {
@@ -794,7 +832,15 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
     // event that woke a dead worker — releasing against the still-empty maps
     // would no-op, then hydration + the catch-up would resurrect everything
     // (found by review). On a live worker `ready` is already settled.
-    ready.then(() => releaseTab(sender.tab.id)).catch(() => {});
+    ready
+      .then(() => releaseTab(sender.tab.id, { flash: true }))
+      .then(() => {
+        // Tell the agent's feed (watch/history): the human took the tab back.
+        // Without this the next command silently re-marks and nobody noticed.
+        if (ws && ws.readyState === WebSocket.OPEN)
+          ws.send(JSON.stringify({ type: 'event', kind: 'self-release', tabId: sender.tab.id, url: sender.tab.url || '' }));
+      })
+      .catch(() => {});
   }
 });
 
@@ -820,9 +866,24 @@ async function attachDbg(tabId) {
     logLine('dbg +' + tabId);
   } catch (e) {
     if (!/already attached/i.test(String(e))) {
-      if (n <= 1) cdpRefs.delete(tabId);
-      else cdpRefs.set(tabId, n - 1);
+      // Roll back against the CURRENT map value, not the pre-await capture —
+      // a sibling may have incremented while our attach was in flight.
+      const cur = cdpRefs.get(tabId) || 1;
+      if (cur <= 1) cdpRefs.delete(tabId);
+      else cdpRefs.set(tabId, cur - 1);
       throw e;
+    }
+    // 'already attached' with no sibling share and no emulation zombie can be
+    // a FOREIGN debugger (the user's own DevTools) — sharing that breaks both
+    // sides. Probe ownership with one read-only command: our zombie session
+    // (pre-restart SW) answers it, a foreign one throws.
+    if (n === 1 && !emulatedTabs.has(tabId)) {
+      try {
+        await chrome.debugger.sendCommand({ tabId }, 'Page.getLayoutMetrics');
+      } catch {
+        cdpRefs.delete(tabId); // n === 1 — roll back our share
+        throw new Error('another debugger holds tab ' + tabId + ' (DevTools open?) — close it and retry');
+      }
     }
     logLine('dbg +' + tabId + ' (shared)'); // ours from a sibling command — share it
   }
@@ -848,7 +909,6 @@ async function detachDbg(tabId) {
 // stays wedged until the tab closes.
 chrome.debugger.onDetach.addListener((src) => {
   if (cdpRefs.delete(src.tabId) || emulatedTabs.has(src.tabId)) logLine('dbg DETACHED EXTERNALLY ' + src.tabId);
-  cdpRefs.delete(src.tabId);
   emulatedTabs.delete(src.tabId);
   // Fired during the hydration window (often the very event that woke the
   // SW): the delete hit the still-empty map, and hydration then resurrects
@@ -862,7 +922,16 @@ chrome.debugger.onDetach.addListener((src) => {
   // fails via the withCdp timeout.
   cdpQ.delete(src.tabId);
   const c = netCollectors.get(src.tabId);
-  if (c) c.detached = true; // captureNetwork reports the cut-short capture
+  if (c) {
+    // A live capture self-completes via c.wake with a cut-short report —
+    // don't also fast-reject its withCdp, or the partial capture (the useful
+    // part) turns into a bare error.
+    c.detached = true; // captureNetwork reports the cut-short capture
+    c.wake?.(); // and stops sleeping out the rest of --dur
+  } else {
+    cdpInflight.get(src.tabId)?.(new Error('debugger detached mid-command — the "debugging this browser" infobar was dismissed or DevTools opened on this tab; retry the command'));
+    cdpInflight.delete(src.tabId);
+  }
 });
 
 // Serialize the CDP-holding commands per tab. The refcount makes concurrent
@@ -875,16 +944,31 @@ chrome.debugger.onDetach.addListener((src) => {
 // cleanup runs eval right after (not inside) this lock, and runEval itself
 // must never queue behind a command waiting on it.
 const cdpQ = new Map(); // tabId -> in-flight CDP command chain
+// tabId -> early-reject handle for the in-flight command's timeout promise.
+// onDetach fires it: a detach drops sendCommand callbacks, so the command
+// fails NOW with the real cause instead of sleeping out the 65s backstop.
+const cdpInflight = new Map();
 function withCdp(tabId, fn) {
   const run = (cdpQ.get(tabId) || Promise.resolve()).then(fn);
   // Timeout under the server's 70s cap: a dropped sendCommand callback (Chrome
   // does this on detach) must fail THIS command and let the queue advance —
   // otherwise every later CDP command on the tab chains onto a promise that
   // never settles and rots to 'extension timeout' until the SW restarts.
+  let wake;
   const timed = Promise.race([
     run,
-    new Promise((_, rej) => setTimeout(() => rej(new Error('CDP command stuck (dropped callback?) — queue advanced')), 65_000)),
+    new Promise((_, rej) => {
+      const t = setTimeout(() => rej(new Error('CDP command stuck (dropped callback?) — queue advanced')), 65_000);
+      wake = (e) => {
+        clearTimeout(t);
+        rej(e);
+      };
+    }),
   ]);
+  cdpInflight.set(tabId, wake);
+  timed.catch(() => {}).finally(() => {
+    if (cdpInflight.get(tabId) === wake) cdpInflight.delete(tabId); // don't delete a newer sibling's handle
+  });
   cdpQ.set(tabId, timed.catch(() => {}));
   return timed;
 }
@@ -896,6 +980,82 @@ function withCdp(tabId, fn) {
 const MOBILE_UA =
   'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
 const emulatedTabs = new Set();
+
+// --- Boot hydration (storage.session -> in-memory maps) ------------------------
+// Declared DOWN HERE on purpose: the IIFE touches tabActivity, groupTab,
+// tabStatus, setFavicon, remapTabId, emulatedTabs — every one of them is now
+// lexically above it, so no TDZ timing invariant is being relied on. It still
+// runs at boot (module eval reaches here in microseconds) and handle() awaits it.
+const pendingSwaps = [];
+function persist() {
+  if (!hydrated) return;
+  chrome.storage.session
+    .set({
+      drivenTabs: [...drivenTabs],
+      emulatedTabs: [...emulatedTabs],
+      tabStatus: Object.fromEntries(tabStatus),
+      tabActivity: Object.fromEntries(tabActivity),
+    })
+    .catch(() => {});
+}
+
+// SW restarts wipe the in-memory maps — rehydrate from storage.session and
+// prune ids of tabs that no longer exist. handle() awaits `ready` so no
+// command can observe a half-empty map. NOTE: the old belt-and-braces merge
+// from the 🟣 Bridge tab group is GONE on purpose: the group is a user-
+// editable strip object, so a human dragging a never-driven tab into it made
+// hydration resurrect the tab as driven — forever, with no release coming
+// (found by the flow review). Group membership is bridge-MADE state, not
+// bridge-proof state; storage.session is the only source of truth.
+const ready = (async () => {
+  try {
+    const s = await chrome.storage.session.get(['drivenTabs', 'emulatedTabs', 'tabStatus', 'tabActivity', 'swLogs']);
+    for (const id of s.drivenTabs || []) drivenTabs.add(id);
+    for (const id of s.emulatedTabs || []) emulatedTabs.add(id);
+    for (const [k, v] of Object.entries(s.tabStatus || {})) tabStatus.set(Number(k), v);
+    for (const [k, v] of Object.entries(s.tabActivity || {})) tabActivity.set(Number(k), v);
+    // The dead worker's log tail rides along — this worker's own lines (the
+    // 'background vX loaded' marker) stay newest at the end.
+    swLogs.unshift(...(s.swLogs || []));
+    if (swLogs.length > 100) swLogs.length = 100;
+    logsHydrated = true;
+  } catch {}
+  // Prerender swaps that fired before hydration (the swap itself is often the
+  // wake event): replay now — restored old-id state moves to the live new id
+  // in time to survive the prune right below.
+  for (const [n, o] of pendingSwaps.splice(0)) remapTabId(n, o);
+  try {
+    const live = new Set((await chrome.tabs.query({})).map((t) => t.id));
+    for (const id of [...drivenTabs]) if (!live.has(id)) drivenTabs.delete(id);
+    for (const id of [...emulatedTabs]) if (!live.has(id)) emulatedTabs.delete(id);
+    for (const id of [...tabStatus.keys()]) if (!live.has(id)) tabStatus.delete(id);
+    for (const id of [...tabActivity.keys()]) if (!live.has(id)) tabActivity.delete(id);
+  } catch {}
+  // A ⏳ tabStatus outlived its worker: the finally that clears it died with
+  // the SW, and inflight is memory-only — nothing is running in this fresh
+  // worker. Reset the stale ones or onUpdated re-applies ⏳ after every
+  // navigation of that tab, forever.
+  for (const id of [...tabStatus.keys()]) if (tabStatus.get(id) === '⏳') setFavicon(id, null);
+  // What survived the restart is THE diagnostic question after reload trouble
+  // (storage.session dies on extension reload; the re-mark on the next command
+  // rebuilds the rest).
+  logLine(`hydrated driven=${drivenTabs.size} emulated=${emulatedTabs.size}`);
+  hydrated = true; // persist() is safe from here on — the catch-up below persists
+  // SW-death catch-up: a driven tab that navigated while the worker was dead
+  // lost its 'complete' event (never replayed) — findTab won't re-mark it
+  // (already driven) and pillInject no-ops without the banner, so the bridge
+  // could keep acting on a tab wearing NO markers. Re-assert banner, group
+  // and favicon on every driven tab each time the worker starts; convergence
+  // then holds across SW cycles no matter which events were lost — except a
+  // pill the human ✕'d on THIS document (respectHide), which stays hidden.
+  for (const id of [...drivenTabs]) {
+    groupTab(id).catch(() => {}); // strip marker, like markTab's
+    chrome.scripting.executeScript({ target: { tabId: id }, func: injectBanner, args: [true] }).catch(() => {});
+    if (tabStatus.get(id)) setFavicon(id, tabStatus.get(id));
+  }
+  persist(); // the ⏳ resets above became durable only now
+})();
+
 
 async function setEmulation(tabId, { width, height, mobile, focus }) {
   // The emulation share in cdpRefs is owned by emulatedTabs membership, not by
@@ -1057,9 +1217,10 @@ async function captureNetwork(tabId, duration, filter, bodyFilter, har, ws) {
       maxTotalBufferSize: 10_000_000,
       maxResourceBufferSize: 5_000_000,
     });
-    await new Promise((r) => setTimeout(r, Math.min(duration || 4000, 30000)));
-    if (bodyFilter || har)
+    await Promise.race([new Promise((r) => setTimeout(r, Math.min(duration || 4000, 30000))), new Promise((r) => (c.wake = r))]); // onDetach wakes us — a cut-short capture reports now, not after the full --dur
+    if ((bodyFilter || har) && !c.detached)
       // Await body fetches while still attached — they fail after detach.
+      // (Skipped after a detach: those callbacks may never fire.)
       for (const r of c.values())
         if (r.bodyP) {
           const b = await r.bodyP;
@@ -1170,6 +1331,10 @@ async function captureNetwork(tabId, duration, filter, bodyFilter, har, ws) {
     },
   };
 }
+
+// In-page fetch/fetch-fallback body cap — one number, interpolated into the
+// page-side template and used by the SW-side fallback alike.
+const BODY_CAP = 512_000;
 
 // --- Page-side scripts ------------------------------------------------------
 // These run through runEval (ISOLATED world, MAIN fallback, CDP last resort).
@@ -1442,7 +1607,7 @@ const CURSOR_SRC = `
     if (ripple) {
       const r = document.createElement('div');
       r.style.cssText =
-        'position:absolute;left:-14px;top:-14px;width:28px;height:28px;border:3px solid rgba(168,85,247,.9);border-radius:50%;animation:bridge-ripple .6s ease-out forwards';
+        'position:absolute;left:-14px;top:-14px;width:28px;height:28px;border:3px solid rgba(147,51,234,.9);border-radius:50%;animation:bridge-ripple .6s ease-out forwards';
       c.appendChild(r);
     }
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -1452,7 +1617,7 @@ const CURSOR_SRC = `
     svg.style.filter = 'drop-shadow(0 1px 1px rgba(0,0,0,.4))';
     const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     p.setAttribute('d', 'M3 1v16l3.9-3.7 2.3 5.5 2.8-1.2-2.4-5.4 5.6-.6z');
-    p.setAttribute('fill', '#a855f7');
+    p.setAttribute('fill', '#9333ea');
     p.setAttribute('stroke', '#fff');
     p.setAttribute('stroke-width', '1.3');
     svg.appendChild(p);
@@ -1491,7 +1656,22 @@ const DEEPQ = `
     if (sel.startsWith('@')) return window.__bridgeRefs?.[sel.slice(1)] || null;
     return document.querySelector(sel) || deepAll(sel, document)[0] || null;
   };
-`;;
+  // deepQuery + the canonical miss error in one place — every action script
+  // embeds this; the '@' suffix teaches the recovery move (refs expire on
+  // navigation). A CSS miss gets the same hint style for consistency.
+  const queryErr = (sel) => 'element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ' — check the selector against a fresh snap');
+  const mustQuery = (sel) => {
+    const el = deepQuery(sel);
+    if (!el) throw new Error(queryErr(sel));
+    return el;
+  };
+  // React-safe value write: the native setter, so React's value tracker sees
+  // a real change. fill/type/paste all go through this.
+  const nativeSet = (el, val) => {
+    const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, val);
+  };
+`;
 // fill on a checkbox/radio would set .value without toggling checked and
 // report 'filled' — fake success. Fail loudly toward click instead.
 const CHECK_RADIO_GUARD = `if (el.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio')) throw new Error('checkbox/radio — fill cannot toggle checked; use: click <match> ' + sel);`;
@@ -1556,8 +1736,7 @@ const clickSrc = (target, dbl) => `(() => {
   ${DEEPQ}
   ${FRAME_SRC}
   const sel = ${JSON.stringify(target)};
-  const el = deepQuery(sel);
-  if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
+  const el = mustQuery(sel);
   ${FILE_INPUT_GUARD}
   el.scrollIntoView({ block: 'center', inline: 'center' });
   const r = el.getBoundingClientRect();
@@ -1586,8 +1765,7 @@ const clickSrc = (target, dbl) => `(() => {
 const fillSrc = (target, value) => `(() => {
   ${DEEPQ}
   const sel = ${JSON.stringify(target)}, value = ${JSON.stringify(value)};
-  const el = deepQuery(sel);
-  if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
+  const el = mustQuery(sel);
   ${FILE_INPUT_GUARD}
   ${CHECK_RADIO_GUARD}
   el.scrollIntoView({ block: 'center' });
@@ -1608,8 +1786,7 @@ const fillSrc = (target, value) => `(() => {
     el.dispatchEvent(new Event('change', { bubbles: true }));
   } else {
     // Native setter + events, so React's value tracker sees a real change.
-    const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-    Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value);
+    nativeSet(el, value);
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
   }
@@ -1621,8 +1798,7 @@ const fillSrc = (target, value) => `(() => {
 const typeSrc = (target, text) => `(async () => {
   ${DEEPQ}
   const sel = ${JSON.stringify(target)}, text = ${JSON.stringify(text)};
-  let el = deepQuery(sel);
-  if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
+  let el = mustQuery(sel);
   ${FILE_INPUT_GUARD}
   el.scrollIntoView({ block: 'center' });
   el.focus?.();
@@ -1640,8 +1816,7 @@ const typeSrc = (target, text) => `(async () => {
     if (el.isContentEditable) {
       document.execCommand('insertText', false, ch); // deprecated, still the only CE path that fires beforeinput correctly
     } else {
-      const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-      Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, el.value + ch);
+      nativeSet(el, el.value + ch);
       el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ch }));
     }
     el.dispatchEvent(new KeyboardEvent('keyup', o));
@@ -1670,8 +1845,7 @@ const pasteSrc = (target, value) => `(async () => {
   const sel = ${JSON.stringify(target || '')}, text = ${JSON.stringify(value)};
   let el = document.activeElement;
   if (sel) {
-    el = deepQuery(sel);
-    if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
+    el = mustQuery(sel);
     el.scrollIntoView({ block: 'center' });
     el.focus?.();
   }
@@ -1686,14 +1860,112 @@ const pasteSrc = (target, value) => `(async () => {
     if (el.isContentEditable) {
       document.execCommand('insertText', false, text); // deprecated, still the only CE path that fires beforeinput correctly
     } else {
-      const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
       const start = el.selectionStart ?? el.value.length, end = el.selectionEnd ?? start;
-      Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, el.value.slice(0, start) + text + el.value.slice(end));
+      nativeSet(el, el.value.slice(0, start) + text + el.value.slice(end));
       el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste', data: text }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
     }
   }
   return 'pasted ' + text.length + ' chars into ' + (sel || '<' + el.tagName.toLowerCase() + '>') + (handled ? ' (editor paste handler)' : '');
+})()`;
+
+// snap --find: Nano-picked shortlist.
+// The agent asks in natural language ("the cancel button"); Nano picks
+// matching lines from a fresh tree. Comes back as a shortlist to VERIFY, not
+// ground truth — prototype accuracy was ~2/3 on a 227-element page, with a
+// confident wrong pick, so --find never acts and the matched lines are shown
+// verbatim for the agent to confirm. Refs-only output keeps the call ~2s
+// (a JSON-array-output variant measured 11s).
+// ponytail: 48KB candidate cap — probed Nano's quota at ~60-80KB, so 48KB
+// covers whole trees on typical pages with margin; chunk + pick-per-chunk
+// is the upgrade path for true monsters.
+const FIND_SRC = (scope, find) => `(async () => {
+  ${NANO_GUARD}
+  const tree = ${SNAP_SRC(scope, false, false)};
+  const lines = tree.split('\\n').filter((l) => /@e\\d+/.test(l));
+  let listing = '';
+  let listed = 0;
+  for (const l of lines) {
+    if (listing.length + l.length > 48000) break;
+    listing += l + '\\n';
+    listed++;
+  }
+  const session = await LanguageModel.create();
+  try {
+    const out = await session.prompt(
+      'The UI elements of a page, one per line:\\n' + listing +
+      '\\nWhich lines match: ' + ${JSON.stringify(find)} +
+      '? Reply with ONLY their refs (@eN), best first, comma-separated. If none match, reply none.'
+    );
+    const picked = [];
+    for (const m of out.matchAll(/e(\\d+)/g)) {
+      const ref = '@e' + m[1];
+      const line = lines.find((l) => l.includes(ref + ' ') || l.trimEnd().endsWith(ref));
+      if (line && !picked.includes(line)) picked.push(line);
+    }
+    let tail = listed < lines.length ? ' (tree capped at 48KB — scope the snap to reach the rest)' : '';
+    // The 300-node snap cap drops the tail of big pages before Nano ever sees
+    // them — without this note, 'no matches' reads as 'not on the page' when
+    // the truth is 'not reached'. (The truncation line itself has no @eN ref,
+    // so the lines filter above already removed it from the listing.)
+    if (tree.includes('truncated at')) tail += ' (tree truncated at 300 nodes — the target may be past the cut; scope: snap <match> <css>)';
+    if (!picked.length) return 'no matches in ' + listed + ' ref lines — nano said: ' + out.slice(0, 120) + tail;
+    return picked.map((l) => l.trim()).join('\\n') +
+      '\\n(' + listed + ' ref lines scanned · nano pre-filter — verify before acting)' + tail;
+  } finally {
+    session.destroy();
+  }
+})()`;
+
+// measure/grid: small evals that used to live in the CLI as page-JS strings
+// with a `label` back-channel for the pill — they're commands, so the source
+// lives here with every other page script and ACT_VERBS carries the label.
+const measureSrc = (sel) =>
+  `JSON.stringify((()=>{${DEEPQ}return deepAll(${JSON.stringify(sel)}, document);})().map(e=>{const r=e.getBoundingClientRect();const c=getComputedStyle(e);return{text:(e.textContent||'').trim().slice(0,30),x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height),display:c.display,alignItems:c.alignItems,justifyContent:c.justifyContent,textAlign:c.textAlign,gap:c.gap,padding:c.padding,radius:c.borderRadius,bg:c.backgroundColor,color:c.color,font:c.fontSize+'/'+c.fontWeight}}))`;
+const GRID_SRC = `(()=>{const g=document.getElementById('bridge-grid');if(g){g.remove();return 'grid off'}const d=document.createElement('div');d.id='bridge-grid';d.style.cssText='position:fixed;inset:0;z-index:2147483647;pointer-events:none;background-image:repeating-linear-gradient(0deg,rgba(255,0,0,.25) 0 1px,transparent 1px 8px),repeating-linear-gradient(90deg,rgba(255,0,0,.25) 0 1px,transparent 1px 8px)';document.body.appendChild(d);return 'grid on'})()`;
+
+// Console hook must run in the MAIN world — isolated worlds get their own console.
+const consoleSrc = (clear) => `(() => {
+  if (!window.__bridgeLog) {
+    const buf = (window.__bridgeLog = []);
+    const fmt = (a) => { try { return typeof a === 'string' ? a : JSON.stringify(a); } catch { return String(a); } };
+    const push = (kind, args) => { buf.push(kind + ' ' + Array.from(args).map(fmt).join(' ').slice(0, 300)); if (buf.length > 300) buf.shift(); };
+    for (const k of ['error', 'warn', 'info', 'log']) {
+      const orig = console[k];
+      console[k] = function (...a) { push(k, a); return orig.apply(this, a); };
+    }
+    window.addEventListener('error', (e) => push('pageerror', [e.message]));
+    window.addEventListener('unhandledrejection', (e) => push('unhandledrejection', [String(e.reason)]));
+  }
+  const out = window.__bridgeLog.join('\\n');
+  if (${clear ? 'true' : 'false'}) window.__bridgeLog.length = 0;
+  return out || '(empty — hook installed; captures console + page errors from now on, re-run after navigation)';
+})()`;
+
+// Bot-wall / login-wall detection (#8, folded into the verdict pipeline): a
+// short scan of iframe srcs, URL, title and page text. Captcha walls →
+// needs_human (the human solves them — wait --human); rate-limit patterns →
+// blocked (retrying blindly or waiting for a human won't help); login walls →
+// needs_human. Signatures are deliberately cheap substring matches — naming
+// the wall is worth far more than classifying it perfectly.
+const WALL_SRC = `(() => {
+  const hay = (
+    [...document.querySelectorAll('iframe')].map((f) => f.src || '').join(' ') + ' ' + location.href + ' ' + (document.title || '') + ' ' +
+    (document.body?.innerText || '').slice(0, 3000)
+  ).toLowerCase();
+  const out = {};
+  const walls = [
+    [/recaptcha/, 'reCAPTCHA'],
+    [/challenges\\.cloudflare\\.com|turnstile/, 'Cloudflare Turnstile'],
+    [/datadome/, 'DataDome'],
+    [/perimeterx|humansecurity|px-captcha/, 'PerimeterX'],
+    [/arkose|funcaptcha/, 'Arkose'],
+  ];
+  const hit = walls.filter(([re]) => re.test(hay)).map(([, n]) => n);
+  if (hit.length) out.captcha = hit.join(', ');
+  if (/unusual traffic|too many requests|rate.?limit|access denied|request blocked/.test(hay)) out.block = 'rate limit / bot wall';
+  if (/(\\/|^)log[-_]?in|\\/sign[-_]?in|accounts\\.google\\.com/.test(location.href.toLowerCase())) out.login = true;
+  return out;
 })()`;
 
 // --- pixel diff: decode PNGs in the service worker (OffscreenCanvas) ---------
@@ -1792,6 +2064,59 @@ const cssBox = (cap, box) => {
   };
 };
 
+// Remove the pill+viewport-frame banner for the duration of captures. It is
+// page DOM at inset:0 (z-index max) and poisons captures three ways, all found
+// live: the pill's elapsed-seconds label changes pixels every second (a
+// wait --pixel-change on a marked static tab self-triggered from its own
+// pill); the ACTIVE purple border renders as a phantom full-width band in
+// captureBeyondViewport frames whose clip starts below the viewport top
+// (crop/full/diff — a 1280×24 strip on a static page); and visibility:hidden
+// does NOT keep it out of those frames (the wait fired with the banner
+// 'hidden' — some cached/compositor path still paints it). Only DOM removal
+// is invisible to every render path. Cost: the pill is absent while a shot
+// runs (sub-second) and for the length of a pixel-change wait — favicon ⏳
+// and the 🟣 tab group still show driven-ness; a pill that fabricates the
+// very change being watched is worse.
+// Tabs whose banner is currently removed for a capture window. The
+// tabs.onUpdated re-banner hook fires status 'complete' ~0.5-1s after the
+// debugger attaches (not just on loads — caught live via a page-side
+// MutationObserver mid-wait --pixel-change) and would re-inject the banner
+// straight into the diff frame, re-poisoning the very capture the removal
+// was for. The hook checks this set.
+const bannerSuppressed = new Set();
+const removeBannerForCapture = async (tabId) => {
+  bannerSuppressed.add(tabId); // BEFORE the removal — the onUpdated race is async
+  try {
+    const r = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        const b = document.getElementById('bridge-banner');
+        if (!b) return false;
+        b.remove();
+        return true;
+      },
+    });
+    return !!r?.[0]?.result;
+  } catch {
+    return false; // chrome:// page etc. — no banner to worry about
+  }
+};
+const restoreBanner = async (tabId, existed) => {
+  // Re-inject only if the banner existed before the capture window AND the
+  // tab is still driven: the ✕ promise ("hidden until the next navigation")
+  // must survive a shot, a chrome:// tab never had one, and a release that
+  // landed mid-capture (release takes no CDP lock; parallel agent calls are
+  // a supported pattern) must stick — restoring onto a released tab
+  // resurrects the pill with no cleanup path left (found by the flow review).
+  // The suppression flag ALWAYS clears — a stuck flag would silence the
+  // onUpdated re-banner forever after.
+  if (existed && drivenTabs.has(tabId)) {
+    await chrome.scripting.executeScript({ target: { tabId }, func: injectBanner }).catch(() => {});
+    await chrome.scripting.executeScript({ target: { tabId }, func: pillInject, args: [idleLabel(tabId), tabActivity.get(tabId) || [], null, false] }).catch(() => {});
+  }
+  bannerSuppressed.delete(tabId);
+};
+
 // Shared capture budget helpers — captureViewport and shot's --full/--crop
 // paths must agree on dpr and the --max scale budget, one derivation each.
 const dprOf = (m) => (m.visualViewport?.clientWidth && m.cssVisualViewport?.clientWidth ? m.visualViewport.clientWidth / m.cssVisualViewport.clientWidth : 1);
@@ -1863,8 +2188,7 @@ const trustedPointSrc = (target, coverage, ripple) => `(() => {
   ${DEEPQ}
   ${FRAME_SRC}
   const sel = ${JSON.stringify(target)};
-  const el = deepQuery(sel);
-  if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
+  const el = mustQuery(sel);
   el.scrollIntoView({ block: 'center', inline: 'center' });
   const r = el.getBoundingClientRect();
   const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
@@ -1884,7 +2208,7 @@ const trustedFocusSrc = (target) => `(() => {
   const sel = ${JSON.stringify(target || '')};
   const el = sel ? deepQuery(sel) : document.activeElement;
   if (sel) {
-    if (!el) throw new Error('element not found: ' + sel);
+    if (!el) throw new Error(queryErr(sel));
     el.scrollIntoView({ block: 'center' });
     el.focus?.();
   }
@@ -1910,6 +2234,8 @@ async function cdpKeyEvent(tabId, keyIn) {
     }
   }
   const isChar = key.length === 1;
+  // Same typo guard as the synthetic path — a keyCode-0 noop reads as success.
+  if (!isChar && !CDP_KEYCODE[key]) throw new Error('unknown key ' + JSON.stringify(key) + ' — named keys: Enter, Tab, Escape, Backspace, Delete, Insert, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, or a single character (space = " ")');
   const vk = isChar ? (/[a-z]/i.test(key) ? key.toUpperCase().charCodeAt(0) : key.charCodeAt(0)) : CDP_KEYCODE[key] || 0;
   const base = {
     key,
@@ -1992,8 +2318,7 @@ const pressSrc = (keyIn, target) => `(() => {
   const sel = ${JSON.stringify(target || '')}, keyIn = ${JSON.stringify(keyIn)};
   let el = document.activeElement || document.body;
   if (sel) {
-    el = deepQuery(sel);
-    if (!el) throw new Error('element not found: ' + sel);
+    el = mustQuery(sel);
     el.focus?.();
   }
   const MODS = { Control:'ctrlKey', Ctrl:'ctrlKey', Shift:'shiftKey', Alt:'altKey', Meta:'metaKey', Cmd:'metaKey', Command:'metaKey' };
@@ -2011,6 +2336,9 @@ const pressSrc = (keyIn, target) => `(() => {
   // constructor leaves them 0. Chrome derives which from keyCode in the dict;
   // on keypress, which is the charCode.
   const KEYCODE = { Enter:13, Tab:9, Escape:27, Backspace:8, Delete:46, Insert:45, ArrowUp:38, ArrowDown:40, ArrowLeft:37, ArrowRight:39, Home:36, End:35, PageUp:33, PageDown:34, ' ':32, Shift:16, Control:17, Alt:18, Meta:91, CapsLock:20 };
+  // A typoed key name ('Entr') would dispatch a keyCode-0 noop and read as
+  // success — fail loud, the error doubles as the accepted-keys list.
+  if (key.length > 1 && !KEYCODE[key]) throw new Error('unknown key ' + JSON.stringify(key) + ' — named keys: Enter, Tab, Escape, Backspace, Delete, Insert, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, or a single character (space = " ")');
   o.keyCode = key.length === 1 ? (/[a-z]/i.test(key) ? key.toUpperCase().charCodeAt(0) : key.charCodeAt(0)) : (KEYCODE[key] || 0);
   el.dispatchEvent(new KeyboardEvent('keydown', o));
   el.dispatchEvent(new KeyboardEvent('keypress', { ...o, charCode: key.length === 1 ? key.charCodeAt(0) : 0 }));
@@ -2022,8 +2350,7 @@ const hoverSrc = (target) => `(() => {
   ${DEEPQ}
   ${FRAME_SRC}
   const sel = ${JSON.stringify(target)};
-  const el = deepQuery(sel);
-  if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
+  const el = mustQuery(sel);
   el.scrollIntoView({ block: 'center', inline: 'center' });
   const r = el.getBoundingClientRect();
   ${CURSOR_SRC}
@@ -2044,10 +2371,8 @@ const dragSrc = (from, to) => `(async () => {
   ${DEEPQ}
   ${FRAME_SRC}
   const sel = ${JSON.stringify(from)}, sel2 = ${JSON.stringify(to)};
-  const el = deepQuery(sel);
-  const el2 = deepQuery(sel2);
-  if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
-  if (!el2) throw new Error('element not found: ' + sel2 + (sel2.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
+  const el = mustQuery(sel);
+  const el2 = mustQuery(sel2);
   el.scrollIntoView({ block: 'center', inline: 'center' });
   el2.scrollIntoView({ block: 'center', inline: 'center' });
   const r = el.getBoundingClientRect(), r2 = el2.getBoundingClientRect();
@@ -2085,8 +2410,7 @@ const scrollSrc = (what) => `(() => {
   const what = ${JSON.stringify(what)};
   const o = { behavior: 'instant' };
   if (!['top', 'bottom', 'up', 'down'].includes(what)) {
-    const el = deepQuery(what);
-    if (!el) throw new Error('element not found: ' + what + (what.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
+    const el = mustQuery(what);
     el.scrollIntoView({ ...o, block: 'center' });
     return 'scrolled ' + what + ' into view';
   }
@@ -2223,83 +2547,10 @@ const fetchSrc = (url) => `(async () => {
     const buf = new Uint8Array(await res.arrayBuffer());
     let bin = '';
     for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
-    return { status: res.status, ct, binary: true, body: btoa(bin).slice(0, 700_000), truncated: buf.length > 512 * 1024 };
+    return { status: res.status, ct, binary: true, body: btoa(bin).slice(0, 700_000), truncated: buf.length > ${BODY_CAP} };
   }
   const body = await res.text();
-  return { status: res.status, ct, binary: false, body: body.slice(0, 512_000), truncated: body.length > 512_000 };
-})()`;
-
-// --- snap --find: Nano-picked shortlist ---------------------------------------
-// The agent asks in natural language ("the cancel button"); Nano picks
-// matching lines from a fresh tree. Comes back as a shortlist to VERIFY, not
-// ground truth — prototype accuracy was ~2/3 on a 227-element page, with a
-// confident wrong pick, so --find never acts and the matched lines are shown
-// verbatim for the agent to confirm. Refs-only output keeps the call ~2s
-// (a JSON-array-output variant measured 11s).
-// ponytail: 48KB candidate cap — probed Nano's quota at ~60-80KB, so 48KB
-// covers whole trees on typical pages with margin; chunk + pick-per-chunk
-// is the upgrade path for true monsters.
-const FIND_SRC = (scope, find) => `(async () => {
-  ${NANO_GUARD}
-  const tree = ${SNAP_SRC(scope, false, false)};
-  const lines = tree.split('\\n').filter((l) => /@e\\d+/.test(l));
-  let listing = '';
-  let listed = 0;
-  for (const l of lines) {
-    if (listing.length + l.length > 48000) break;
-    listing += l + '\\n';
-    listed++;
-  }
-  const session = await LanguageModel.create();
-  try {
-    const out = await session.prompt(
-      'The UI elements of a page, one per line:\\n' + listing +
-      '\\nWhich lines match: ' + ${JSON.stringify(find)} +
-      '? Reply with ONLY their refs (@eN), best first, comma-separated. If none match, reply none.'
-    );
-    const picked = [];
-    for (const m of out.matchAll(/e(\\d+)/g)) {
-      const ref = '@e' + m[1];
-      const line = lines.find((l) => l.includes(ref + ' ') || l.trimEnd().endsWith(ref));
-      if (line && !picked.includes(line)) picked.push(line);
-    }
-    let tail = listed < lines.length ? ' (tree capped at 48KB — scope the snap to reach the rest)' : '';
-    // The 300-node snap cap drops the tail of big pages before Nano ever sees
-    // them — without this note, 'no matches' reads as 'not on the page' when
-    // the truth is 'not reached'. (The truncation line itself has no @eN ref,
-    // so the lines filter above already removed it from the listing.)
-    if (tree.includes('truncated at')) tail += ' (tree truncated at 300 nodes — the target may be past the cut; scope: snap <match> <css>)';
-    if (!picked.length) return 'no matches in ' + listed + ' ref lines — nano said: ' + out.slice(0, 120) + tail;
-    return picked.map((l) => l.trim()).join('\\n') +
-      '\\n(' + listed + ' ref lines scanned · nano pre-filter — verify before acting)' + tail;
-  } finally {
-    session.destroy();
-  }
-})()`;
-
-// measure/grid: small evals that used to live in the CLI as page-JS strings
-// with a `label` back-channel for the pill — they're commands, so the source
-// lives here with every other page script and ACT_VERBS carries the label.
-const measureSrc = (sel) =>
-  `JSON.stringify((()=>{${DEEPQ}return deepAll(${JSON.stringify(sel)}, document);})().map(e=>{const r=e.getBoundingClientRect();const c=getComputedStyle(e);return{text:(e.textContent||'').trim().slice(0,30),x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height),display:c.display,alignItems:c.alignItems,justifyContent:c.justifyContent,textAlign:c.textAlign,gap:c.gap,padding:c.padding,radius:c.borderRadius,bg:c.backgroundColor,color:c.color,font:c.fontSize+'/'+c.fontWeight}}))`;
-const GRID_SRC = `(()=>{const g=document.getElementById('bridge-grid');if(g){g.remove();return 'grid off'}const d=document.createElement('div');d.id='bridge-grid';d.style.cssText='position:fixed;inset:0;z-index:2147483647;pointer-events:none;background-image:repeating-linear-gradient(0deg,rgba(255,0,0,.25) 0 1px,transparent 1px 8px),repeating-linear-gradient(90deg,rgba(255,0,0,.25) 0 1px,transparent 1px 8px)';document.body.appendChild(d);return 'grid on'})()`;
-
-// Console hook must run in the MAIN world — isolated worlds get their own console.
-const consoleSrc = (clear) => `(() => {
-  if (!window.__bridgeLog) {
-    const buf = (window.__bridgeLog = []);
-    const fmt = (a) => { try { return typeof a === 'string' ? a : JSON.stringify(a); } catch { return String(a); } };
-    const push = (kind, args) => { buf.push(kind + ' ' + Array.from(args).map(fmt).join(' ').slice(0, 300)); if (buf.length > 300) buf.shift(); };
-    for (const k of ['error', 'warn', 'info', 'log']) {
-      const orig = console[k];
-      console[k] = function (...a) { push(k, a); return orig.apply(this, a); };
-    }
-    window.addEventListener('error', (e) => push('pageerror', [e.message]));
-    window.addEventListener('unhandledrejection', (e) => push('unhandledrejection', [String(e.reason)]));
-  }
-  const out = window.__bridgeLog.join('\\n');
-  if (${clear ? 'true' : 'false'}) window.__bridgeLog.length = 0;
-  return out || '(empty — hook installed; captures console + page errors from now on, re-run after navigation)';
+  return { status: res.status, ct, binary: false, body: body.slice(0, ${BODY_CAP}), truncated: body.length > ${BODY_CAP} };
 })()`;
 
 // --- eval machinery -----------------------------------------------------------
@@ -2366,32 +2617,6 @@ async function runEval(tabId, code, world = 'auto') {
     await detachDbg(tabId);
   }
 }
-
-// Bot-wall / login-wall detection (#8, folded into the verdict pipeline): a
-// short scan of iframe srcs, URL, title and page text. Captcha walls →
-// needs_human (the human solves them — wait --human); rate-limit patterns →
-// blocked (retrying blindly or waiting for a human won't help); login walls →
-// needs_human. Signatures are deliberately cheap substring matches — naming
-// the wall is worth far more than classifying it perfectly.
-const WALL_SRC = `(() => {
-  const hay = (
-    [...document.querySelectorAll('iframe')].map((f) => f.src || '').join(' ') + ' ' + location.href + ' ' + (document.title || '') + ' ' +
-    (document.body?.innerText || '').slice(0, 3000)
-  ).toLowerCase();
-  const out = {};
-  const walls = [
-    [/recaptcha/, 'reCAPTCHA'],
-    [/challenges\\.cloudflare\\.com|turnstile/, 'Cloudflare Turnstile'],
-    [/datadome/, 'DataDome'],
-    [/perimeterx|humansecurity|px-captcha/, 'PerimeterX'],
-    [/arkose|funcaptcha/, 'Arkose'],
-  ];
-  const hit = walls.filter(([re]) => re.test(hay)).map(([, n]) => n);
-  if (hit.length) out.captcha = hit.join(', ');
-  if (/unusual traffic|too many requests|rate.?limit|access denied|request blocked/.test(hay)) out.block = 'rate limit / bot wall';
-  if (/(\\/|^)log[-_]?in|\\/sign[-_]?in|accounts\\.google\\.com/.test(location.href.toLowerCase())) out.login = true;
-  return out;
-})()`;
 
 // --- --diff on actions: observe in the same round trip ----------------------
 // The core agent loop collapses from click → wait → snap --diff (3 shell
@@ -2503,9 +2728,9 @@ async function waitHuman(tab, msg) {
       target: { tabId: tab.id },
       world: 'ISOLATED',
       func: () => {
+        window.__bridgeHumanActed = false; // every handoff re-arms — a repeat wait on the same page must not auto-pass on the previous one's flag
         if (window.__bridgeHumanArmed) return;
         window.__bridgeHumanArmed = true;
-        window.__bridgeHumanActed = false;
         const mark = (e) => {
           if (e.isTrusted) window.__bridgeHumanActed = true;
         };
@@ -2541,59 +2766,6 @@ async function waitHuman(tab, msg) {
   await runEval(tab.id, SETTLE_SRC);
   return 'the human acted:\n' + (await runEval(tab.id, SNAP_SRC(null, true, false)));
 }
-
-// Remove the pill+viewport-frame banner for the duration of captures. It is
-// page DOM at inset:0 (z-index max) and poisons captures three ways, all found
-// live: the pill's elapsed-seconds label changes pixels every second (a
-// wait --pixel-change on a marked static tab self-triggered from its own
-// pill); the ACTIVE purple border renders as a phantom full-width band in
-// captureBeyondViewport frames whose clip starts below the viewport top
-// (crop/full/diff — a 1280×24 strip on a static page); and visibility:hidden
-// does NOT keep it out of those frames (the wait fired with the banner
-// 'hidden' — some cached/compositor path still paints it). Only DOM removal
-// is invisible to every render path. Cost: the pill is absent while a shot
-// runs (sub-second) and for the length of a pixel-change wait — favicon ⏳
-// and the 🟣 tab group still show driven-ness; a pill that fabricates the
-// very change being watched is worse.
-// Tabs whose banner is currently removed for a capture window. The
-// tabs.onUpdated re-banner hook fires status 'complete' ~0.5-1s after the
-// debugger attaches (not just on loads — caught live via a page-side
-// MutationObserver mid-wait --pixel-change) and would re-inject the banner
-// straight into the diff frame, re-poisoning the very capture the removal
-// was for. The hook checks this set.
-const bannerSuppressed = new Set();
-const removeBannerForCapture = async (tabId) => {
-  bannerSuppressed.add(tabId); // BEFORE the removal — the onUpdated race is async
-  try {
-    const r = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: () => {
-        const b = document.getElementById('bridge-banner');
-        if (!b) return false;
-        b.remove();
-        return true;
-      },
-    });
-    return !!r?.[0]?.result;
-  } catch {
-    return false; // chrome:// page etc. — no banner to worry about
-  }
-};
-const restoreBanner = async (tabId, existed) => {
-  // Re-inject only if the banner existed before the capture window AND the
-  // tab is still driven: the ✕ promise ("hidden until the next navigation")
-  // must survive a shot, a chrome:// tab never had one, and a release that
-  // landed mid-capture (release takes no CDP lock; parallel agent calls are
-  // a supported pattern) must stick — restoring onto a released tab
-  // resurrects the pill with no cleanup path left (found by the flow review).
-  // The suppression flag ALWAYS clears — a stuck flag would silence the
-  // onUpdated re-banner forever after.
-  if (existed && drivenTabs.has(tabId)) {
-    await chrome.scripting.executeScript({ target: { tabId }, func: injectBanner }).catch(() => {});
-    await chrome.scripting.executeScript({ target: { tabId }, func: pillInject, args: [idleLabel(tabId), tabActivity.get(tabId) || [], null, false] }).catch(() => {});
-  }
-  bannerSuppressed.delete(tabId);
-};
 
 // wait --pixel-change: the canvas watcher — polls the viewport until pixels
 // move (the a11y tree can't see canvas; bklapholz's salesforce pilot watched
@@ -2680,6 +2852,9 @@ async function waitPixel(tab, msg) {
 // still a failure the human needs to see). fetch is in the set for the same
 // reason it used to auto-mark: it issues a request in the user's name (a GET
 // can be a mutation on some servers).
+// Adding a command? SEVEN registries stay in sync (a missing one fails SILENTLY):
+// cli.mjs USAGE · cli.mjs run() · server.mjs CLI_LINES · server.mjs route() (only if it
+// needs special routing) · background.js handle() · ACT_VERBS (pill narration) · MUTATING.
 const MUTATING = new Set(['click', 'fill', 'paste', 'type', 'press', 'upload', 'eval', 'hover', 'scroll', 'grid', 'emulate', 'resize', 'drag', 'dialog', 'fetch']);
 
 // Takes the whole msg: records _tabId so the onmessage finally can flip a
@@ -2690,9 +2865,11 @@ async function findTab(msg) {
   // 'no tab matching "--max"'. One guard here covers every command.
   if (msg.urlMatch?.startsWith('--')) throw new Error(`"${msg.urlMatch}" is a flag, not a tab match — <match> goes first (check the command's usage)`);
   const tabs = await chrome.tabs.query({});
-  const matches = tabs.filter((t) => t.url && t.url.includes(msg.urlMatch));
+  // URL or title substring — the same predicate `cli tabs <match>` filters
+  // with, so the list the agent picked from and the resolver never disagree.
+  const matches = tabs.filter((t) => (t.url || '').includes(msg.urlMatch) || (t.title || '').includes(msg.urlMatch));
   if (!matches.length) {
-    throw new Error(`no tab matching "${msg.urlMatch}" — the tab may have navigated (the match is a URL substring); run tabs to re-find it`);
+    throw new Error(`no tab matching "${msg.urlMatch}" — the tab may have navigated (the match is a URL/title substring); run tabs to re-find it`);
   }
   // Driven tabs first (the bridge already touched them), then most recently
   // active. A substring match can land on a lookalike tab — a malicious page
@@ -2740,6 +2917,276 @@ async function findTab(msg) {
   return matches[0];
 }
 
+async function cmdFetch(tab, msg) {
+  // In-page fetch first — the page's session rides it. A page CSP
+  // (connect-src) or a cross-origin CORS refusal falls back to the
+  // browser-network read: Network.loadNetworkResource fetches outside the
+  // page's JS walls with the profile's credentials — the same wall
+  // net --body reads bodies through. Shape handled defensively; a Chrome
+  // version that answers differently fails loudly here, not silently.
+  try {
+    return await runEval(tab.id, fetchSrc(msg.url));
+  } catch (e) {
+    const read = await withCdp(tab.id, async () => {
+      await attachDbg(tab.id);
+      try {
+        // Chrome 152 tightened loadNetworkResource: options.disableCache is
+        // mandatory AND frameId must be provided (stress: the fallback died
+        // on both — 'Failed to deserialize options.disableCache', then
+        // 'Parameter frameId must be provided for frame targets').
+        const tree = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.getFrameTree');
+        const frameId = tree?.frameTree?.frame?.id;
+        const out = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Network.loadNetworkResource', { url: msg.url, frameId, options: { includeCredentials: true, disableCache: false } });
+        const rec = out?.resource || {};
+        if (!rec.success)
+          throw new Error('browser-network read failed (' + (rec.netErrorName || rec.netError || 'unknown') + ') — in-page fetch said: ' + String(e).replace(/^(Error:\s*)+/, '').slice(0, 120));
+        // The body now STREAMS (rec.stream, Chrome 152) instead of riding
+        // rec.content — read it via IO.read or the CLI writes a 0-byte
+        // --out (stress: 200 application/json, 0 KB file).
+        let binary = !!rec.base64Encoded;
+        let body = rec.content ?? '';
+        if (rec.stream) {
+          let b64 = '', text = '';
+          for (;;) {
+            const c = await chrome.debugger.sendCommand({ tabId: tab.id }, 'IO.read', { handle: rec.stream });
+            if (c.base64Encoded) { binary = true; b64 += c.data; } else text += c.data || '';
+            if (c.eof) break;
+          }
+          await chrome.debugger.sendCommand({ tabId: tab.id }, 'IO.close', { handle: rec.stream }).catch(() => {});
+          body = binary ? b64 : text.slice(0, BODY_CAP);
+        }
+        return {
+          status: rec.httpStatusCode ?? rec.statusCode ?? 200,
+          ct: rec.mime || rec.headers?.['Content-Type'] || '',
+          binary,
+          body: binary ? String(body) : String(body).slice(0, BODY_CAP),
+          truncated: !binary && body.length > BODY_CAP,
+        };
+      } finally {
+        await detachDbg(tab.id);
+      }
+    });
+    return read;
+  }
+}
+
+// A JS dialog (alert/confirm/prompt) blocks the renderer: every eval and
+// synthetic key wedges to the server's 70s timeout, so the agent cannot
+// rescue itself without CDP — the one channel that answers a dialog.
+async function cmdDialog(tab, msg) {
+  // Ground truth (live, Chrome 152): handleJavaScriptDialog only answers a
+  // dialog when the session's Page domain was enabled BEFORE the dialog
+  // opened. After the fact, Page.enable wedges on the dialog-blocked
+  // renderer, and a no-enable handle answers "No dialog is showing" while
+  // the box sits on screen. CDP cannot rescue a stuck tab — but NAVIGATION
+  // drops the dialog and revives the renderer (verified against a real
+  // 40-minute-stuck alert: nav <match> <url> unwedged it instantly).
+  return await withCdp(tab.id, async () => {
+    try {
+      await attachDbg(tab.id);
+      await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.handleJavaScriptDialog', {
+        accept: msg.accept !== false,
+        ...(msg.text ? { promptText: msg.text } : {}),
+      });
+    } catch (e) {
+      if (!/No dialog is showing/.test(String(e))) throw e;
+      // "No dialog is showing" + a BLOCKED renderer = a native dialog CDP
+      // can't touch. Distinguish it from the honest no-dialog case with a
+      // short probe: a blocked renderer can't run any script.
+      const alive = await Promise.race([
+        chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => true }).then((r) => !!r?.[0]?.result?.value, () => false),
+        new Promise((r) => setTimeout(() => r(null), 1500)),
+      ]);
+      if (alive === null)
+        throw new Error(
+          'a dialog IS showing but cannot be answered over CDP on this Chrome (the debugger must have attached before the dialog opened). ' +
+            'Dismiss it by navigating — nav <match> <any url> drops the dialog and revives the tab — or: close <match>'
+        );
+      throw e; // renderer alive → genuinely no dialog
+    } finally {
+      await detachDbg(tab.id);
+    }
+    return (msg.accept === false ? 'dismissed' : 'accepted') + ' dialog on tab ' + tab.id;
+  });
+}
+
+// File upload: eval can't touch <input type=file> (JS-set values are ignored
+// for security), but CDP DOM.setFileInputFiles is the DevTools path and fires
+// real input/change events, so frameworks see a genuine selection. The target
+// is tagged page-side (refs live in whatever world snap ran in, but the DOM
+// is shared), found via CDP querySelector, then untagged. Hidden inputs work
+// — the common "pretty label wrapping a display:none input" pattern is
+// exactly why the descendant search below exists.
+async function cmdUpload(tab, msg) {
+  const TAG = 'data-bridge-upload';
+  // The whole body rides actAndVerify so the verdict baseline precedes the
+  // CDP mutation (setFileInputFiles fires real input/change events).
+  return await actAndVerify(tab.id, msg, async () => {
+    const mode = await runEval(
+      tab.id,
+      `(() => {
+      ${DEEPQ}
+      const sel = ${JSON.stringify(msg.target)};
+      const el = mustQuery(sel);
+      const input = el.tagName === 'INPUT' && el.type === 'file' ? el : el.querySelector?.('input[type=file]');
+      // No parent-subtree fallback: from a stray target (a heading) it would
+      // silently pick some unrelated input on the page. Fail loud instead.
+      if (!input) throw new Error('no file input at or inside ' + sel + ' — target the <input type=file> or an element wrapping it');
+      input.setAttribute(${JSON.stringify(TAG)}, '');
+      return input.multiple ? 'multiple' : 'single';
+    })()`
+    );
+    if (mode === 'single' && msg.files.length > 1) {
+      await runEval(tab.id, `document.querySelector('[${TAG}]')?.removeAttribute('${TAG}')`).catch(() => {});
+      throw new Error('input has no "multiple" attribute — pass one file');
+    }
+    try {
+      await withCdp(tab.id, async () => {
+        try {
+          await attachDbg(tab.id);
+          const { root } = await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.getDocument', { depth: 1 });
+          const { nodeId } = await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.querySelector', {
+            nodeId: root.nodeId,
+            selector: `[${TAG}]`,
+          });
+          if (!nodeId) throw new Error('tagged input vanished mid-upload — re-snap and retry');
+          await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.setFileInputFiles', { nodeId, files: msg.files });
+        } finally {
+          await detachDbg(tab.id);
+        }
+      });
+    } finally {
+      await runEval(tab.id, `document.querySelector('[${TAG}]')?.removeAttribute('${TAG}')`).catch(() => {});
+    }
+    const names = msg.files.map((f) => f.split('/').pop()).join(', ');
+    return `uploaded ${msg.files.length} file(s) to ${msg.target}: ${names}`;
+  });
+}
+
+  // No tab activation here: CDP captureScreenshot works on background tabs,
+  // and activating would steal the user's view. Only the fallback below needs it.
+async function cmdShot(tab, msg) {
+  const format = msg.format === 'jpeg' ? 'jpeg' : 'png';
+  return await withCdp(tab.id, async () => {
+    try {
+      await attachDbg(tab.id);
+      // Every CDP capture below (viewport/crop/full/diff) and even the
+      // cdp-less fallback runs banner-free: the pill and its active purple
+      // frame border are bridge UI and must not be in the shot (the band
+      // artifact, the self-triggering pill — see removeBannerForCapture).
+      const bannered = await removeBannerForCapture(tab.id);
+      try {
+        const params = { format };
+        if (format === 'jpeg') params.quality = msg.quality ?? 80;
+        // Downscale to a long edge of `max` px (0 = native). Claude resizes
+        // anything past ~1568px on read anyway, so a native-res capture of a big
+        // window buys file size, never detail — smaller capture, same answer.
+        const max = maxOf(msg);
+        // Captures render at devicePixelRatio, so budget max/dpr CSS px to keep
+        // the OUTPUT long edge <= max (visualViewport is in device px).
+        let dpr = 1;
+        const cap = (w, h) => Math.min(msg.scale || 1, max / (Math.max(w, h) * dpr));
+        if (msg.full) {
+          // Full page: render beyond the viewport, clip to the CSS content size.
+          const m = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.getLayoutMetrics');
+          const c = m.cssContentSize;
+          dpr = dprOf(m);
+          params.captureBeyondViewport = true;
+          const w = Math.ceil(c.width), h = Math.min(Math.ceil(c.height), 16384);
+          params.clip = { x: 0, y: 0, width: w, height: h, scale: cap(w, h) };
+        } else if (msg.crop) {
+          // --crop x,y are viewport-relative (measure output); clip is page-absolute.
+          // Same whole-px rounding as captureViewport — fractional viewport
+          // offsets (infobar settle) would otherwise re-AA high-contrast edges
+          // between captures.
+          const m = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.getLayoutMetrics');
+          const v = m.cssVisualViewport;
+          dpr = dprOf(m);
+          params.captureBeyondViewport = true;
+          params.clip = { x: Math.round(msg.crop[0] + v.pageX), y: Math.round(msg.crop[1] + v.pageY), width: msg.crop[2], height: msg.crop[3], scale: cap(msg.crop[2], msg.crop[3]) };
+        } else {
+          // Viewport: cssVisualViewport fields are pageX/pageY/clientWidth/
+          // clientHeight (no x/y/width/height — that's what broke --scale).
+          if (msg.diff) {
+            // --diff: whole-viewport png compared against the previous --diff
+            // shot of this tab (baseline updates every call, like snap --diff).
+            // On change the saved file is the CHANGED REGION only — the one
+            // thing a canvas-watcher actually wants to look at.
+            const prev = shotBaselines.get(tab.id);
+            // --scale/--max cannot apply while a baseline exists (the diff is
+            // pinned to the baseline's frame) — say so instead of a silent no-op.
+            const ignored = prev && (msg.max !== undefined || msg.scale !== undefined) ? ' (--scale/--max ignored — the diff reuses the baseline frame)' : '';
+            const cap = await captureViewport(tab.id, { ...msg, format: 'png' }, prev?.clip, true);
+            const full = 'data:image/png;base64,' + cap.b64;
+            const setBase = () => shotBaselines.set(tab.id, { b64: cap.b64, clip: cap.clip });
+            if (!prev) {
+              setBase();
+              return { note: 'diff: baseline saved — run the action, then shot <match> <out> --diff again; this file is the full capture', data: full };
+            }
+            // Commit the baseline only once the comparison (and the crop) has
+            // actually run — a throw mid-diff must not swallow the observed
+            // change into the baseline, or the retry would report 'no change'
+            // (found by review).
+            const cmp = await pixelDiff(prev.b64, cap.b64);
+            if (cmp.error) {
+              setBase();
+              return { note: 'diff: ' + cmp.error + ignored, data: full };
+            }
+            if (!cmp.changed) {
+              cmp.bmp.close();
+              setBase();
+              return { note: 'diff: no pixel change since the previous shot (baseline updated)' + ignored, data: full };
+            }
+            const box = changedBox(cmp, cmp.bmp);
+            const data = await cropDataUrl(cmp.bmp, box.x, box.y, box.w, box.h);
+            cmp.bmp.close();
+            setBase();
+            const { x: cssX, y: cssY } = cssBox(cap, box);
+            return {
+              note: `diff: ${cmp.pct}% of pixels changed — the saved file is the changed region (${box.w}×${box.h}px; CSS offset x=${cssX}, y=${cssY} for measure/crop). Baseline is now THIS shot.` + ignored,
+              data,
+            };
+          }
+          const cap = await captureViewport(tab.id, msg);
+          return `data:image/${cap.format};base64,${cap.b64}`;
+        }
+        // Raw path (full/crop): captureViewport re-removes at its own capture;
+        // this sendCommand doesn't go through it — same timing-proof removal.
+        await removeBannerForCapture(tab.id);
+        const res = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.captureScreenshot', params);
+        return `data:image/${format};base64,${res.data}`;
+      } finally {
+        await restoreBanner(tab.id, bannered);
+      }
+    } catch (e) {
+      // debugger unavailable (chrome:// pages etc.) — fall back to captureVisibleTab
+      // (viewport only, native res — crop/max/scale can't be honored there)
+      console.warn('[bridge] cdp shot failed, falling back (crop/max/scale ignored):', e);
+      // captureVisibleTab grabs the window's ACTIVE tab — must activate first,
+      // otherwise we'd screenshot whatever the user is looking at. Restore the
+      // tab the human WAS on after: stealing their view is the one promise
+      // this path must not break (the CDP path above never activates).
+      const prev = (await chrome.tabs.query({ active: true, windowId: tab.windowId }))[0];
+      await chrome.tabs.update(tab.id, { active: true });
+      try {
+        await new Promise((r) => setTimeout(r, 400));
+        const png = await chrome.tabs.captureVisibleTab(tab.windowId, { format, ...(format === 'jpeg' ? { quality: msg.quality ?? 80 } : {}) });
+        // --diff can't run without CDP — say so instead of silently handing
+        // back a plain shot the agent would read as a completed diff cycle.
+        if (msg.diff) return { note: 'diff skipped — cdp unavailable on this page; this file is a plain fallback shot and the baseline is unchanged', data: png };
+        return png;
+      } finally {
+        if (prev && prev.id !== tab.id) await chrome.tabs.update(prev.id, { active: true }).catch(() => {});
+      }
+    } finally {
+      await detachDbg(tab.id);
+    }
+  });
+}
+
+// Adding a command? SEVEN registries stay in sync (a missing one fails SILENTLY):
+// cli.mjs USAGE · cli.mjs run() · server.mjs CLI_LINES · server.mjs route() (only if it
+// needs special routing) · background.js handle() · ACT_VERBS (pill narration) · MUTATING.
 async function handle(msg) {
   // State maps hydrate from storage.session — no command may run against
   // half-empty maps (cheap: storage read is sub-ms once warm).
@@ -2785,8 +3232,8 @@ async function handle(msg) {
   if (msg.type === 'probe') {
     const tabs = await chrome.tabs.query({});
     return tabs
-      .filter((t) => t.url && t.url.includes(msg.urlMatch))
-      .map((t) => ({ id: t.id, url: t.url.slice(0, 80), lastAccessed: t.lastAccessed || 0 }));
+      .filter((t) => (t.url || '').includes(msg.urlMatch) || (t.title || '').includes(msg.urlMatch)) // same predicate as findTab
+      .map((t) => ({ id: t.id, url: (t.url || '').slice(0, 80), lastAccessed: t.lastAccessed || 0 }));
   }
 
   if (msg.type === 'open') {
@@ -2883,56 +3330,7 @@ async function handle(msg) {
 
   if (msg.type === 'fetch') {
     const tab = await findTab(msg);
-    // In-page fetch first — the page's session rides it. A page CSP
-    // (connect-src) or a cross-origin CORS refusal falls back to the
-    // browser-network read: Network.loadNetworkResource fetches outside the
-    // page's JS walls with the profile's credentials — the same wall
-    // net --body reads bodies through. Shape handled defensively; a Chrome
-    // version that answers differently fails loudly here, not silently.
-    try {
-      return await runEval(tab.id, fetchSrc(msg.url));
-    } catch (e) {
-      const read = await withCdp(tab.id, async () => {
-        await attachDbg(tab.id);
-        try {
-          // Chrome 152 tightened loadNetworkResource: options.disableCache is
-          // mandatory AND frameId must be provided (stress: the fallback died
-          // on both — 'Failed to deserialize options.disableCache', then
-          // 'Parameter frameId must be provided for frame targets').
-          const tree = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.getFrameTree');
-          const frameId = tree?.frameTree?.frame?.id;
-          const out = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Network.loadNetworkResource', { url: msg.url, frameId, options: { includeCredentials: true, disableCache: false } });
-          const rec = out?.resource || {};
-          if (!rec.success)
-            throw new Error('browser-network read failed (' + (rec.netErrorName || rec.netError || 'unknown') + ') — in-page fetch said: ' + String(e).replace(/^(Error:\s*)+/, '').slice(0, 120));
-          // The body now STREAMS (rec.stream, Chrome 152) instead of riding
-          // rec.content — read it via IO.read or the CLI writes a 0-byte
-          // --out (stress: 200 application/json, 0 KB file).
-          let binary = !!rec.base64Encoded;
-          let body = rec.content ?? '';
-          if (rec.stream) {
-            let b64 = '', text = '';
-            for (;;) {
-              const c = await chrome.debugger.sendCommand({ tabId: tab.id }, 'IO.read', { handle: rec.stream });
-              if (c.base64Encoded) { binary = true; b64 += c.data; } else text += c.data || '';
-              if (c.eof) break;
-            }
-            await chrome.debugger.sendCommand({ tabId: tab.id }, 'IO.close', { handle: rec.stream }).catch(() => {});
-            body = binary ? b64 : text.slice(0, 512_000);
-          }
-          return {
-            status: rec.httpStatusCode ?? rec.statusCode ?? 200,
-            ct: rec.mime || rec.headers?.['Content-Type'] || '',
-            binary,
-            body: binary ? String(body) : String(body).slice(0, 512_000),
-            truncated: !binary && body.length > 512_000,
-          };
-        } finally {
-          await detachDbg(tab.id);
-        }
-      });
-      return read;
-    }
+    return await cmdFetch(tab, msg);
   }
 
   if (msg.type === 'measure') {
@@ -2979,45 +3377,9 @@ async function handle(msg) {
     return await actAndVerify(tab.id, msg, () => runEval(tab.id, dragSrc(msg.from, msg.to)));
   }
 
-  // A JS dialog (alert/confirm/prompt) blocks the renderer: every eval and
-  // synthetic key wedges to the server's 70s timeout, so the agent cannot
-  // rescue itself without CDP — the one channel that answers a dialog.
   if (msg.type === 'dialog') {
     const tab = await findTab(msg);
-    // Ground truth (live, Chrome 152): handleJavaScriptDialog only answers a
-    // dialog when the session's Page domain was enabled BEFORE the dialog
-    // opened. After the fact, Page.enable wedges on the dialog-blocked
-    // renderer, and a no-enable handle answers "No dialog is showing" while
-    // the box sits on screen. CDP cannot rescue a stuck tab — but NAVIGATION
-    // drops the dialog and revives the renderer (verified against a real
-    // 40-minute-stuck alert: nav <match> <url> unwedged it instantly).
-    return await withCdp(tab.id, async () => {
-      try {
-        await attachDbg(tab.id);
-        await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.handleJavaScriptDialog', {
-          accept: msg.accept !== false,
-          ...(msg.text ? { promptText: msg.text } : {}),
-        });
-      } catch (e) {
-        if (!/No dialog is showing/.test(String(e))) throw e;
-        // "No dialog is showing" + a BLOCKED renderer = a native dialog CDP
-        // can't touch. Distinguish it from the honest no-dialog case with a
-        // short probe: a blocked renderer can't run any script.
-        const alive = await Promise.race([
-          chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => true }).then((r) => !!r?.[0]?.result?.value, () => false),
-          new Promise((r) => setTimeout(() => r(null), 1500)),
-        ]);
-        if (alive === null)
-          throw new Error(
-            'a dialog IS showing but cannot be answered over CDP on this Chrome (the debugger must have attached before the dialog opened). ' +
-              'Dismiss it by navigating — nav <match> <any url> drops the dialog and revives the tab — or: close <match>'
-          );
-        throw e; // renderer alive → genuinely no dialog
-      } finally {
-        await detachDbg(tab.id);
-      }
-      return (msg.accept === false ? 'dismissed' : 'accepted') + ' dialog on tab ' + tab.id;
-    });
+    return await cmdDialog(tab, msg);
   }
 
   if (msg.type === 'scroll') {
@@ -3027,59 +3389,9 @@ async function handle(msg) {
     return await actAndVerify(tab.id, msg, () => runEval(tab.id, scrollSrc(msg.target)));
   }
 
-  // File upload: eval can't touch <input type=file> (JS-set values are ignored
-  // for security), but CDP DOM.setFileInputFiles is the DevTools path and fires
-  // real input/change events, so frameworks see a genuine selection. The target
-  // is tagged page-side (refs live in whatever world snap ran in, but the DOM
-  // is shared), found via CDP querySelector, then untagged. Hidden inputs work
-  // — the common "pretty label wrapping a display:none input" pattern is
-  // exactly why the descendant search below exists.
   if (msg.type === 'upload') {
     const tab = await findTab(msg);
-    const TAG = 'data-bridge-upload';
-    // The whole body rides actAndVerify so the verdict baseline precedes the
-    // CDP mutation (setFileInputFiles fires real input/change events).
-    return await actAndVerify(tab.id, msg, async () => {
-      const mode = await runEval(
-        tab.id,
-        `(() => {
-        ${DEEPQ}
-        const sel = ${JSON.stringify(msg.target)};
-        const el = deepQuery(sel);
-        if (!el) throw new Error('element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
-        const input = el.tagName === 'INPUT' && el.type === 'file' ? el : el.querySelector?.('input[type=file]');
-        // No parent-subtree fallback: from a stray target (a heading) it would
-        // silently pick some unrelated input on the page. Fail loud instead.
-        if (!input) throw new Error('no file input at or inside ' + sel + ' — target the <input type=file> or an element wrapping it');
-        input.setAttribute(${JSON.stringify(TAG)}, '');
-        return input.multiple ? 'multiple' : 'single';
-      })()`
-      );
-      if (mode === 'single' && msg.files.length > 1) {
-        await runEval(tab.id, `document.querySelector('[${TAG}]')?.removeAttribute('${TAG}')`).catch(() => {});
-        throw new Error('input has no "multiple" attribute — pass one file');
-      }
-      try {
-        await withCdp(tab.id, async () => {
-          try {
-            await attachDbg(tab.id);
-            const { root } = await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.getDocument', { depth: 1 });
-            const { nodeId } = await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.querySelector', {
-              nodeId: root.nodeId,
-              selector: `[${TAG}]`,
-            });
-            if (!nodeId) throw new Error('tagged input vanished mid-upload — re-snap and retry');
-            await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.setFileInputFiles', { nodeId, files: msg.files });
-          } finally {
-            await detachDbg(tab.id);
-          }
-        });
-      } finally {
-        await runEval(tab.id, `document.querySelector('[${TAG}]')?.removeAttribute('${TAG}')`).catch(() => {});
-      }
-      const names = msg.files.map((f) => f.split('/').pop()).join(', ');
-      return `uploaded ${msg.files.length} file(s) to ${msg.target}: ${names}`;
-    });
+    return await cmdUpload(tab, msg);
   }
 
   if (msg.type === 'ask') {
@@ -3140,124 +3452,7 @@ async function handle(msg) {
 
   if (msg.type === 'shot') {
     const tab = await findTab(msg);
-    // No tab activation here: CDP captureScreenshot works on background tabs,
-    // and activating would steal the user's view. Only the fallback below needs it.
-    const format = msg.format === 'jpeg' ? 'jpeg' : 'png';
-    return await withCdp(tab.id, async () => {
-    try {
-      await attachDbg(tab.id);
-      // Every CDP capture below (viewport/crop/full/diff) and even the
-      // cdp-less fallback runs banner-free: the pill and its active purple
-      // frame border are bridge UI and must not be in the shot (the band
-      // artifact, the self-triggering pill — see removeBannerForCapture).
-      const bannered = await removeBannerForCapture(tab.id);
-      try {
-      const params = { format };
-      if (format === 'jpeg') params.quality = msg.quality ?? 80;
-      // Downscale to a long edge of `max` px (0 = native). Claude resizes
-      // anything past ~1568px on read anyway, so a native-res capture of a big
-      // window buys file size, never detail — smaller capture, same answer.
-      const max = maxOf(msg);
-      // Captures render at devicePixelRatio, so budget max/dpr CSS px to keep
-      // the OUTPUT long edge <= max (visualViewport is in device px).
-      let dpr = 1;
-      const cap = (w, h) => Math.min(msg.scale || 1, max / (Math.max(w, h) * dpr));
-      if (msg.full) {
-        // Full page: render beyond the viewport, clip to the CSS content size.
-        const m = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.getLayoutMetrics');
-        const c = m.cssContentSize;
-        dpr = dprOf(m);
-        params.captureBeyondViewport = true;
-        const w = Math.ceil(c.width), h = Math.min(Math.ceil(c.height), 16384);
-        params.clip = { x: 0, y: 0, width: w, height: h, scale: cap(w, h) };
-      } else if (msg.crop) {
-        // --crop x,y are viewport-relative (measure output); clip is page-absolute.
-        // Same whole-px rounding as captureViewport — fractional viewport
-        // offsets (infobar settle) would otherwise re-AA high-contrast edges
-        // between captures.
-        const m = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.getLayoutMetrics');
-        const v = m.cssVisualViewport;
-        dpr = dprOf(m);
-        params.captureBeyondViewport = true;
-        params.clip = { x: Math.round(msg.crop[0] + v.pageX), y: Math.round(msg.crop[1] + v.pageY), width: msg.crop[2], height: msg.crop[3], scale: cap(msg.crop[2], msg.crop[3]) };
-      } else {
-        // Viewport: cssVisualViewport fields are pageX/pageY/clientWidth/
-        // clientHeight (no x/y/width/height — that's what broke --scale).
-        if (msg.diff) {
-          // --diff: whole-viewport png compared against the previous --diff
-          // shot of this tab (baseline updates every call, like snap --diff).
-          // On change the saved file is the CHANGED REGION only — the one
-          // thing a canvas-watcher actually wants to look at.
-          const prev = shotBaselines.get(tab.id);
-          // --scale/--max cannot apply while a baseline exists (the diff is
-          // pinned to the baseline's frame) — say so instead of a silent no-op.
-          const ignored = prev && (msg.max !== undefined || msg.scale !== undefined) ? ' (--scale/--max ignored — the diff reuses the baseline frame)' : '';
-          const cap = await captureViewport(tab.id, { ...msg, format: 'png' }, prev?.clip, true);
-          const full = 'data:image/png;base64,' + cap.b64;
-          const setBase = () => shotBaselines.set(tab.id, { b64: cap.b64, clip: cap.clip });
-          if (!prev) {
-            setBase();
-            return { note: 'diff: baseline saved — run the action, then shot <match> <out> --diff again; this file is the full capture', data: full };
-          }
-          // Commit the baseline only once the comparison (and the crop) has
-          // actually run — a throw mid-diff must not swallow the observed
-          // change into the baseline, or the retry would report 'no change'
-          // (found by review).
-          const cmp = await pixelDiff(prev.b64, cap.b64);
-          if (cmp.error) {
-            setBase();
-            return { note: 'diff: ' + cmp.error + ignored, data: full };
-          }
-          if (!cmp.changed) {
-            cmp.bmp.close();
-            setBase();
-            return { note: 'diff: no pixel change since the previous shot (baseline updated)' + ignored, data: full };
-          }
-          const box = changedBox(cmp, cmp.bmp);
-          const data = await cropDataUrl(cmp.bmp, box.x, box.y, box.w, box.h);
-          cmp.bmp.close();
-          setBase();
-          const { x: cssX, y: cssY } = cssBox(cap, box);
-          return {
-            note: `diff: ${cmp.pct}% of pixels changed — the saved file is the changed region (${box.w}×${box.h}px; CSS offset x=${cssX}, y=${cssY} for measure/crop). Baseline is now THIS shot.` + ignored,
-            data,
-          };
-        }
-        const cap = await captureViewport(tab.id, msg);
-        return `data:image/${cap.format};base64,${cap.b64}`;
-      }
-      // Raw path (full/crop): captureViewport re-removes at its own capture;
-      // this sendCommand doesn't go through it — same timing-proof removal.
-      await removeBannerForCapture(tab.id);
-      const res = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.captureScreenshot', params);
-      return `data:image/${format};base64,${res.data}`;
-      } finally {
-        await restoreBanner(tab.id, bannered);
-      }
-    } catch (e) {
-      // debugger unavailable (chrome:// pages etc.) — fall back to captureVisibleTab
-      // (viewport only, native res — crop/max/scale can't be honored there)
-      console.warn('[bridge] cdp shot failed, falling back (crop/max/scale ignored):', e);
-      // captureVisibleTab grabs the window's ACTIVE tab — must activate first,
-      // otherwise we'd screenshot whatever the user is looking at. Restore the
-      // tab the human WAS on after: stealing their view is the one promise
-      // this path must not break (the CDP path above never activates).
-      const prev = (await chrome.tabs.query({ active: true, windowId: tab.windowId }))[0];
-      await chrome.tabs.update(tab.id, { active: true });
-      try {
-        await new Promise((r) => setTimeout(r, 400));
-        const png = await chrome.tabs.captureVisibleTab(tab.windowId, { format, ...(format === 'jpeg' ? { quality: msg.quality ?? 80 } : {}) });
-        // --diff can't run without CDP — say so instead of silently handing
-        // back a plain shot the agent would read as a completed diff cycle.
-        if (msg.diff) return { note: 'diff skipped — cdp unavailable on this page; this file is a plain fallback shot and the baseline is unchanged', data: png };
-        return png;
-      } finally {
-        if (prev && prev.id !== tab.id) await chrome.tabs.update(prev.id, { active: true }).catch(() => {});
-      }
-    } finally {
-      await detachDbg(tab.id);
-    }
-    });
+    return await cmdShot(tab, msg);
   }
 
   throw new Error(`unknown type "${msg.type}"`);

@@ -8,7 +8,34 @@
 
 Let **any AI agent** drive the Chrome you're already using — your open tabs, logged-in sessions, SSO. Playwright and friends drive a browser they launched, with a profile of their own; MCP bridges need an MCP-capable client and a configured server. chrome-bridge needs neither: it drives the Chrome you're logged into — that's the only mode — with one unpacked extension and one zero-dependency Node CLI. Every tab the agent touches wears a 🟣 pill that narrates what it's doing.
 
-![chrome-bridge driving a tab — 🟣 corner tag marks it](docs/banner.png)
+![a driven tab in motion — the 🟣 pill narrates each action, a purple frame lights up while a command runs, the pointer flashes where the agent clicks](docs/demo.gif)
+
+A tiny unpacked Chrome extension connects over WebSocket to a local Node server; anything that can run a shell command can drive the browser:
+
+```bash
+node server.mjs &                        # start the bridge (Node ≥ 18, no deps)
+node cli.mjs snap localhost:8082         # compact a11y snapshot with element refs
+node cli.mjs click localhost:8082 @e4    # click by ref
+node cli.mjs fill localhost:8082 @e2 "hello@example.com"
+node cli.mjs shot localhost:8082 out.png --max 800 --format jpeg
+```
+
+A `snap` looks like this — the whole page as a compact text tree with refs you act on:
+
+```
+table "Hacker News new | past | comments | ask | show | jobs | submit" @e1
+  link "Hacker News" @e5
+  link "new" @e6
+  link "submit" @e12
+  link "login" @e13
+table "1. Playa Phone (playaphone.com) 122 points by cutoff 1 hour…" @e14
+  link "Playa Phone" @e16
+  link "41 comments" @e21
+```
+
+Link URLs are omitted by default (in our traces they dominated snapshot tokens — the `@eN` ref is what you click); nameless links keep theirs, and `snap --href` brings them all back.
+
+A real run, verified live against GitHub: [recipes/github.com.md](recipes/github.com.md) — set a repo's social preview image via the CLI, gotchas included (og:image verification, the is-default false-failure, the net/upload debugger conflict).
 
 ## Quick start
 
@@ -47,7 +74,7 @@ Set up chrome-bridge — the bridge that lets you drive my real, logged-in Chrom
    - health reports `"extension":false` → step 3. But if the extension was connected before your restart, wait ~10s and re-run health once first — it reconnects on its own after a server restart.
    - server won't start → show me the error and the last lines of `<repo>/server.log` (if it exists), then stop.
 
-3. The one click only I can do: ask me to open `chrome://extensions`, enable Developer mode, click Load unpacked, and select the `<repo>/extension` folder. On macOS you may run `open -a "Google Chrome" "chrome://extensions"` first. Then poll `node <repo>/cli.mjs health` every 5s (up to ~90s) until it reports `"extension":true`; if it doesn't, tell me what's still missing and stop — don't keep polling.
+3. The one click only I can do — unless I installed Chrome Bridge from the Chrome Web Store, in which case skip this step entirely: the store copy connects on its own, and loading the unpacked folder too creates a second profile seat that makes every command demand `--profile`. Otherwise: ask me to open `chrome://extensions`, enable Developer mode, click Load unpacked, and select the `<repo>/extension` folder. On macOS you may run `open -a "Google Chrome" "chrome://extensions"` first. Then poll `node <repo>/cli.mjs health` every 5s (up to ~90s) until it reports `"extension":true`; if it doesn't, tell me what's still missing and stop — don't keep polling.
 
 4. Install your integration — pick the ONE that applies to you:
    - Claude Code — copy the skill so it auto-loads on browser tasks in every project (use `./.claude/skills/` instead of `~/.claude/skills/` only if I told you to scope it to this project):
@@ -75,36 +102,15 @@ Prefer to do it yourself? The manual path:
 git clone https://github.com/siropkin/chrome-bridge && cd chrome-bridge && ./install.sh
 ```
 
-`install.sh` starts the server and opens `chrome://extensions` (macOS; on Linux open it yourself); then load the extension as above. Details in [Install detail](#install-detail).
+`install.sh` starts the server and opens `chrome://extensions` (macOS; on Linux open it yourself); then load the extension as above. Details in [Install detail](#install-detail). Installed Chrome Bridge from the Chrome Web Store? Skip the Load unpacked step — the store copy already connects; loading the unpacked folder too creates a second profile seat and every command will demand `--profile`.
 
 That's the whole integration. `AGENTS.md` is a self-contained operating manual — commands, recipes, gotchas — that any agent with file or web access can read. Agents with web access can read it straight from GitHub: `https://raw.githubusercontent.com/siropkin/chrome-bridge/master/AGENTS.md`.
 
----
+## The human stays in control
 
-A tiny unpacked Chrome extension connects over WebSocket to a local Node server; anything that can run a shell command can drive the browser:
+Tabs the bridge drives get a 🟣 pill in the bottom-right corner (click it for the full action history; ✕ hides it until the next navigation; ⏏ disconnects the agent from the tab) and join a 🟣 tab group so you always know what's being automated — including read-only commands (`snap`, `measure`, `console`): any tab the agent is *looking at* wears the pill, not just the ones it changes. The pill narrates what the agent is doing right now (`🟣 taking screenshot…`, `🟣 reading page…`, with elapsed seconds while a command runs) and its history panel lists the last actions, scrolled to the newest; when nothing's running it reads `🟣 AI idle` — plus `⚠ N failed since last ok` until a command lands again, and `⚠ bridge offline` while the server is unreachable. While a command runs, a purple viewport frame lights up, the tab's favicon shows ⏳ (✅ when it lands, ✗ when it fails — the ✗ stays until the next command), and clicks/hovers flash a purple pointer where the agent acts. `release` (or `close`) gives them back. The ⏏ is the human's escape hatch: one trusted click ends the bridge's claim on the tab — markers, group, device emulation, all of it — no CLI needed (synthetic page clicks can't fake it).
 
-```bash
-node server.mjs &                        # start the bridge (Node ≥ 18, no deps)
-node cli.mjs snap localhost:8082         # compact a11y snapshot with element refs
-node cli.mjs click localhost:8082 @e4    # click by ref
-node cli.mjs fill localhost:8082 @e2 "hello@example.com"
-node cli.mjs shot localhost:8082 out.png --max 800 --format jpeg
-```
-
-A `snap` looks like this — the whole page as a compact text tree with refs you act on:
-
-```
-table "Hacker News new | past | comments | ask | show | jobs | submit" @e1
-  link "Hacker News" @e5
-  link "new" @e6
-  link "submit" @e12
-  link "login" @e13
-table "1. Playa Phone (playaphone.com) 122 points by cutoff 1 hour…" @e14
-  link "Playa Phone" @e16
-  link "41 comments" @e21
-```
-
-Link URLs are omitted by default (in our traces they dominated snapshot tokens — the `@eN` ref is what you click); nameless links keep theirs, and `snap --href` brings them all back.
+![the 🟣 pill narrating a driven tab, with its action history open](docs/store/screenshot-1-pill.png)
 
 ## Why not Playwright (or playwright-mcp)?
 
@@ -118,17 +124,17 @@ MCP bridges (mcp-chrome, BrowserMCP) need an MCP-capable client and a configured
 
 `install.sh` checks Node ≥ 18, starts the server in the background (logs to `server.log`), opens `chrome://extensions` (macOS; on Linux open it yourself), waits for the extension to connect (up to ~90s), and prints the agent one-liner with your real path filled in. If the server dies or the machine reboots, the agent's health check fails and it can restart it itself with `node cli.mjs start` (`node cli.mjs stop` shuts it down).
 
+After loading the extension you won't see anything until the bridge server is running and your AI tool sends its first command — from then on, any tab the agent touches wears the purple 🟣 pill. Silence before that is normal, not a broken install.
+
 **Upgrades**: after `git pull`, restart the server — it runs the code from when it was started, and its health check still passes, so nothing else reminds you. Also reload the extension at `chrome://extensions` (the service worker is old code too — `node cli.mjs health` prints a warning when the loaded extension's version differs from the repo):
 
 ```bash
 node cli.mjs stop && node cli.mjs start
 ```
 
-**Port**: the bridge lives on 127.0.0.1:9333 everywhere. `BRIDGE_PORT` moves the server and CLI (the installer insists on 9333) — but the extension always dials 9333; if you must change the port, edit `extension/background.js` too.
+**Port**: the bridge lives on 127.0.0.1:9333 everywhere. `BRIDGE_PORT` moves the server and CLI (the installer insists on 9333) — but the extension always dials 9333; if you must change the port, edit `extension/background.js` too. Server won't start and `server.log` shows `EADDRINUSE` → something else holds 9333: find it with `lsof -i :9333` (often an old server from another checkout — `node <that-repo>/cli.mjs stop` frees it).
 
 **Windows**: `install.sh` is bash (macOS/Linux, or Git Bash). The bridge itself is plain Node — `node server.mjs` in a terminal works everywhere, and every `cli.mjs` command is cross-platform.
-
-Tabs the bridge drives get a 🟣 pill in the bottom-right corner (click it for the full action history; ✕ hides it until the next navigation; ⏏ disconnects the agent from the tab) and join a 🟣 tab group so you always know what's being automated — including read-only commands (`snap`, `measure`, `console`): any tab the agent is *looking at* wears the pill, not just the ones it changes. The pill narrates what the agent is doing right now (`🟣 taking screenshot…`, `🟣 reading page…`, with elapsed seconds while a command runs) and its history panel lists the last actions, scrolled to the newest; when nothing's running it reads `🟣 AI idle` — plus `⚠ N failed since last ok` until a command lands again, and `⚠ bridge offline` while the server is unreachable. While a command runs, a purple viewport frame lights up, the tab's favicon shows ⏳ (✅ when it lands, ✗ when it fails — the ✗ stays until the next command), and clicks/hovers flash a purple pointer where the agent acts. `release` (or `close`) gives them back. The ⏏ is the human's escape hatch: one trusted click ends the bridge's claim on the tab — markers, group, device emulation, all of it — no CLI needed (synthetic page clicks can't fake it).
 
 **Multiple Chrome profiles**: the extension can be loaded in several profiles at once — each keeps its own connection, and agents can drive them in parallel. A command routes to the only profile with a matching tab; a match in several profiles is **refused** until the agent names one with `--profile <id or name>` (`cli profiles` lists both) — the agent never silently acts in your personal browser when it meant the work one. Each profile also gets a stable short name (`birch`, `oak`, …) accepted by `--profile` and shown in `watch` lines and profile tags — a uuid prefix means nothing to the human watching. (The refusal is a safety net for honest CLI use, not a security boundary: any local process can set `profile` in a `/cmd` body and route anywhere — the same local trust model as before.)
 
@@ -152,10 +158,11 @@ The HTTP API is one command endpoint: `POST /cmd` with `{"type": "snap", "urlMat
 You're handing an agent your logged-in browser — the design assumes you want to watch it work:
 
 - **Local-only.** The server binds `127.0.0.1` and rejects browser-origin requests (Origin/Sec-Fetch/Host guards), so a web page you visit can't drive the bridge — but **any local process still can**. Load the extension while you're using it; unload it at `chrome://extensions` when you're done.
-- **Automation you can see.** Driven tabs wear a 🟣 pill that narrates each action, join a 🟣 tab group, and light a purple frame while a command runs; `node cli.mjs watch` mirrors the feed in your terminal. The tab group is the driven-tab signal a malicious page can't fake.
+- **Automation you can see.** Driven tabs wear a 🟣 pill that narrates each action, join a 🟣 tab group, and light a purple frame while a command runs; `node cli.mjs watch` mirrors the feed in your terminal. The pill's ⏏ disconnects the agent from a tab with one trusted click. The tab group is the driven-tab signal a malicious page can't fake.
 - **Why an unpacked extension?** So you can read exactly what runs — the entire extension is one readable file (`extension/background.js`) plus a manifest, not a minified store bundle.
 - **Prompt injection.** Everything the bridge returns is untrusted page content; the rules agents should follow are in [AGENTS.md](AGENTS.md). Note `upload`: it makes the browser read any local path the agent names into the page's file input, and the page can submit it — never let a page tell you (or the agent) what to attach.
 - **CDP attach is detectable.** `net`/`emulate`/`shot` (and `upload`/`dialog`) attach Chrome's debugger, which page JS can detect (DevTools-attach side effects like the `Runtime.enable` leak) — anti-bot systems can flag the session, and it's your real logged-in profile. The non-CDP commands (`snap`, `click`, `fill`, `eval`, …) don't attach it.
+- **Chrome's "debugging this browser" bar.** While one of those CDP commands runs, Chrome shows its own *"'Chrome Bridge' is debugging this browser"* infobar — that is the bridge working as intended, and the bar disappears when the action finishes. Pressing its Cancel just stops that one action.
 
 ## Commands
 
@@ -166,13 +173,13 @@ You're handing an agent your logged-in browser — the design assumes you want t
 |---|---|
 | `tabs` | List tabs (id, url, title, driven flag, tab group when grouped); with several Chrome profiles connected, merged with a `profile` tag |
 | `profiles` | List connected Chrome profiles — id and name (for `--profile`) + version |
-| `open <url>` · `nav <match> <url> [--diff]` · `close <match>` | Tab lifecycle — `open`/`nav` wait for the page to load (8s cap) |
+| `open <url>` · `nav <match> <url> [--diff]` · `close <match>` | Tab lifecycle — `open`/`nav` wait for the page to load (8s cap; `loaded:false` in the reply means the cap fired on a still-loading page — `snap`/`eval`/`wait --text` work on what's there) |
 | `snap <match> [css\|@ref] [--diff] [--href] [--skeleton] [--find "nl"]` | Accessibility-tree snapshot with `@eN` refs — **cheap; use it before screenshots**. Scope to a subtree (CSS or `@ref`), diff against the last snap, or include all link URLs with `--href`. `--skeleton` on dense pages: a depth-limited map where cut subtrees read `… N inside` (drill: `snap <match> @ref`) instead of silently missing the 300-node cut. `--find "the cancel button"` has local Gemini Nano (~2s, no cloud tokens) pick the matching lines — a shortlist to verify, not ground truth. Lines prefixed `*` are elements new since the previous snap |
 | `click <match> <@ref\|css> [--dbl] [--diff] [--trusted]` | Click (scrolls into view, full pointer/mouse event sequence, overlay-coverage check); `--dbl` double-clicks; `--trusted` drives CDP Input — isTrusted=true, so canvas tools (Figma) accept it |
 | `drag <match> <@ref\|css> <@ref\|css> [--diff] [--trusted]` | Drag one element onto another (synthetic pointer sequence; `--trusted` = CDP Input — isTrusted, and legacy HTML5 dragstart/drop fire) |
 | `dialog <match> accept\|dismiss [--text s]` | Answer a JS dialog over CDP — reachable only if it opened during a live debugger session (`net`/`shot`/…); a dialog that wedged an unattached tab can't be answered: recover with `nav <match> <url>` (navigation drops it) |
 | `fill <match> <@ref\|css> <value> [--diff]` | Set input value — React-safe (native setter + input/change events); on a native `<select>` matches option value or label |
-| `type <match> <@ref\|css> <text> [--diff]` · `press <match> <key> [@ref] [--diff]` · `hover <match> <@ref\|css> [--diff]` | Per-char typing (autocomplete UIs), key presses (`Control+k` combos work), hover |
+| `type <match> <@ref\|css> <text> [--diff] [--trusted]` · `press <match> <key> [@ref] [--diff] [--trusted]` · `hover <match> <@ref\|css> [--diff] [--trusted]` | Per-char typing (autocomplete UIs), key presses (`Control+k` combos work), hover; `--trusted` drives CDP Input (isTrusted=true — canvas tools accept it; Enter triggers browser defaults like form submit) |
 | `paste <match> [@ref\|css] [--diff] [-- <text>]` | Real-paste semantics into the focused (or given) field — rich editors that revert `fill` (Quill, Reddit/LinkedIn composers) take a paste; without `-- <text>` it reads the OS clipboard |
 | `scroll <match> <up\|down\|top\|bottom\|@ref\|css> [--diff]` | Scroll — finds the real scroller on app-shell pages (Linear, Gmail) that scroll an inner panel, not the window |
 | `upload <match> <@ref\|css> <file...> [--diff]` | Set a file input's files via CDP — works on hidden inputs; target the input or an element wrapping it |
@@ -185,17 +192,17 @@ You're handing an agent your logged-in browser — the design assumes you want t
 | `measure <match> <css>` | Bounding rect + computed styles as JSON — layout truth without pixels |
 | `console <match> [--clear] [--ask [q]]` | Page console + uncaught errors (hook installs on first call); `--ask` triages the log with local Gemini Nano — only the verdict costs cloud tokens |
 | `grid <match>` | Toggle an 8px alignment grid overlay |
-| `emulate <match> <w> <h> [mobile]` · `unemulate <match>` | Switch between desktop and mobile device views — CDP emulation, no window resize |
+| `emulate <match> <w> <h> [mobile]` · `emulate <match> focus` · `unemulate <match>` | Switch between desktop and mobile device views — CDP emulation, no window resize; `focus` makes the page believe it's focused — focus-gated background-tab work keeps running (does not render an occluded window) |
 | `resize <match> <w> <h>` | Resize the window |
 | `batch` | Run commands from stdin, one per line — one process for a whole sequence; stops on the first error |
 | `mark <match>` · `release <match>` | Add/remove the driven-tab corner tag + 🟣 tab group; `release` also clears device emulation — the tab is fully the human's again |
 | `note <match> <text>` | Narrate to the human — the text appears in the driven tab's pill and its history (the pill already shows *what* runs; notes add *why*) |
 | `watch` | Live feed of every bridge command in your terminal — the twin of the in-page pill. Run it next to your agent session and follow along; Ctrl-C to exit |
-| `history [match] [-n N] [--batch out]` | What the bridge already ran on this machine (server ring, last 300 commands) — filter by match, take the newest N; `--batch out` exports it as a replayable batch script (failed commands commented out). Post-mortems and session handoffs |
+| `history [match] [-n N] [--batch out]` | What the bridge already ran on this machine (server ring, last 300 commands) — filter by match, take the newest N; `--batch out` exports it as a replayable batch script (failed commands commented out; fill/type/paste values redacted, never exported). Post-mortems and session handoffs |
 | `swlogs` | Service-worker console tail (errors/warnings) |
 | `start` · `stop` | Server lifecycle — `start` spawns it detached if down (agents can self-heal a dead server) |
 
-`<match>` is a substring of the tab URL; a driven tab wins, then the most recently active. If several match, the result warns and names them — re-run with a longer match. Refs survive re-`snap`s (an element keeps its `@eN` while its role+name are unchanged) and expire on navigation — re-`snap` after `nav`. `snap` walks open shadow roots (their elements get refs and click/fill straight in), and CSS selectors pierce open roots too.
+`<match>` is a substring of the tab URL or title; a driven tab wins, then the most recently active. If several match, the result warns and names them — re-run with a longer match. Refs survive re-`snap`s (an element keeps its `@eN` while its role+name are unchanged) and expire on navigation — re-`snap` after `nav`. `snap` walks open shadow roots (their elements get refs and click/fill straight in), and CSS selectors pierce open roots too.
 
 </details>
 
@@ -230,7 +237,7 @@ node cli.mjs unemulate news.ycombinator.com                # back to normal
 
 `node test/selftest.mjs` — end-to-end check with a fake extension (no Chrome needed); runs on every push via GitHub Actions (Node 18/20/22). How to land changes (selftest gate, version bump, tags, style): see *Developing* in [AGENTS.md](AGENTS.md).
 
-chrome-bridge is **not on npm** — the only install path is this repo (anything `npm install chrome-bridge` gives you is an unrelated package). To pin what an agent will run, check out a tag — e.g. `git checkout v1.4.1`; `git tag -l` lists the latest.
+chrome-bridge is **not on npm** — the only install path is this repo (anything `npm install chrome-bridge` gives you is an unrelated package). To pin what an agent will run, check out a tag — e.g. `git checkout v1.18.13`; `git tag -l` lists the latest.
 
 ## License
 

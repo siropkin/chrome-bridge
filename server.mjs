@@ -9,6 +9,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
+// Port 9333 is hardcoded in THREE places: extension/background.js (WS_URL —
+// the extension can't read BRIDGE_PORT), cli.mjs, here. Change all three.
 const PORT = Number(process.env.BRIDGE_PORT || 9333);
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const CMD_TIMEOUT_MS = 70_000; // `wait` supports up to 60s
@@ -21,10 +23,11 @@ const LOOPBACK_HOST = /^(127\.0\.0\.1|localhost)(:\d+)?$/;
 // server.log gets one durable line per command — cap it here, at boot, so all
 // three start paths (install.sh, cli start, manual) are covered by one guard.
 // ponytail: boot-time cap only — between restarts the log grows unbounded;
-// the pathological writer is the 24s rejected-seat probe (~200KB/day). Add a
+// the pathological writer is the 30s rejected-seat probe (~160KB/day). Add a
 // daily re-check if a long-lived server's log size ever actually matters.
 try {
   const p = fileURLToPath(new URL('./server.log', import.meta.url));
+  fs.chmodSync(p, 0o600); // the log holds URL fragments and page text — owner-only, every boot
   if (fs.statSync(p).size > 5_000_000) fs.truncateSync(p);
 } catch {} // not started from the repo (spawned) or no log yet — the next writer creates it
 
@@ -89,6 +92,9 @@ function seatByProfile(want) {
 }
 
 // Route one command to exactly one profile's seat.
+// Adding a command? SEVEN registries stay in sync (a missing one fails SILENTLY):
+// cli.mjs USAGE · cli.mjs run() · server.mjs CLI_LINES · server.mjs route() (only if it
+// needs special routing) · background.js handle() · ACT_VERBS (pill narration) · MUTATING.
 async function route(msg) {
   if (msg.type === 'tabs') {
     // Read-only: merged across profiles. Single profile keeps today's output
@@ -98,7 +104,10 @@ async function route(msg) {
     if (seats.size === 1) return ask(seats.values().next().value, msg);
     const rows = [];
     for (const [pid, seat] of seats) {
-      const reply = await ask(seat, msg).catch(() => null);
+      // 5s deaf-seat budget, same as the match probe below — a live seat
+      // answers tabs in ms (the heartbeat keeps the SW warm); without the cap
+      // one wedged profile would hold the whole merged list for 70s.
+      const reply = await ask(seat, msg, 5_000).catch(() => null);
       const tabs = reply?.ok ? reply.result : null;
       if (!tabs) {
         rows.push({ profile: seatTag(pid), error: 'unresponsive' });
@@ -190,6 +199,11 @@ const shellq = (s) => {
   return /[\s'"#]/.test(s) || /^--/.test(s) ? (s.includes('"') ? `'${s}'` : `"${s}"`) : s;
 };
 const D = (m) => (m.diff ? ' --diff' : '');
+// Adding a command? SEVEN registries stay in sync (a missing one fails SILENTLY):
+// cli.mjs USAGE · cli.mjs run() · server.mjs CLI_LINES · server.mjs route() (only if it
+// needs special routing) · background.js handle() · ACT_VERBS (pill narration) · MUTATING.
+// CLI_LINES mirrors the flag parsers in cli.mjs run() flag-for-flag — an
+// unmirrored flag is silently dropped from history --batch replays.
 const CLI_LINES = {
   open: (m) => `open ${shellq(m.url)}`,
   navigate: (m) => `nav ${shellq(m.urlMatch)} ${shellq(m.url)}${D(m)}`,
@@ -206,15 +220,20 @@ const CLI_LINES = {
   dialog: (m) => `dialog ${shellq(m.urlMatch)} ${m.accept ? 'accept' : 'dismiss'}${m.text ? ' --text ' + shellq(m.text) : ''}`,
   // fill/type: flags first, then the '--' separator, then the value — a value
   // starting with '--' (dev.to front-matter) would otherwise die on the
-  // fill parser's stray-flag scan at replay.
-  fill: (m) => `fill ${shellq(m.urlMatch)} ${shellq(m.target)}${D(m)} -- ${shellq(m.value)}`,
-  type: (m) => `type ${shellq(m.urlMatch)} ${shellq(m.target)}${m.trusted ? ' --trusted' : ''}${D(m)} -- ${shellq(m.value)}`,
+  // fill parser's stray-flag scan at replay. The VALUE ITSELF IS REDACTED:
+  // the ring feeds `history` output and `--batch` exports, and typed values
+  // can be secrets (server.log's display line never had them — the ring
+  // shouldn't either). pushAct emits these as `# secret ·` comments so a
+  // replay skips the step instead of typing literal stars.
+  fill: (m) => `fill ${shellq(m.urlMatch)} ${shellq(m.target)}${D(m)} -- "***"`,
+  type: (m) => `type ${shellq(m.urlMatch)} ${shellq(m.target)}${m.trusted ? ' --trusted' : ''}${D(m)} -- "***"`,
   // paste: a clipboard read (clip) is re-read at replay time, not embedded —
   // the exported script shouldn't freeze (or leak) what the clipboard held.
+  // The explicit-value branch is redacted like fill/type.
   paste: (m) =>
     m.clip
       ? `paste ${shellq(m.urlMatch)}${m.target ? ' ' + shellq(m.target) : ''}${D(m)}`
-      : `paste ${shellq(m.urlMatch)}${m.target ? ' ' + shellq(m.target) : ''}${D(m)} -- ${shellq(m.value)}`,
+      : `paste ${shellq(m.urlMatch)}${m.target ? ' ' + shellq(m.target) : ''}${D(m)} -- "***"`,
   press: (m) => `press ${shellq(m.urlMatch)} ${shellq(m.key)}${m.target ? ' ' + shellq(m.target) : ''}${m.trusted ? ' --trusted' : ''}${D(m)}`,
   hover: (m) => `hover ${shellq(m.urlMatch)} ${shellq(m.target)}${m.trusted ? ' --trusted' : ''}${D(m)}`,
   scroll: (m) => `scroll ${shellq(m.urlMatch)} ${shellq(m.target)}${D(m)}`,
@@ -255,9 +274,11 @@ function summarize(msg) {
   if (msg.urlMatch) s.push(msg.urlMatch);
   if (msg.profile) s.push('@' + seatTag(msg.profile)); // multi-profile: who acted
   // value stays out on purpose: fill values can be secrets, and this line is
-  // persisted to server.log.
+  // persisted to server.log. Same for a dialog's --text answer (a prompt
+  // answer can be a code or a password); note/wait text stays — the note's
+  // text is its whole purpose, and wait --text is a page-text expectation.
   const extra =
-    msg.target || msg.url || msg.key || msg.selector || msg.find || msg.text || msg.question ||
+    msg.target || msg.url || msg.key || msg.selector || msg.find || (msg.type === 'dialog' ? '' : msg.text) || msg.question ||
     (msg.files || []).map((f) => String(f).split('/').pop()).join(', ') || '';
   if (extra) s.push(String(extra).slice(0, 40));
   return s.join(' ');
@@ -275,9 +296,12 @@ function pushAct(msg, out, ms) {
   ).replace(/[\x00-\x1f\x7f\x9b]/g, ' ');
   // The replayable form rides the ring (see CLI_LINES above); a failed command
   // is commented out so a replayed script proceeds past it instead of dying.
+  // Secret-shaped commands (fill/type/paste values) are redacted in CLI_LINES
+  // AND commented out here — a replay must skip the step, not type "***".
   const replay = CLI_LINES[msg.type]?.(msg);
   const prof = msg.profile ? `--profile ${seatTag(msg.profile)} ` : '';
-  const cmd = replay == null ? null : out.ok ? prof + replay : `# failed · ${prof}${replay}`;
+  const secret = msg && (msg.type === 'fill' || msg.type === 'type' || (msg.type === 'paste' && !msg.clip));
+  const cmd = replay == null ? null : !out.ok ? `# failed · ${prof}${replay}` : secret ? `# secret · ${prof}${replay}` : prof + replay;
   activity.push({ seq: ++actSeq, line, cmd });
   if (activity.length > 300) activity.shift();
   console.log('[act] ' + line); // server.log gets a durable copy for post-mortems
@@ -454,12 +478,11 @@ server.on('upgrade', (req, socket) => {
   socket.setNoDelay(true);
   // One seat per profile. A duplicate id is the SAME profile's service-worker
   // reconnect race — bounce it with a seat-taken frame (the SW backs off and
-  // lets its 24s keepalive alarm re-probe) instead of evicting the live socket.
+  // lets its 30s keepalive alarm re-probe) instead of evicting the live socket.
   const existing = seats.get(id);
   if (existing && existing.socket && !existing.socket.destroyed) {
     console.log(`[bridge] seat taken — rejected v=${v || '?'} id=${id} (duplicate; holder is alive)`);
-    socket.write(encodeFrame(JSON.stringify({ type: 'seat-taken' })));
-    socket.destroy();
+    socket.end(encodeFrame(JSON.stringify({ type: 'seat-taken' }))); // end() flushes before FIN — write()+destroy() can lose the bounce frame
     return;
   }
   const seat = {
@@ -476,6 +499,19 @@ server.on('upgrade', (req, socket) => {
       } catch {
         return;
       }
+      // Unsolicited event frames (no pending id): the human clicked the pill's
+      // ⏏. The feed must show it — otherwise the agent's next command silently
+      // re-marks the tab and from the human's seat "nobody noticed".
+      if (msg?.type === 'event' && msg.kind === 'self-release') {
+        const line = (
+          new Date().toTimeString().slice(0, 8) +
+          ` ⏏ human released a tab via the pill${msg.url ? ' (' + String(msg.url).slice(0, 60) + ')' : ''} @${seatTag(this.pid)}`
+        ).replace(/[\x00-\x1f\x7f\x9b]/g, ' '); // same ANSI/newline strip as pushAct — the URL is page-influenced
+        activity.push({ seq: ++actSeq, line, cmd: null });
+        if (activity.length > 300) activity.shift();
+        console.log('[act] ' + line);
+        return;
+      }
       const resolve = this.pending.get(msg.id);
       if (resolve) {
         this.pending.delete(msg.id);
@@ -490,7 +526,7 @@ server.on('upgrade', (req, socket) => {
   const onGone = () => {
     if (seats.get(id) === seat) {
       seats.delete(id);
-      dropSeatPending(seat, 'extension disconnected');
+      dropSeatPending(seat, 'extension disconnected mid-command — it reconnects on its own; the command may have run before the reply was lost, so check the tab before retrying');
       console.log(`[bridge] extension disconnected id=${id}`);
     }
     socket.destroy();

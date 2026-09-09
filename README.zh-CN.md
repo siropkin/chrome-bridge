@@ -6,7 +6,34 @@
 
 让**任何 AI 智能体**驱动你正在使用的 Chrome——你已打开的标签页、已登录的会话和 SSO。Playwright 系工具驱动的是它们自己启动的浏览器、自己管理的配置;MCP 桥需要客户端支持 MCP 并配置服务器。chrome-bridge 两者都不需要:它驱动的就是你已登录的那个 Chrome——而且这是唯一模式——一个解压加载的扩展,一个零依赖的 Node CLI。被智能体操作的标签页还会戴上 🟣 小标签,实时播报它正在做什么。
 
-![chrome-bridge 正在驱动标签页——右下角 🟣 标签为标记](docs/banner.png)
+![被驱动标签页的动态演示——🟣 小标签实时播报每一步操作,命令执行时亮起紫色边框,点击处有指针闪烁](docs/demo.gif)
+
+一个小小的 Chrome 解压扩展通过 WebSocket 连接到本地 Node 服务器;任何能执行 shell 命令的工具都能驱动浏览器:
+
+```bash
+node server.mjs &                        # 启动桥接服务(Node ≥ 18,零依赖)
+node cli.mjs snap localhost:8082         # 紧凑的无障碍树快照,带元素引用
+node cli.mjs click localhost:8082 @e4    # 按引用点击
+node cli.mjs fill localhost:8082 @e2 "hello@example.com"
+node cli.mjs shot localhost:8082 out.png --max 800 --format jpeg
+```
+
+`snap` 的输出长这样——整个页面变成一棵紧凑的文本树,你可以直接操作其中的引用:
+
+```
+table "Hacker News new | past | comments | ask | show | jobs | submit" @e1
+  link "Hacker News" @e5
+  link "new" @e6
+  link "submit" @e12
+  link "login" @e13
+table "1. Playa Phone (playaphone.com) 122 points by cutoff 1 hour…" @e14
+  link "Playa Phone" @e16
+  link "41 comments" @e21
+```
+
+默认不输出链接 URL(在我们的实测中它们占快照 token 的大头——你点击的是 `@eN` 引用,而不是 URL);无名称的链接仍保留 URL,`snap --href` 可恢复全部。
+
+一次真实运行,已对 GitHub 线上验证:[recipes/github.com.md](recipes/github.com.md)——用 CLI 设置仓库的社交预览图,含全部坑点(og:image 验证、is-default 误报、net/upload 调试器冲突)。
 
 ## 快速开始
 
@@ -45,7 +72,7 @@ Set up chrome-bridge — the bridge that lets you drive my real, logged-in Chrom
    - health reports `"extension":false` → step 3. But if the extension was connected before your restart, wait ~10s and re-run health once first — it reconnects on its own after a server restart.
    - server won't start → show me the error and the last lines of `<repo>/server.log` (if it exists), then stop.
 
-3. The one click only I can do: ask me to open `chrome://extensions`, enable Developer mode, click Load unpacked, and select the `<repo>/extension` folder. On macOS you may run `open -a "Google Chrome" "chrome://extensions"` first. Then poll `node <repo>/cli.mjs health` every 5s (up to ~90s) until it reports `"extension":true`; if it doesn't, tell me what's still missing and stop — don't keep polling.
+3. The one click only I can do — unless I installed Chrome Bridge from the Chrome Web Store, in which case skip this step entirely: the store copy connects on its own, and loading the unpacked folder too creates a second profile seat that makes every command demand `--profile`. Otherwise: ask me to open `chrome://extensions`, enable Developer mode, click Load unpacked, and select the `<repo>/extension` folder. On macOS you may run `open -a "Google Chrome" "chrome://extensions"` first. Then poll `node <repo>/cli.mjs health` every 5s (up to ~90s) until it reports `"extension":true`; if it doesn't, tell me what's still missing and stop — don't keep polling.
 
 4. Install your integration — pick the ONE that applies to you:
    - Claude Code — copy the skill so it auto-loads on browser tasks in every project (use `./.claude/skills/` instead of `~/.claude/skills/` only if I told you to scope it to this project):
@@ -73,36 +100,15 @@ Set up chrome-bridge — the bridge that lets you drive my real, logged-in Chrom
 git clone https://github.com/siropkin/chrome-bridge && cd chrome-bridge && ./install.sh
 ```
 
-`install.sh` 会启动服务器并打开 `chrome://extensions`(macOS;Linux 请自行打开);然后按上面方式加载扩展,细节见[安装细节](#安装细节)。
+`install.sh` 会启动服务器并打开 `chrome://extensions`(macOS;Linux 请自行打开);然后按上面方式加载扩展,细节见[安装细节](#安装细节)。从 Chrome 应用商店安装了 Chrome Bridge?跳过"加载已解压的扩展程序"这一步——商店版会自动连接;再加载解压版会创建第二个配置席位,每条命令都会要求 `--profile`。
 
 这就是全部集成工作。`AGENTS.md` 是一份自包含的操作手册——命令、配方、注意事项——任何能读文件或联网的智能体都能阅读。有联网能力的智能体可以直接从 GitHub 读取:`https://raw.githubusercontent.com/siropkin/chrome-bridge/master/AGENTS.md`。
 
----
+## 人类始终掌控
 
-一个小小的 Chrome 解压扩展通过 WebSocket 连接到本地 Node 服务器;任何能执行 shell 命令的工具都能驱动浏览器:
+被桥接驱动的标签页会在右下角显示 🟣 小标签(点击查看完整操作历史;✕ 可隐藏,下次导航前不再显示;⏏ 可断开智能体对该标签页的控制)并加入 🟣 标签页分组,你随时知道哪些页面正在被自动化——只读命令(`snap`、`measure`、`console`)同样会打上标签:智能体**正在查看**的标签页也会戴标签,而不只是它修改过的。小标签实时播报智能体正在做什么(`🟣 taking screenshot…`、`🟣 reading page…`,长命令会显示已耗时秒数),历史面板列出最近的操作并自动滚动到最新一行;空闲时显示 `🟣 AI idle`(连续失败后显示 `⚠ N failed since last ok`,桥接服务器不可达时显示 `⚠ bridge offline`);命令执行期间,紫色边框亮起,标签页 favicon 显示 ⏳(完成 ✅,失败 ✗,✗ 会保留到下一条命令),点击/悬停处会闪现紫色指针标记智能体的操作位置。`release`(或 `close`)即可全部还原。⏏ 是人类的安全出口:一次可信点击即可完全收回桥接对该标签页的控制——标记、分组、设备模拟全部清除,无需 CLI(合成的页面点击无法伪造它)。
 
-```bash
-node server.mjs &                        # 启动桥接服务(Node ≥ 18,零依赖)
-node cli.mjs snap localhost:8082         # 紧凑的无障碍树快照,带元素引用
-node cli.mjs click localhost:8082 @e4    # 按引用点击
-node cli.mjs fill localhost:8082 @e2 "hello@example.com"
-node cli.mjs shot localhost:8082 out.png --max 800 --format jpeg
-```
-
-`snap` 的输出长这样——整个页面变成一棵紧凑的文本树,你可以直接操作其中的引用:
-
-```
-table "Hacker News new | past | comments | ask | show | jobs | submit" @e1
-  link "Hacker News" @e5
-  link "new" @e6
-  link "submit" @e12
-  link "login" @e13
-table "1. Playa Phone (playaphone.com) 122 points by cutoff 1 hour…" @e14
-  link "Playa Phone" @e16
-  link "41 comments" @e21
-```
-
-默认不输出链接 URL(在我们的实测中它们占快照 token 的大头——你点击的是 `@eN` 引用,而不是 URL);无名称的链接仍保留 URL,`snap --href` 可恢复全部。
+![🟣 小标签正在播报被驱动的标签页,操作历史面板已展开](docs/store/screenshot-1-pill.png)
 
 ## 为什么不用 Playwright(或 playwright-mcp)?
 
@@ -116,17 +122,17 @@ MCP 桥(mcp-chrome、BrowserMCP)要求客户端支持 MCP,还需要配置长期�
 
 `install.sh` 会检查 Node ≥ 18、后台启动服务器(日志写入 `server.log`)、打开 `chrome://extensions`(macOS;Linux 请自行打开)、等待扩展连接(最长约 90 秒),并打印填好真实路径的智能体接入语句。如果服务器挂了或机器重启,智能体的 health 检查会失败,它可以用 `node cli.mjs start` 自行重启(`node cli.mjs stop` 关闭)。
 
+加载扩展后,在桥接服务器运行、AI 工具发出第一条命令之前,你不会看到任何变化——从那时起,智能体触碰的每个标签页才会戴上紫色 🟣 小标签。此前的安静是正常的,不是安装失败。
+
 **升级**:执行 `git pull` 后要重启服务器——它运行的仍是启动时的代码,而且 health 检查依然通过,没有别的东西会提醒你。同时要在 `chrome://extensions` 重新加载扩展(服务工作线程也是旧代码——加载的扩展版本和仓库不一致时,`node cli.mjs health` 会打印警告):
 
 ```bash
 node cli.mjs stop && node cli.mjs start
 ```
 
-**端口**:桥接器固定使用 127.0.0.1:9333。`BRIDGE_PORT` 可以移动服务器和 CLI(安装器强制要求 9333)——但扩展始终拨打 9333;如果必须换端口,需要同时修改 `extension/background.js`。
+**端口**:桥接器固定使用 127.0.0.1:9333。`BRIDGE_PORT` 可以移动服务器和 CLI(安装器强制要求 9333)——但扩展始终拨打 9333;如果必须换端口,需要同时修改 `extension/background.js`。服务器起不来且 `server.log` 显示 `EADDRINUSE` → 9333 被别的进程占用:用 `lsof -i :9333` 找到它(常常是另一个检出里的旧服务器——`node <那个仓库>/cli.mjs stop` 即可释放)。
 
 **Windows**:`install.sh` 是 bash(macOS/Linux,或 Git Bash)。桥接器本身是纯 Node——任何平台都能在终端里运行 `node server.mjs`,所有 `cli.mjs` 命令都是跨平台的。
-
-被桥接驱动的标签页会在右下角显示 🟣 小标签(点击查看完整操作历史;✕ 可隐藏,下次导航前不再显示)并加入 🟣 标签页分组,你随时知道哪些页面正在被自动化——只读命令(`snap`、`measure`、`console`)同样会打上标签:智能体**正在查看**的标签页也会戴标签,而不只是它修改过的。小标签实时播报智能体正在做什么(`🟣 taking screenshot…`、`🟣 reading page…`,长命令会显示已耗时秒数),历史面板列出最近的操作并自动滚动到最新一行;空闲时显示 `🟣 AI idle`(连续失败后显示 `⚠ N failed since last ok`,桥接服务器不可达时显示 `⚠ bridge offline`);命令执行期间,紫色边框亮起,标签页 favicon 显示 ⏳(完成 ✅,失败 ✗,✗ 会保留到下一条命令),点击/悬停处会闪现紫色指针标记智能体的操作位置。`release`(或 `close`)即可全部还原。
 
 **多个 Chrome 配置**:扩展可以同时加载在多个配置中——每个配置保持独立连接,智能体可以并行驱动它们。命令会自动路由到唯一拥有匹配标签页的配置;当多个配置都有匹配时**拒绝执行**,要求智能体用 `--profile <id 或 name>` 指明(`cli profiles` 同时列出两者)——智能体绝不会在你以为操作工作浏览器时悄悄点进个人浏览器。每个配置还有一个稳定的短名字(`birch`、`oak` 等),`--profile` 直接接受该名字,显示在 `watch` 输出和标签里——对正在观看的人类来说,uuid 前缀毫无意义。
 
@@ -150,10 +156,11 @@ HTTP API 只有一个命令端点:`POST /cmd`,Body 如 `{"type": "snap", "urlMat
 你要把已登录的浏览器交给智能体——本工具的设计前提是你想看着它工作:
 
 - **仅本地**:服务器只绑定 `127.0.0.1`,并拒绝来自浏览器页面的请求(Origin/Sec-Fetch/Host 防护),你访问的网页无法驱动桥接器——但**任何本地进程仍然可以**。使用时加载扩展;用完后在 `chrome://extensions` 卸载。
-- **看得见的自动化**:被驱动的标签页会戴上 🟣 小标签并播报每一步操作、加入 🟣 标签页分组、命令执行时亮起紫色边框;`node cli.mjs watch` 会在终端同步显示操作流。标签页分组是恶意页面无法伪造的驱动信号。
+- **看得见的自动化**:被驱动的标签页会戴上 🟣 小标签并播报每一步操作、加入 🟣 标签页分组、命令执行时亮起紫色边框;`node cli.mjs watch` 会在终端同步显示操作流。小标签上的 ⏏ 一次可信点击即可断开智能体对该标签页的控制。标签页分组是恶意页面无法伪造的驱动信号。
 - **为什么是解压加载的扩展?** 因为你可以直接读到运行的全部代码——整个扩展只有一个可读的 `extension/background.js` 加一个 manifest,没有应用商店的压缩包。
 - **提示注入**:桥接器返回的一切都是不可信的页面内容;智能体应遵循的规则见 [AGENTS.md](AGENTS.md)。注意 `upload`:它让浏览器读取智能体指定的任意本地路径并放进页面的文件输入框,页面可以提交它——永远不要让页面告诉你(或智能体)该附加什么文件。
 - **CDP 挂载可被检测**:`net`/`emulate`/`shot`(以及 `upload`/`dialog`)会挂载 Chrome 调试器,页面 JS 能够检测到(DevTools 挂载的副作用,比如 `Runtime.enable` 泄漏)——反爬系统可能标记该会话,而这用的是你真实登录的配置。非 CDP 命令(`snap`、`click`、`fill`、`eval` 等)不挂载调试器。
+- **Chrome 的"正在调试此浏览器"提示条**:上述 CDP 命令运行期间,Chrome 会显示自己的"'Chrome Bridge' is debugging this browser"提示条——这正是桥接器在按预期工作,操作结束后提示条会自动消失。点击它的"取消"只会中止当前这一个操作。
 
 ## 命令
 
@@ -164,7 +171,7 @@ HTTP API 只有一个命令端点:`POST /cmd`,Body 如 `{"type": "snap", "urlMat
 |---|---|
 | `tabs` | 列出标签页(id、url、标题、是否被驱动);多个 Chrome 配置同时连接时合并输出,带 `profile` 标记 |
 | `profiles` | 列出已连接的 Chrome 配置——id 和 name(用于 `--profile`)+ 版本 |
-| `open <url>` · `nav <match> <url> [--diff]` · `close <match>` | 标签页生命周期——`open`/`nav` 等待页面加载完成(8 秒上限) |
+| `open <url>` · `nav <match> <url> [--diff]` · `close <match>` | 标签页生命周期——`open`/`nav` 等待页面加载完成(8 秒上限;返回中的 `loaded:false` 表示超时触发时页面仍在加载——`snap`/`eval`/`wait --text` 对已加载部分照常可用) |
 | `snap <match> [css\|@ref] [--diff] [--href] [--skeleton] [--find "nl"]` | 无障碍树快照,带 `@eN` 引用——**便宜,优先于截图使用**。可限定子树(CSS 或 `@ref`)、与上一次快照对比,`--href` 输出全部链接 URL。`--skeleton` 用于密集页面:深度受限的地图,被裁剪的子树显示 `… N inside`(钻取:`snap <match> @ref`),不再无声错过 300 节点截断。`--find "取消按钮"` 由本地 Gemini Nano 挑出匹配行(~2 秒,无云端 token)——是待验证的候选清单,不是绝对正确。`*` 前缀标记上次快照后新增的元素 |
 | `click <match> <@ref\|css> [--dbl] [--diff] [--trusted]` | 点击(自动滚动到可见位置,完整 pointer/mouse 事件序列,遮挡检测);`--dbl` 双击;`--trusted` 走 CDP Input(isTrusted=true,画布类应用如 Figma 接受) |
 | `drag <match> <@ref\|css> <@ref\|css> [--diff] [--trusted]` | 把一个元素拖到另一个上(合成指针序列;`--trusted` 走 CDP Input——isTrusted,且触发传统 HTML5 dragstart/drop) |
@@ -183,17 +190,17 @@ HTTP API 只有一个命令端点:`POST /cmd`,Body 如 `{"type": "snap", "urlMat
 | `measure <match> <css>` | 元素位置 + 计算样式,JSON 输出——不看像素也能知道布局真相 |
 | `console <match> [--clear] [--ask [q]]` | 页面 console + 未捕获错误(首次调用时安装钩子);`--ask` 用本地 Gemini Nano 分诊日志——只有结论消耗云端 token |
 | `grid <match>` | 开关 8px 对齐网格覆盖层 |
-| `emulate <match> <w> <h> [mobile]` · `unemulate <match>` | 桌面 / 移动设备视图切换——CDP 模拟,无需调整窗口大小 |
+| `emulate <match> <w> <h> [mobile]` · `emulate <match> focus` · `unemulate <match>` | 桌面 / 移动设备视图切换——CDP 模拟,无需调整窗口大小;`focus` 让页面相信自己处于焦点状态——依赖焦点的后台标签页任务继续运行(不会渲染被遮挡的窗口) |
 | `resize <match> <w> <h>` | 调整窗口大小 |
 | `batch` | 从 stdin 逐行读取命令,一个进程跑完整序列;遇错即停 |
 | `mark <match>` · `release <match>` | 添加 / 移除驱动标记(右下角 🟣 标签)+ 标签页分组 |
 | `note <match> <text>` | 向人类播报——文本显示在被驱动标签页的小标签及其历史中(小标签本来就显示*做了什么*;note 补充*为什么*) |
 | `watch` | 终端里实时显示桥接器的每条命令——小标签的孪生。在智能体会话旁边运行,跟着看;Ctrl-C 退出 |
-| `history [match] [-n N] [--batch out]` | 本机上桥接器已经执行过的命令(服务端环形缓冲,最近 300 条)——按 match 过滤、取最新 N 条;`--batch out` 导出为可重放的 batch 脚本(失败的命令已注释掉)。用于事后排查和会话交接 |
+| `history [match] [-n N] [--batch out]` | 本机上桥接器已经执行过的命令(服务端环形缓冲,最近 300 条)——按 match 过滤、取最新 N 条;`--batch out` 导出为可重放的 batch 脚本(失败的命令已注释掉;fill/type/paste 的值会被打码,绝不导出)。用于事后排查和会话交接 |
 | `swlogs` | 服务工作线程控制台日志尾部(错误/警告) |
 | `start` · `stop` | 服务器生命周期——`start` 在服务器未运行时分离启动(智能体可以自愈挂掉的服务器) |
 
-`<match>` 是标签页 URL 的子串;被驱动的标签页优先,然后是最近活动的。匹配多个时结果会警告并列出其他标签页——用更长的匹配重试,不要盲信选中的那个。引用在重复 `snap` 之间保持稳定(只要 role+name 不变,元素就保持它的 `@eN`),但导航后失效——`nav` 之后请重新 `snap`。`snap` 会遍历开放的 shadow root(其中的元素带引用、可直接点击/填写),CSS 选择器也能穿透开放的 shadow root。
+`<match>` 是标签页 URL 或标题的子串;被驱动的标签页优先,然后是最近活动的。匹配多个时结果会警告并列出其他标签页——用更长的匹配重试,不要盲信选中的那个。引用在重复 `snap` 之间保持稳定(只要 role+name 不变,元素就保持它的 `@eN`),但导航后失效——`nav` 之后请重新 `snap`。`snap` 会遍历开放的 shadow root(其中的元素带引用、可直接点击/填写),CSS 选择器也能穿透开放的 shadow root。
 
 </details>
 
@@ -228,7 +235,7 @@ node cli.mjs unemulate news.ycombinator.com                # 恢复正常
 
 `node test/selftest.mjs`——用模拟扩展做端到端检查(不需要 Chrome);每次 push 由 GitHub Actions 自动运行(Node 18/20/22)。如何提交变更(自测门禁、版本号、标签、风格)见 [AGENTS.md](AGENTS.md) 的 *Developing* 一节。
 
-chrome-bridge **不在 npm 上**——唯一的安装途径就是本仓库(`npm install chrome-bridge` 装到的是无关的同名包)。要固定智能体运行的代码,请签出标签——例如 `git checkout v1.4.1`;`git tag -l` 列出最新标签。
+chrome-bridge **不在 npm 上**——唯一的安装途径就是本仓库(`npm install chrome-bridge` 装到的是无关的同名包)。要固定智能体运行的代码,请签出标签——例如 `git checkout v1.18.13`;`git tag -l` 列出最新标签。
 
 ## 许可证
 

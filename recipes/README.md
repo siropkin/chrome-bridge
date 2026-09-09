@@ -4,7 +4,7 @@ A recipe encodes a flow this bridge has already run successfully on one site: th
 
 ## Reading
 
-Before driving a site you'll revisit, check `recipes/<domain>.md` here (`domain` = the site's registrable name: `devto.md`, `linkedin.md`). `AGENTS.md` points here.
+Before driving a site you'll revisit, check `recipes/<domain>.md` here (`domain` = the site's hostname, TLD included: `github.com.md`, `dev.to.md`, `linkedin.com.md`). `AGENTS.md` points here.
 
 ## Writing one (after a verified run)
 

@@ -518,8 +518,8 @@ try {
   const histExport = await cli('history', 'example.com', '--batch', histPath);
   const histScript = fs.readFileSync(histPath, 'utf8');
   assert(
-    histExport.status === 0 && histScript.includes('fill example.com @e2 --diff -- "hello world"') && histScript.includes('eval example.com document.title'),
-    'cli history --batch exports replayable, quoted commands',
+    histExport.status === 0 && histScript.includes('# secret · fill example.com @e2 --diff -- "***"') && histScript.includes('eval example.com document.title'),
+    'cli history --batch exports replayable, quoted commands (fill/type/paste values redacted + commented — secrets never reach the export)',
     histExport.stdout + '\n' + histScript
   );
   fs.unlinkSync(histPath);
@@ -566,7 +566,7 @@ try {
     // signal README promises a page can't fake).
     assert(bg.includes('chrome.runtime.onMessage.addListener') && bg.includes("msg?.type === 'self-release'"), 'pill: ⏏ self-release reaches the SW via runtime messaging');
     assert(bg.includes('if (!e.isTrusted) return;'), 'pill: ⏏ ignores synthetic clicks (isTrusted guard — a page must not strip its own markers)');
-    assert(bg.includes('ready.then(() => releaseTab(sender.tab.id))'), 'pill: ⏏ release waits for hydration — a cold-waking click must not be silently undone');
+    assert(bg.includes('releaseTab(sender.tab.id, { flash: true })'), 'pill: ⏏ release waits for hydration and confirms with a ✓ released fade — a cold-waking click must not be silently undone');
     assert(bg.includes("if (e.key === 'Enter' || e.key === ' ') selfRelease(e);"), 'pill: ⏏ keyboard = Enter/Space only — Tab must keep moving focus');
     assert(bg.includes('dataset.v === chrome.runtime.getManifest().version') && bg.includes('dataset.bridgeHide'), 'pill: banner rebuilds on extension reload (dead handlers) and honors a ✕ hide on the catch-up path');
     // Release = full cleanup: a marker-only release left phone-shaped tabs
@@ -683,7 +683,11 @@ try {
     // open shadow roots (Reddit's faceplate-*, LinkedIn's nested roots) —
     // every action script resolves via deepQuery (@refs/document CSS first,
     // deep walk on a miss).
-    assert(bg.includes('const DEEPQ') && bg.split('deepQuery(sel').length >= 11, 'ext: action targets pierce open shadow roots (deepQuery at every resolution site)', `deepQuery sites: ${bg.split('deepQuery(sel').length}`);
+    assert(
+      bg.includes('const DEEPQ') && bg.includes('const mustQuery') && bg.split('mustQuery(sel').length + bg.split('deepQuery(sel').length >= 12,
+      'ext: action targets pierce open shadow roots (mustQuery/deepQuery at every resolution site)',
+      `resolution sites: ${bg.split('mustQuery(sel').length + bg.split('deepQuery(sel').length}`
+    );
     assert(bg.includes('deepAll(') && bg.includes("deepAll(${JSON.stringify(sel)}, document)"), 'ext: measure matches inside open shadow roots too');
     // net: the initiator (already arriving on requestWillBeSent) rides the
     // line — the request→issuing-script jump, nearly free with the debugger

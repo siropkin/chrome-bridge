@@ -14,7 +14,7 @@ node <repo>/cli.mjs <command> …
 
 - `bridge server not running` → run `node <repo>/cli.mjs start` (spawns it detached; a loaded extension reconnects on its own)
 - `extension not connected` → tell the user to load/reload `<repo>/extension/` at `chrome://extensions` (Developer mode → Load unpacked). You cannot click that button yourself.
-- a stderr warning like `⚠ extension 1.4.0 is loaded, the repo has 1.4.1` → the loaded extension is old code (after `git pull`, health still passes) → tell the user to reload the extension at `chrome://extensions`.
+- a stderr warning like `⚠ extension 1.18.12 is loaded, the repo has 1.18.13` → the loaded extension is old code (after `git pull`, health still passes) → tell the user to reload the extension at `chrome://extensions`.
 
 ## Multiple Chrome profiles
 
@@ -32,15 +32,24 @@ The bridge is for pages a plain HTTP request can't handle — interaction (click
 
 ## Core loop
 
-1. `tabs [match]` — find the tab (the optional match filters the list itself — a full browser's tab list is ~2KB). `<match>` is a URL substring; a driven tab wins, then the most recently active. If several tabs match, the result warns and names them — re-run with a longer match instead of trusting the pick. Two tabs with identical URLs can't be told apart this way — close one first.
+1. `tabs [match]` — find the tab (the optional match filters the list itself — a full browser's tab list is ~2KB). `<match>` is a URL/title substring; a driven tab wins, then the most recently active. If several tabs match, the result warns and names them — re-run with a longer match instead of trusting the pick. Two tabs with identical URLs can't be told apart this way — close one first.
 2. `open <url>` / `nav <match> <url>` — auto-marks the tab (🟣 corner tag + tab group). Every command that targets a tab marks it — reads (`snap`/`measure`/`console`/`net`/`shot`) included: the pill shows on any tab you are *looking at*, not just the ones you change.
 3. **`snap <match>` — always snap before shooting.** The a11y tree with `@eN` refs is ~10× cheaper than a screenshot and usually answers the question. Only interactive/landmark elements appear — static text (`<p>`, `<div>`, `<pre>`) is not in the tree, so `--diff` can't see text changes; verify those with `wait --text` or `eval`, and canvas/pixel changes with `shot <match> out.png --diff` (changed region only) or `wait --pixel-change`. Trees truncate at 300 nodes: on a big page, `grep`/`--find` over a full snap can silently miss what's past the cut — take a `--skeleton` map first (cut subtrees read `… N inside`), or scope it: `snap <match> "[role=dialog]"` / `snap <match> @e12`. Re-checking after an action? `snap <match> --diff` prints only what changed. Looking for one thing? `snap <match> | grep -i save` — or, when you don't know what it's called, `snap <match> --find "the cancel button"` (local Nano picks matching lines, ~2s warm / ~20s first call while it loads; verify the shortlist). Link URLs are omitted except on nameless links (they were most of the bytes — you click refs, not URLs); add `--href` only if you truly need them.
+   A snap reads like this — indented = nested, `@eN` is the ref you pass to click/fill/type, `*` = new since the last snap, collapsed lines keep their refs clickable:
+
+   ```
+   table "Hacker News new | past | comments | ask | show | jobs | submit" @e1
+     link "Hacker News" @e5
+   * link "new" @e6
+     … 3 more · link "past" → @e7 @e8 @e9
+   ```
+
 4. `click <match> @e3` / `fill <match> @e2 "value"` — refs **survive re-snaps** (an element keeps its @eN while its role+name are unchanged) but expire on navigation; re-snap after `nav`.
 5. **Act + observe in one call: `click <match> @e3 --diff`** — the action settles (waits for the DOM to go quiet, 3s cap), then the diff of exactly the action's effects rides along in the same result, prefixed with a **verdict**: `succeeded` (observable change / navigation), `needs_human` (bot wall named — hand off with `wait <match> --human`), `blocked` (rate limit), `uncertain` (dispatched, nothing observable changed — verify with console/net/shot; never read it as ok). No separate `wait` + `snap --diff` round trips.
 6. `wait <match> --text "Saved"` only when you need something specific without acting. Chain other dependent steps in one `batch` — stdin, one command per line — one process and one shell call instead of several.
 
 7. `shot <match> out.png` only when you need pixels. The long edge is capped at 1280px by default (models downscale bigger images on read anyway) — `--max 0` for native res, `--max 800 --format jpeg` for a cheap glance. Read screenshots in a subagent to keep image tokens out of the main context.
-8. **Always `release <match>` (or `close <match>`) when done. `unemulate` when done emulating (`release` clears any live emulation too, but don't lean on that).** Tabs you only *read* (`snap`/`measure`/`console`/`net`) — `release` them; tabs you *opened* (`open`) — `close` them. The human comes back to a browser full of purple pills and mystery tabs otherwise; leaving either is a bug in your session, not their mess to clean. A human can also click the pill's ⏏ to disconnect your claim on a tab — if a tab you're driving keeps coming back unmarked, the human took it back: ask, don't re-mark and plow on.
+8. **Always `release <match>` (or `close <match>`) when done. `unemulate` when done emulating (`release` clears any live emulation too, but don't lean on that).** Tabs you only *read* (`snap`/`measure`/`console`/`net`) — `release` them; tabs you *opened* (`open`) — `close` them. The human comes back to a browser full of purple pills and mystery tabs otherwise; leaving either is a bug in your session, not their mess to clean. A human can also click the pill's ⏏ to disconnect your claim on a tab — the feed (`watch`/`history`) shows `⏏ human released a tab via the pill` when that happens. If a tab you're driving keeps coming back unmarked, the human took it back: ask, don't re-mark and plow on.
 
 ## Commands
 
@@ -50,8 +59,12 @@ batch                             read commands from stdin, one per line ('#' = 
 tabs [match]                      list tabs (compact JSON); [match] filters by URL/title substring;
                                   several profiles connected → merged, rows carry a profile tag
 profiles                          list connected Chrome profiles — id and name (for --profile) + version
-open <url>                        open + mark a new tab (waits for load, 8s cap)
-nav <match> <url> [--diff]        navigate matching tab (waits for load, 8s cap)
+open <url>                        open + mark a new tab (waits for load, 8s cap;
+                                  the reply's loaded:false means the cap fired on a
+                                  still-loading page — snap/eval/wait --text work on
+                                  what's there; re-nav only if the URL itself failed)
+nav <match> <url> [--diff]        navigate matching tab (waits for load, 8s cap;
+                                  same loaded:false semantics as open)
 close <match>                     close matching tab
 snap <match> [css|@ref] [--diff] [--href] [--skeleton] [--find "nl"]
                                   a11y tree with @eN refs; [css|@ref] scopes to a subtree
@@ -98,8 +111,10 @@ paste <match> [@ref|css] [--diff] [-- <text>]
                                   composers) revert fill but take a paste; without -- <text>
                                   it reads the OS clipboard (pbpaste/xclip/Get-Clipboard)
 upload <match> <@ref|css> <file...> [--diff]   set a file input's files (CDP; hidden inputs work)
-press <match> <key> [@ref|css] [--diff] [--trusted]   key press (Enter/Tab/Escape/…) on
-                                  focused or given element; combos like Control+k / Shift+Enter
+press <match> <key> [@ref|css] [--diff] [--trusted]   key press (Enter/Tab/Escape/Backspace/
+                                  Delete/Insert/arrows/Home/End/PageUp/PageDown, or one char —
+                                  space = " "; unknown names fail loud) on focused or given
+                                  element; combos like Control+k / Shift+Enter
                                   set modifier flags; --trusted = CDP keys (Enter triggers
                                   browser defaults like form submit)
 hover <match> <@ref|css> [--diff] [--trusted]   hover (opens hover menus); --trusted = CDP Input
@@ -157,7 +172,9 @@ history [match] [-n N] [--batch out]
                                   what already ran on this machine (the server ring holds the
                                   last 300 commands) — post-mortems and session handoffs;
                                   --batch out writes a replayable batch script (failed commands
-                                  commented out; shot paths and multiline eval don't survive)
+                                  commented out; fill/type/paste values are redacted and their
+                                  lines commented as '# secret ·' — secrets never reach the
+                                  export; shot paths and multiline eval don't survive)
 swlogs                            service-worker console tail (errors/warnings)
 emulate <match> <w> <h> [mobile]  CDP device view (no window resize); 'emulate <match> focus'
                                   makes the page believe it's focused — focus-gated work (pages
