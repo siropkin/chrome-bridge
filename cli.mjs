@@ -61,7 +61,9 @@ async function cmd(msg) {
     fail('bridge server dropped the connection mid-command (stopped or restarted) — the command may have partially run; after `node cli.mjs start`, check `history` before retrying');
   }
   const out = await res.json().catch(() => null);
-  if (!out) fail(`unexpected response from bridge on port ${PORT} — is another server using it?`);
+  // Two real causes, one message: the server died mid-reply (restart/stop with
+  // the command in flight) or something else owns the port.
+  if (!out) fail(`unreadable response from bridge on port ${PORT} — the server died mid-reply (restart?), or another server owns the port`);
   if (!out.ok) fail(out.error);
   return out.result;
 }
@@ -462,6 +464,10 @@ async function run(cmdName, args) {
         }
         const [c, ...a] = tokens;
         if (!c) continue;
+        // Interactive/process verbs make no sense inside a batch: watch never
+        // exits (the batch hangs forever), start/stop kill the relay the rest
+        // of the script rides on.
+        if (c === 'watch' || c === 'start' || c === 'stop') fail(`'${c}' can't run inside batch — run it as its own command`);
         await run(c, a);
       }
       break;

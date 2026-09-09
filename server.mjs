@@ -53,6 +53,7 @@ function dropSeatPending(seat, error) {
 // MV3 service worker cycles, so a missing socket gets a brief reconnect grace.
 function ask(seat, msg, timeoutMs = CMD_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
+    const t0 = Date.now();
     const attempt = (triesLeft) => {
       // Re-resolve each try: an SW-restart reconnect replaces the seat entry —
       // retrying against the captured one would retry a dead object while a
@@ -60,11 +61,20 @@ function ask(seat, msg, timeoutMs = CMD_TIMEOUT_MS) {
       const s = seats.get(seat.pid) ?? seat;
       if (s.socket && !s.socket.destroyed) {
         const id = s.nextId++;
-        s.pending.set(id, resolve);
-        s.socket.write(encodeFrame(JSON.stringify({ ...msg, id })));
-        setTimeout(() => {
+        // The budget is end-to-end: time burned in the no-socket retry loop
+        // below comes OUT of it (a '5s deaf-seat budget' probe used to retry
+        // 10s and only then start its 5s write timeout — 15s total).
+        const left = timeoutMs - (Date.now() - t0);
+        if (left <= 0) return reject(new Error('extension timeout'));
+        const t = setTimeout(() => {
           if (s.pending.delete(id)) reject(new Error('extension timeout'));
-        }, timeoutMs);
+        }, left);
+        // Cleared on settle: one live 70s timer per command is storm litter.
+        s.pending.set(id, (m) => {
+          clearTimeout(t);
+          resolve(m);
+        });
+        s.socket.write(encodeFrame(JSON.stringify({ ...msg, id })));
         return;
       }
       if (triesLeft <= 0) {
@@ -90,6 +100,22 @@ function seatByProfile(want) {
   if (!pids.length) throw new Error(`no connected profile matching '${want}' — run: cli profiles`);
   return seats.get(pids[0]);
 }
+// Reconnect grace for the pinned path, symmetric with ask()'s 10s no-socket
+// retry: right after a server restart the seats re-take in ~0.5-2s, and a
+// --profile command landing in that window used to die instantly while an
+// unpinned one rode the reconnect out (found by the parallel stress suite).
+async function seatByProfileGrace(want) {
+  const t0 = Date.now();
+  for (;;) {
+    try {
+      return seatByProfile(want);
+    } catch (e) {
+      // Only the missing-seat case waits — an ambiguous prefix fails NOW.
+      if (!/no connected profile matching/.test(String(e)) || Date.now() - t0 > 10_000) throw e;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+}
 
 // Route one command to exactly one profile's seat.
 // Adding a command? SEVEN registries stay in sync (a missing one fails SILENTLY):
@@ -99,7 +125,7 @@ async function route(msg) {
   if (msg.type === 'tabs') {
     // Read-only: merged across profiles. Single profile keeps today's output
     // byte-identical (no profile tags) — the common case stays the old shape.
-    if (msg.profile) return ask(seatByProfile(String(msg.profile)), msg); // pinned: that seat's rows, untagged
+    if (msg.profile) return ask(await seatByProfileGrace(String(msg.profile)), msg); // pinned: that seat's rows, untagged
     if (!seats.size) throw new Error('extension not connected — load extension/ at chrome://extensions');
     if (seats.size === 1) return ask(seats.values().next().value, msg);
     const rows = [];
@@ -120,7 +146,7 @@ async function route(msg) {
 
   let seat;
   if (msg.profile) {
-    seat = seatByProfile(String(msg.profile));
+    seat = await seatByProfileGrace(String(msg.profile));
   } else if (seats.size === 0) {
     throw new Error('extension not connected — load extension/ at chrome://extensions');
   } else if (seats.size === 1) {
@@ -411,7 +437,15 @@ const server = http.createServer((req, res) => {
       } catch (e) {
         out = { ok: false, error: String(e) };
       }
-      pushAct(msg, out, Date.now() - t0);
+      // Logging must never kill the relay: a malformed field ({"type":"shot",
+      // "crop":"z"}) reached CLI_LINES's m.crop.join and the throw — inside an
+      // async 'end' handler — took the whole server down as an unhandled
+      // rejection (found by the parallel stress suite; one curl repro).
+      try {
+        pushAct(msg, out, Date.now() - t0);
+      } catch (e) {
+        console.log('[act] logging failed for ' + (msg?.type || '?') + ': ' + String(e).slice(0, 80));
+      }
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify(out));
     });
@@ -526,9 +560,16 @@ server.on('upgrade', (req, socket) => {
   const onGone = () => {
     if (seats.get(id) === seat) {
       seats.delete(id);
-      dropSeatPending(seat, 'extension disconnected mid-command — it reconnects on its own; the command may have run before the reply was lost, so check the tab before retrying');
       console.log(`[bridge] extension disconnected id=${id}`);
     }
+    // Unconditional, NOT inside the guard: this pending map is THIS socket's
+    // own, so draining it can never touch a replacement seat's commands. The
+    // hazardous order — heartbeat destroy() in a timer phase sets destroyed
+    // synchronously, a reconnect's upgrade lands in the same iteration's poll
+    // phase and takes the seat, and only then does the close-phase onGone run
+    // — used to skip this drain and hang the old seat's commands to the 70s
+    // timeout (instrumented repro, stress review).
+    dropSeatPending(seat, 'extension disconnected mid-command — it reconnects on its own; the command may have run before the reply was lost, so check the tab before retrying');
     socket.destroy();
   };
   // 'end' fires on a half-open socket (peer FIN) — 'close' may never follow.
@@ -541,15 +582,18 @@ server.listen(PORT, '127.0.0.1', () => console.log(`[bridge] ws + control on 127
 
 // Heartbeat: app-level ping every 20s per seat. A socket can be open at TCP
 // level with a dead service worker behind it (health says "connected" while
-// commands rot to the 70s timeout) — no pong in 5s means the seat is deaf,
-// free it. The ping traffic also wakes/extends the MV3 service worker, so
-// this doubles as the keepalive.
+// commands rot to the 70s timeout) — no pong means the seat is deaf, free it.
+// The pong budget is 10s, not a hair trigger: a BUSY sw (a full-page --diff's
+// synchronous pixel compare blocks its event loop for seconds) must not read
+// as dead — destroying that seat errors every in-flight command for nothing.
+// The ping traffic also wakes/extends the MV3 service worker, so this doubles
+// as the keepalive.
 setInterval(() => {
   for (const seat of seats.values()) {
     if (!seat.socket || seat.socket.destroyed) continue;
     const t = setTimeout(() => {
       if (seat.pending.delete(seat.pingId)) seat.socket.destroy();
-    }, 5000);
+    }, 10_000);
     seat.pingId = seat.nextId++;
     seat.pending.set(seat.pingId, () => clearTimeout(t));
     seat.socket.write(encodeFrame(JSON.stringify({ type: 'ping', id: seat.pingId })));

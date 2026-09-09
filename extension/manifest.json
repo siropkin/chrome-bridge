@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Chrome Bridge",
-  "version": "1.18.14",
+  "version": "1.18.15",
   "minimum_chrome_version": "117",
   "description": "Let an AI agent drive this browser via a local server on this computer only. A 🟣 pill narrates what the agent does.",
   "icons": { "128": "icons/icon128.png", "48": "icons/icon48.png", "32": "icons/icon32.png", "16": "icons/icon16.png" },

@@ -273,7 +273,7 @@ function injectBanner(respectHide) {
   // 3.96:1) — the pill's whole job is being read at a glance. system-ui matches
   // the OS face (SF/Segoe) next to native Chrome UI.
   pill.style.cssText =
-    'position:fixed;bottom:8px;right:8px;background:#9333ea;color:#fff;font:12px system-ui,sans-serif;padding:3px 10px;border-radius:11px;pointer-events:auto;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.4);user-select:none';
+    'position:fixed;bottom:8px;right:8px;background:#9333ea;color:#fff;font:12px system-ui,sans-serif;padding:3px 10px;border-radius:11px;pointer-events:auto;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.4);user-select:none;display:flex;align-items:center;gap:6px';
   // The pill is the product's trust surface — make it reachable and announced
   // for keyboard/screen-reader users (this tool's own pitch is an a11y tree).
   pill.setAttribute('role', 'button');
@@ -284,10 +284,14 @@ function injectBanner(respectHide) {
   label.setAttribute('aria-live', 'polite');
   // Long labels (a 90-char note) ellipsize instead of wrapping into a ragged
   // two-line pill — and never clip the ✕/⏏ buttons (⏏ must stay clickable).
-  label.style.cssText = 'white-space:nowrap;max-width:min(60vw,480px);overflow:hidden;text-overflow:ellipsis;display:inline-block;vertical-align:bottom';
+  // min-width:0 lets the flex item shrink below its content width so the
+  // ellipsis can actually engage; flex+align-items:center on the pill keeps
+  // the emoji glyphs (✕/⏏ sit on different font baselines than system-ui
+  // text) vertically centered with the label instead of baseline-misaligned.
+  label.style.cssText = 'white-space:nowrap;max-width:min(60vw,480px);overflow:hidden;text-overflow:ellipsis;min-width:0';
   label.textContent = '🟣 AI idle';
   const x = document.createElement('span');
-  x.textContent = ' ✕';
+  x.textContent = '✕';
   x.title = 'hide until next navigation';
   x.setAttribute('role', 'button');
   x.tabIndex = 0;
@@ -310,7 +314,7 @@ function injectBanner(respectHide) {
       d.remove();
     }
   };
-  pill.title = 'An AI agent is driving this tab (chrome-bridge) — click for history · ✕ hides · ⏏ releases';
+  pill.title = 'An AI agent is driving this tab (chrome-bridge) — click for history · ⏏ releases · ✕ hides';
   // Click the pill body → a scrolling log of what the agent did on this tab
   // (pill.dataset.log, fed by pillInject). Click again to close. The ✕ span
   // keeps the old whole-pill click-to-hide behavior.
@@ -341,7 +345,7 @@ function injectBanner(respectHide) {
   // Same defense wait --human already uses for trusted input.
   const off = document.createElement('span');
   off.id = 'bridge-disconnect';
-  off.textContent = ' ⏏';
+  off.textContent = '⏏';
   off.title = 'disconnect the agent from this tab (release it)';
   off.setAttribute('role', 'button');
   off.tabIndex = 0;
@@ -357,7 +361,9 @@ function injectBanner(respectHide) {
   off.onkeydown = (e) => {
     if (e.key === 'Enter' || e.key === ' ') selfRelease(e); // Enter/Space only — Tab must keep moving focus (any-key released on keydown, found by review)
   };
-  pill.append(label, x, off);
+  // Order: label, ⏏ release, ✕ hide LAST — the toast/notification convention
+  // (dismiss is always the terminal control; Material chips, macOS banners).
+  pill.append(label, off, x);
   d.appendChild(pill);
   (document.body || document.documentElement).appendChild(d);
 }
@@ -420,7 +426,7 @@ function pillInject(label, lines, target, active) {
   pill.dataset.log = log;
   // Fixed short hint naming all three affordances — a 30-line native tooltip
   // doesn't scroll and duplicates the click-to-open panel that holds the log.
-  pill.title = 'AI is driving this tab — click for history · ✕ hides · ⏏ releases';
+  pill.title = 'AI is driving this tab — click for history · ⏏ releases · ✕ hides';
   const p = document.getElementById('bridge-log');
   if (p) {
     p.textContent = log || '(no activity yet)'; // panel open → live-update it
@@ -927,6 +933,7 @@ chrome.debugger.onDetach.addListener((src) => {
     // don't also fast-reject its withCdp, or the partial capture (the useful
     // part) turns into a bare error.
     c.detached = true; // captureNetwork reports the cut-short capture
+    c.kill?.(new Error('debugger detached during capture setup — the "debugging this browser" infobar was dismissed or DevTools opened on this tab; retry the command')); // pre-sleep awaits race this
     c.wake?.(); // and stops sleeping out the rest of --dur
   } else {
     cdpInflight.get(src.tabId)?.(new Error('debugger detached mid-command — the "debugging this browser" infobar was dismissed or DevTools opened on this tab; retry the command'));
@@ -944,28 +951,55 @@ chrome.debugger.onDetach.addListener((src) => {
 // cleanup runs eval right after (not inside) this lock, and runEval itself
 // must never queue behind a command waiting on it.
 const cdpQ = new Map(); // tabId -> in-flight CDP command chain
-// tabId -> early-reject handle for the in-flight command's timeout promise.
-// onDetach fires it: a detach drops sendCommand callbacks, so the command
-// fails NOW with the real cause instead of sleeping out the 65s backstop.
+// tabId -> early-reject handle of the RUNNING command. onDetach fires it: a
+// detach drops sendCommand callbacks, so the command fails NOW with the real
+// cause instead of sleeping out the 65s backstop. The slot is claimed when fn
+// STARTS — set at enqueue time it named the newest caller, and a detach with
+// one command running and one queued rejected the QUEUED one (which never
+// started) while the genuinely stuck one rotted (stress-review finding).
 const cdpInflight = new Map();
 function withCdp(tabId, fn) {
-  const run = (cdpQ.get(tabId) || Promise.resolve()).then(fn);
+  let wake;
+  let timer;
+  let started = false;
+  let cancelled = false;
+  const run = (cdpQ.get(tabId) || Promise.resolve()).then(() => {
+    // Timed out while QUEUED: the caller already has the error — running fn
+    // now would land side effects (attach, emulation cleared, capture started)
+    // after the failure was reported.
+    if (cancelled) return undefined;
+    started = true;
+    cdpInflight.set(tabId, wake);
+    return fn();
+  });
   // Timeout under the server's 70s cap: a dropped sendCommand callback (Chrome
   // does this on detach) must fail THIS command and let the queue advance —
   // otherwise every later CDP command on the tab chains onto a promise that
   // never settles and rots to 'extension timeout' until the SW restarts.
-  let wake;
+  // One end-to-end budget (the server cap is end-to-end too), but the message
+  // names the phase: 'stuck' once started, 'queued too long' before — a 60s
+  // wait --pixel-change holds this lock and used to fail healthy queued
+  // commands with the misleading 'stuck (dropped callback?)'.
   const timed = Promise.race([
     run,
     new Promise((_, rej) => {
-      const t = setTimeout(() => rej(new Error('CDP command stuck (dropped callback?) — queue advanced')), 65_000);
+      timer = setTimeout(() => {
+        if (!started) cancelled = true;
+        rej(
+          new Error(
+            started
+              ? 'CDP command stuck (dropped callback?) — queue advanced'
+              : 'queued 65s behind another CDP command on this tab (a long wait --pixel-change?) — cancelled without running; retry after it finishes'
+          )
+        );
+      }, 65_000);
       wake = (e) => {
-        clearTimeout(t);
+        clearTimeout(timer);
         rej(e);
       };
     }),
   ]);
-  cdpInflight.set(tabId, wake);
+  run.then(clearTimeout.bind(null, timer), clearTimeout.bind(null, timer)); // no 65s timer litter per command
   timed.catch(() => {}).finally(() => {
     if (cdpInflight.get(tabId) === wake) cdpInflight.delete(tabId); // don't delete a newer sibling's handle
   });
@@ -1212,18 +1246,28 @@ async function captureNetwork(tabId, duration, filter, bodyFilter, har, ws) {
   c.wsUrls = new Map();
   c.wsFrames = [];
   netCollectors.set(tabId, c);
+  // Kill switch for the pre-sleep awaits: onDetach sets c.detached and fires
+  // c.wake — but c.wake only exists once the sleep starts, so a detach during
+  // Network.enable (whose callback Chrome drops) used to hang the capture to
+  // the 65s withCdp backstop and leak the collector meanwhile.
+  c.dead = new Promise((_, rej) => (c.kill = rej));
+  c.dead.catch(() => {}); // handled even when no await is racing it (sleep window)
   try {
-    await chrome.debugger.sendCommand({ tabId }, 'Network.enable', {
-      maxTotalBufferSize: 10_000_000,
-      maxResourceBufferSize: 5_000_000,
-    });
+    await Promise.race([
+      chrome.debugger.sendCommand({ tabId }, 'Network.enable', {
+        maxTotalBufferSize: 10_000_000,
+        maxResourceBufferSize: 5_000_000,
+      }),
+      c.dead,
+    ]);
     await Promise.race([new Promise((r) => setTimeout(r, Math.min(duration || 4000, 30000))), new Promise((r) => (c.wake = r))]); // onDetach wakes us — a cut-short capture reports now, not after the full --dur
     if ((bodyFilter || har) && !c.detached)
       // Await body fetches while still attached — they fail after detach.
       // (Skipped after a detach: those callbacks may never fire.)
       for (const r of c.values())
         if (r.bodyP) {
-          const b = await r.bodyP;
+          if (c.detached) break; // detached mid-loop: further callbacks never fire
+          const b = await Promise.race([r.bodyP, c.dead]).catch(() => null);
           if (b) r.bodyRaw = b; // kept whole for the HAR (base64 flag and all)
           if (r.lineBody) r.body = !b ? '(body unavailable)' : b.base64Encoded ? '(binary body)' : b.body.slice(0, 1500);
         }
@@ -2673,16 +2717,33 @@ async function observeDiff(tabId, actionResult, url0) {
   }
 }
 
+// --diff sequences (baseline snap → act → observe) share the in-page snap
+// store (window.__bridgeSnapLines) with every other snap on the tab — a plain
+// snap (or a second --diff action) landing between baseline and observe
+// rewrites the store, and the action diffs against the WRONG baseline: false
+// 'uncertain', or A's effects showing in B's diff (stress-review finding).
+// The snap family serializes per tab; non-snap commands keep full parallelism.
+const snapQ = new Map(); // tabId -> chain (self-pruning, groupChain-style)
+function withSnap(tabId, fn) {
+  const run = (snapQ.get(tabId) || Promise.resolve()).then(fn);
+  const tail = run.catch(() => {});
+  snapQ.set(tabId, tail);
+  tail.then(() => snapQ.get(tabId) === tail && snapQ.delete(tabId));
+  return run;
+}
+
 // --diff actions run baseline → act → observe: the diff then reads exactly the
 // ACTION's effects. It used to diff against "whatever the agent last snapped"
 // — click A, then click B --diff showed A's effects in B's diff, and with no
 // prior snap it returned a full tree labeled as a diff.
 async function actAndVerify(tabId, msg, run) {
   if (!msg.diff) return await run();
-  const url0 = (await chrome.tabs.get(tabId)).url;
-  await runEval(tabId, SNAP_SRC(null, false, false)); // pre-action baseline
-  const result = await run();
-  return await observeDiff(tabId, result, url0);
+  return await withSnap(tabId, async () => {
+    const url0 = (await chrome.tabs.get(tabId)).url;
+    await runEval(tabId, SNAP_SRC(null, false, false)); // pre-action baseline
+    const result = await run();
+    return await observeDiff(tabId, result, url0);
+  });
 }
 
 // Bounded wait for a tab to reach status 'complete' — nav/open then read as
@@ -2746,9 +2807,21 @@ async function waitHuman(tab, msg) {
         const r = await chrome.scripting.executeScript({ target: { tabId: tab.id }, world: 'ISOLATED', func: () => !!window.__bridgeHumanActed });
         if (r?.[0]?.result) { clearInterval(iv); resolve('input'); return; }
       } catch {
-        clearInterval(iv);
-        resolve('gone'); // tab closed mid-handoff
-        return;
+        // The tick's executeScript pends across a just-started navigation and
+        // rejects when the old frame dies ('frame removed') — that IS the human
+        // acting (a login redirect), not a closed tab. Re-check before 'gone'.
+        const t = await chrome.tabs.get(tab.id).catch(() => null);
+        if (!t) {
+          clearInterval(iv);
+          resolve('gone'); // tab really closed mid-handoff
+          return;
+        }
+        if (t.url !== url0) {
+          clearInterval(iv);
+          resolve('nav');
+          return;
+        }
+        // Same URL, transient injection failure — the next tick decides.
       }
       if (Date.now() - t0 >= timeout) { clearInterval(iv); resolve('timeout'); }
     }, 1000);
@@ -2945,14 +3018,23 @@ async function cmdFetch(tab, msg) {
         // --out (stress: 200 application/json, 0 KB file).
         let binary = !!rec.base64Encoded;
         let body = rec.content ?? '';
+        let truncated = false;
         if (rec.stream) {
           let b64 = '', text = '';
+          const t0 = Date.now();
           for (;;) {
             const c = await chrome.debugger.sendCommand({ tabId: tab.id }, 'IO.read', { handle: rec.stream });
             if (c.base64Encoded) { binary = true; b64 += c.data; } else text += c.data || '';
             if (c.eof) break;
+            // A huge body used to accumulate unbounded — and outlive the
+            // withCdp timeout, which can't cancel this loop from outside.
+            if (b64.length + text.length > BODY_CAP || Date.now() - t0 > 60_000) {
+              truncated = true;
+              break;
+            }
           }
           await chrome.debugger.sendCommand({ tabId: tab.id }, 'IO.close', { handle: rec.stream }).catch(() => {});
+          truncated = truncated || (!binary && text.length > BODY_CAP);
           body = binary ? b64 : text.slice(0, BODY_CAP);
         }
         return {
@@ -2960,7 +3042,7 @@ async function cmdFetch(tab, msg) {
           ct: rec.mime || rec.headers?.['Content-Type'] || '',
           binary,
           body: binary ? String(body) : String(body).slice(0, BODY_CAP),
-          truncated: !binary && body.length > BODY_CAP,
+          truncated,
         };
       } finally {
         await detachDbg(tab.id);
@@ -3065,6 +3147,7 @@ async function cmdUpload(tab, msg) {
 
   // No tab activation here: CDP captureScreenshot works on background tabs,
   // and activating would steal the user's view. Only the fallback below needs it.
+const shotFallbackQ = new Map(); // windowId -> captureVisibleTab fallback chain (see cmdShot's catch)
 async function cmdShot(tab, msg) {
   const format = msg.format === 'jpeg' ? 'jpeg' : 'png';
   return await withCdp(tab.id, async () => {
@@ -3166,18 +3249,27 @@ async function cmdShot(tab, msg) {
       // otherwise we'd screenshot whatever the user is looking at. Restore the
       // tab the human WAS on after: stealing their view is the one promise
       // this path must not break (the CDP path above never activates).
-      const prev = (await chrome.tabs.query({ active: true, windowId: tab.windowId }))[0];
-      await chrome.tabs.update(tab.id, { active: true });
-      try {
-        await new Promise((r) => setTimeout(r, 400));
-        const png = await chrome.tabs.captureVisibleTab(tab.windowId, { format, ...(format === 'jpeg' ? { quality: msg.quality ?? 80 } : {}) });
-        // --diff can't run without CDP — say so instead of silently handing
-        // back a plain shot the agent would read as a completed diff cycle.
-        if (msg.diff) return { note: 'diff skipped — cdp unavailable on this page; this file is a plain fallback shot and the baseline is unchanged', data: png };
-        return png;
-      } finally {
-        if (prev && prev.id !== tab.id) await chrome.tabs.update(prev.id, { active: true }).catch(() => {});
-      }
+      // Serialized PER WINDOW: two concurrent fallbacks on different tabs of
+      // one window used to interleave activate→sleep→capture, and A captured
+      // B's tab (stress-review finding) — withCdp is per-tab and can't help.
+      const run = (shotFallbackQ.get(tab.windowId) || Promise.resolve()).then(async () => {
+        const prev = (await chrome.tabs.query({ active: true, windowId: tab.windowId }))[0];
+        await chrome.tabs.update(tab.id, { active: true });
+        try {
+          await new Promise((r) => setTimeout(r, 400));
+          const png = await chrome.tabs.captureVisibleTab(tab.windowId, { format, ...(format === 'jpeg' ? { quality: msg.quality ?? 80 } : {}) });
+          // --diff can't run without CDP — say so instead of silently handing
+          // back a plain shot the agent would read as a completed diff cycle.
+          if (msg.diff) return { note: 'diff skipped — cdp unavailable on this page; this file is a plain fallback shot and the baseline is unchanged', data: png };
+          return png;
+        } finally {
+          if (prev && prev.id !== tab.id) await chrome.tabs.update(prev.id, { active: true }).catch(() => {});
+        }
+      });
+      const tail = run.catch(() => {});
+      shotFallbackQ.set(tab.windowId, tail);
+      tail.then(() => shotFallbackQ.get(tab.windowId) === tail && shotFallbackQ.delete(tab.windowId));
+      return await run;
     } finally {
       await detachDbg(tab.id);
     }
@@ -3346,7 +3438,8 @@ async function handle(msg) {
   if (msg.type === 'snap') {
     const tab = await findTab(msg);
     if (msg.find) return await runEval(tab.id, FIND_SRC(msg.scope, msg.find));
-    return await runEval(tab.id, SNAP_SRC(msg.scope, msg.diff, msg.href, msg.skeleton));
+    // Chained: every snap writes the in-page diff store — see withSnap.
+    return await withSnap(tab.id, () => runEval(tab.id, SNAP_SRC(msg.scope, msg.diff, msg.href, msg.skeleton)));
   }
 
   // --trusted: route click/press/type/hover/drag through CDP Input.dispatch*
