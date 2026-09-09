@@ -256,8 +256,8 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
 
 <match> is a substring of the tab URL or title; a driven tab wins, then the most
 recently active. Ambiguous matches print a warning naming the other tabs — re-run with a
-longer match. Mutating commands (click/fill/type/press/upload/eval/hover/scroll/
-grid/emulate/resize/drag/dialog) auto-mark the tab (🟣 pill + tab group).
+longer match. Every command that targets a tab marks it (🟣 pill + tab group) —
+reads (snap/measure/console/net) included; release when you're done.
 Refs (@eN) come from snap; they survive re-snaps but expire on navigation.
 CSS selectors match document-level first, then pierce open shadow roots.
 
