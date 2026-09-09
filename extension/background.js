@@ -170,10 +170,16 @@ function connect() {
         // (its own reset will fire when it finishes).
         const seq = pillSeq.get(tabId) || 0;
         setTimeout(() => {
+          if (!drivenTabs.has(tabId)) return; // released in the window — never paint over the '✓ released' fade
           if ((pillSeq.get(tabId) || 0) !== seq) return;
           if ((inflight.get(tabId) || 0) > 0) return;
+          const idleArgs = [idleLabel(tabId), tabActivity.get(tabId) || [], null, false];
           chrome.scripting
-            .executeScript({ target: { tabId }, func: pillInject, args: [idleLabel(tabId), tabActivity.get(tabId) || [], null, false] })
+            .executeScript({ target: { tabId }, func: pillInject, args: idleArgs })
+            // A gone pill (page wiped it; a first mark gated by a capture
+            // window) gets rebuilt — this reset can be the last guaranteed
+            // pill touch on the tab.
+            .then((res) => revivePill(tabId, res, idleArgs))
             .catch(() => {});
         }, msg.type === 'note' ? 4000 : 800);
       }
@@ -259,6 +265,10 @@ function injectBanner(respectHide) {
     existing.remove();
   }
   if (respectHide && document.documentElement.dataset.bridgeHide === '1') return; // ✕'d this document, no navigation since
+  // Building the pill ends the hide — clear the flag so a stale '1' can never
+  // outlive a visible pill and silently block a later respectHide revive
+  // (✕ → release → re-drive leaves the flag behind otherwise).
+  delete document.documentElement.dataset.bridgeHide;
   const d = document.createElement('div');
   d.id = 'bridge-banner';
   d.dataset.v = chrome.runtime.getManifest().version; // load tag — handlers die with their worker, see the rebuild above
@@ -703,27 +713,60 @@ async function setFavicon(tabId, emoji) {
   } catch {} // best-effort — onUpdated re-applies once the page loads
 }
 
-async function markTab(tabId) {
+// In-flight marks, per tab. Handlers whose correctness needs the banner to
+// have LANDED (note's visibility probe; shot / wait --pixel-change / trusted
+// input's suppression windows) await this via awaitMark — a SIBLING command's
+// fire-and-forget mark is otherwise invisible to them (drivenTabs already
+// reads true by the time they look). Self-pruning; a re-mark's entry
+// replaces the prior one's (its own prune then no-ops on the identity check).
+const markInflight = new Map(); // tabId -> in-flight markTab promise
+function markTab(tabId) {
   drivenTabs.add(tabId);
   persist();
-  await groupTab(tabId);
-  if (!drivenTabs.has(tabId)) return; // a release landed mid-mark — don't resurrect the pill
-  try {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      func: injectBanner,
-    });
-  } catch {
-    // Non-http pages (chrome://, WebGL-heavy SPAs mid-load) reject injection.
-  }
+  const p = (async () => {
+    await groupTab(tabId);
+    if (!drivenTabs.has(tabId)) return; // a release landed mid-mark — don't resurrect the pill
+    // A capture/trusted-input window is open on this tab — injecting now
+    // would put the pill inside it (a mid-window re-mark is exactly the
+    // interleave awaitMark can't see: it started after the await). After the
+    // window: a non-hidden tab heals via revivePill on the next narration;
+    // a ✕-hidden tab stays hidden until the next navigation — inside a
+    // capture window the human's ✕ outranks even an explicit re-mark.
+    if (bannerSuppressed.has(tabId)) return;
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        func: injectBanner,
+      });
+    } catch {
+      // Non-http pages (chrome://, WebGL-heavy SPAs mid-load) reject injection.
+    }
+  })();
+  markInflight.set(tabId, p);
+  const done = () => markInflight.get(tabId) === p && markInflight.delete(tabId);
+  p.then(done, done);
+  return p;
 }
+// Bounded await of the tab's in-flight mark: injectBanner can pend forever on
+// an uncommitted navigation (the reason every AUTO-mark site is
+// fire-and-forget — the explicit `mark` command awaits and carries that hang
+// risk by choice), so race a short fuse — a no-show banner degrades to each
+// caller's existing backstop (at-capture re-removal; note's loud probe
+// failure).
+const awaitMark = (tabId, ms = 2000) => {
+  const p = markInflight.get(tabId);
+  return p ? Promise.race([p, new Promise((r) => setTimeout(r, ms))]).catch(() => {}) : Promise.resolve();
+};
 
 async function releaseTab(tabId, opts = {}) {
   drivenTabs.delete(tabId);
   tabActivity.delete(tabId); // else a re-mark resurrects the stale history ring
   shotBaselines.delete(tabId); // else a later session's first --diff compares against a previous session's pixels
-  pillSeq.delete(tabId);
-  inflight.delete(tabId);
+  // pillSeq/inflight deliberately STAY: they're per-command bookkeeping, not
+  // markers. A command in flight at release time decrements its OWN count in
+  // onmessage's finally — deleting the counter here unpairs that math, so the
+  // finishing pre-release command zeroes a post-release sibling's count and
+  // the pill reads 'AI idle' mid-command (found by the race audit).
   failedSinceOk.delete(tabId);
   stopTick(tabId);
   // Release = the tab is the human's again, ALL of it. A marker-only release
@@ -742,13 +785,23 @@ async function releaseTab(tabId, opts = {}) {
       func: opts.flash ? flashReleased : removeBanner,
     });
   } catch {}
+  // Ungroup through the SAME per-window chain groupTab uses, gated at
+  // EXECUTION time like groupTabNow's: a re-mark's grouping then orders
+  // cleanly against this ungroup whichever lands first — a pre-check alone
+  // left the re-mark's fresh 🟣 Bridge group stripped with no re-group path
+  // (found by the verify pass). The 🟣 Bridge title check stays: releasing a
+  // tab the bridge never drove must not yank it out of a group the USER made.
   try {
-    // Ungroup ONLY from the bridge's own group: release on a tab the bridge
-    // never drove (ambiguous <match>) must not yank it out of a group the
-    // USER made — everything else in releaseTab is a no-op on a non-driven
-    // tab; an unguarded ungroup wasn't.
-    const { groupId } = await chrome.tabs.get(tabId);
-    if (groupId !== -1 && (await chrome.tabGroups.get(groupId)).title === '🟣 Bridge') await chrome.tabs.ungroup(tabId);
+    const { windowId } = await chrome.tabs.get(tabId);
+    const run = (groupChain.get(windowId) || Promise.resolve()).then(async () => {
+      if (drivenTabs.has(tabId)) return; // re-marked mid-release — the new mark owns the group
+      const { groupId } = await chrome.tabs.get(tabId);
+      if (groupId !== -1 && (await chrome.tabGroups.get(groupId)).title === '🟣 Bridge') await chrome.tabs.ungroup(tabId);
+    });
+    const tail = run.catch(() => {});
+    groupChain.set(windowId, tail);
+    tail.then(() => groupChain.get(windowId) === tail && groupChain.delete(windowId)); // same self-pruning as groupTab
+    await run;
   } catch {}
 }
 
@@ -757,10 +810,29 @@ async function releaseTab(tabId, opts = {}) {
 chrome.tabs.onUpdated.addListener((tabId, info) => {
   // A new document kills the pinned diff frame — its page-absolute clip and
   // baseline died with the old page; re-baseline instead of garbage-diffing.
-  if (info.url) shotBaselines.delete(tabId);
+  // status:'loading' with no url change is a same-URL reload — ALSO a new
+  // document, and info.url never fires for it.
+  if (info.url || info.status === 'loading') {
+    shotBaselines.delete(tabId);
+    navSeq.set(tabId, (navSeq.get(tabId) || 0) + 1);
+  }
   if (info.status === 'complete' && drivenTabs.has(tabId) && !bannerSuppressed.has(tabId)) {
+    // respectHide while a debugger is or was JUST attached: Chrome fires a
+    // SPURIOUS status:'complete' ~0.5-1s after attach (live-observed, see
+    // bannerSuppressed) on the SAME document — sometimes after a fast command
+    // already detached, hence the dbgSince grace — and it must not resurrect
+    // a pill the human ✕-hid. Real navigations get a fresh document
+    // (bridgeHide gone — moot either way); a bfcache restore re-fires
+    // complete on the preserved document with no debugger involved, so the
+    // hide ends there as the ✕ contract ('hide until next navigation')
+    // promises. KNOWN RESIDUAL: a bfcache restore keeps the hide past the
+    // navigation when it lands inside a debugger session (emulated tabs hold
+    // one for the whole session) or within the 1.5s post-attach grace —
+    // telling it apart from the spurious event needs webNavigation's
+    // from_back_forward qualifier; parked while the CWS listing is in review
+    // (a permission change mid-review is a re-review trap).
     chrome.scripting
-      .executeScript({ target: { tabId }, func: injectBanner })
+      .executeScript({ target: { tabId }, func: injectBanner, args: [cdpRefs.has(tabId) || Date.now() - (dbgSince.get(tabId) || 0) < 1500] })
       .catch(() => {});
     const emoji = tabStatus.get(tabId);
     if (emoji) {
@@ -777,6 +849,9 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   tabActivity.delete(tabId);
   pillSeq.delete(tabId);
   inflight.delete(tabId);
+  navSeq.delete(tabId);
+  dbgSince.delete(tabId);
+  markInflight.delete(tabId); // a mark whose injectBanner pends forever (uncommitted nav) never self-prunes
   failedSinceOk.delete(tabId);
   worldCache.delete(tabId);
   cdpRefs.delete(tabId); // debugger auto-detaches on close
@@ -860,6 +935,7 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
 // out detaches. One pair of helpers replaces the per-call-site attachedByUs
 // dance that only covered two of the five CDP users.
 const cdpRefs = new Map(); // tabId -> active owners
+const dbgSince = new Map(); // tabId -> last attach ts — the spurious post-attach status:'complete' (live-observed at 0.5-1s) can land AFTER a fast command already detached
 async function attachDbg(tabId) {
   // Claim the share BEFORE the await: an attach-in-flight must still count,
   // or a sibling's detach (e.g. runEval's CDP fallback, which runs outside
@@ -869,6 +945,10 @@ async function attachDbg(tabId) {
   cdpRefs.set(tabId, n);
   try {
     await chrome.debugger.attach({ tabId }, '1.3');
+    // onUpdated's respectHide grace: the spurious attach-complete can outlive
+    // a fast detach. Stamped on SUCCESS only — a failed attach provokes no
+    // event, and a stale stamp would needlessly extend the bfcache residual.
+    dbgSince.set(tabId, Date.now());
     logLine('dbg +' + tabId);
   } catch (e) {
     if (!/already attached/i.test(String(e))) {
@@ -891,6 +971,7 @@ async function attachDbg(tabId) {
         throw new Error('another debugger holds tab ' + tabId + ' (DevTools open?) — close it and retry');
       }
     }
+    dbgSince.set(tabId, Date.now()); // shared live session — its own attach's spurious complete may still be in flight
     logLine('dbg +' + tabId + ' (shared)'); // ours from a sibling command — share it
   }
 }
@@ -2019,6 +2100,7 @@ const WALL_SRC = `(() => {
 // trip, no permission. shotBaselines holds the last --diff capture per tab
 // (memory-only: an SW restart re-baselines, like the rest of the SW state).
 const shotBaselines = new Map(); // tabId -> { b64, clip } of the last --diff shot
+const navSeq = new Map(); // tabId -> navigation counter — an in-flight shot --diff detects a mid-capture/diff navigation at COMMIT time (onUpdated deletes the baseline, but the diff may be past its identity check by then)
 
 async function pngBitmap(b64) {
   const raw = atob(b64);
@@ -2243,7 +2325,7 @@ const trustedPointSrc = (target, coverage, ripple) => `(() => {
   // at the wrong point
   const [cxTop, cyTop] = toTop(el, cx, cy);
   showCursor(cxTop, cyTop, ${ripple ? 'true' : 'false'});
-  return JSON.stringify({ cx: Math.round(cxTop), cy: Math.round(cyTop) });
+  return JSON.stringify({ cx: Math.round(cxTop), cy: Math.round(cyTop), inBanner: !!el.closest('#bridge-banner') });
 })()`;
 
 // Page-side focus for press/type: the key events go to whatever holds focus.
@@ -2317,20 +2399,43 @@ async function cdpDrag(tabId, x1, y1, x2, y2) {
 async function trustedInput(tab, msg) {
   const point = (target, coverage, ripple) => runEval(tab.id, trustedPointSrc(target, coverage, ripple)).then((s) => JSON.parse(s));
   let res;
+  // First-ever command on a fresh tab: let the in-flight auto-mark land
+  // BEFORE the suppression window below, or its injectBanner can arrive
+  // mid-dispatch and put the pill back under the coords.
+  await awaitMark(tab.id);
   await withCdp(tab.id, async () => {
     await attachDbg(tab.id);
+    // CDP input hits whatever is topmost at the coords, and the pill is
+    // pointer-events:auto with live ✕/⏏ — a trusted click landing on it can
+    // self-release the tab behind a false 'clicked' success (the coverage
+    // preflight exempts #bridge-banner, so it would not warn). So: resolve
+    // the target FIRST, then suppress the banner between resolution and
+    // dispatch — unless the target IS inside the pill (clicking ⏏/✕ is a
+    // legitimate escape hatch; removing the banner would remove the target
+    // mid-command — the stress suite drives exactly that click). Keyboard
+    // paths (press/type) have no coords — no suppression needed.
+    // null = window never opened (inBanner target). Otherwise
+    // removeBannerForCapture's return — and it sets bannerSuppressed
+    // UNCONDITIONALLY, so restoreBanner (the only clearer of that flag) must
+    // run whenever the window opened, even when no banner existed: skipping
+    // it on a ✕-hidden tab wedges the flag and kills the pill for the tab's
+    // lifetime (found by the verify fleet).
+    let suppression = null;
     try {
       if (msg.type === 'click') {
         const p = await point(msg.target, true, true);
+        if (!p.inBanner) suppression = await removeBannerForCapture(tab.id);
         await cdpMouseClick(tab.id, p.cx, p.cy, msg.dbl);
         res = `clicked ${msg.target} (trusted${msg.dbl ? ', double' : ''})`;
       } else if (msg.type === 'hover') {
         const p = await point(msg.target, false, false);
+        if (!p.inBanner) suppression = await removeBannerForCapture(tab.id);
         await chrome.debugger.sendCommand({ tabId: tab.id }, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: p.cx, y: p.cy });
         res = `hovered ${msg.target} (trusted)`;
       } else if (msg.type === 'drag') {
         const p1 = await point(msg.from, true, false);
         const p2 = await point(msg.to, false, false);
+        if (!p1.inBanner && !p2.inBanner) suppression = await removeBannerForCapture(tab.id);
         await cdpDrag(tab.id, p1.cx, p1.cy, p2.cx, p2.cy);
         res = `dragged ${msg.from} onto ${msg.to} (trusted)`;
       } else if (msg.type === 'press') {
@@ -2347,6 +2452,7 @@ async function trustedInput(tab, msg) {
         res = `typed ${msg.value.length} chars into ${what} (trusted)`;
       }
     } finally {
+      if (suppression !== null) await restoreBanner(tab.id, suppression);
       await detachDbg(tab.id);
     }
   });
@@ -2847,7 +2953,12 @@ async function waitHuman(tab, msg) {
 // --crop shows it — wait stays image-free.
 async function waitPixel(tab, msg) {
   const timeout = msg.timeout || 10000;
-  const t0 = Date.now();
+  // First-ever command on a fresh tab: the auto-mark's injectBanner must land
+  // BEFORE the suppression window — else it can paint the pill into the
+  // baseline frame (every banner-free poll then diffs nonzero against it: a
+  // static page self-fires) or flicker against each poll's at-capture removal.
+  await awaitMark(tab.id);
+  const t0 = Date.now(); // after the mark await: a slow first mark must not burn the watch budget
   return await withCdp(tab.id, async () => {
     await attachDbg(tab.id);
     // PLAIN native captures, not the pinned clip: captureBeyondViewport
@@ -2977,7 +3088,11 @@ async function findTab(msg) {
   // its whole job), mark (explicit), unemulate (only meaningful on an
   // already-driven tab). Fire-and-forget like open(): the banner injection
   // can hang on an uncommitted navigation, and drivenTabs updates
-  // synchronously, so the block below already sees the tab as driven.
+  // synchronously, so the block below already sees the tab as driven. The
+  // mark is tracked per-tab in markInflight — handlers that must not beat
+  // the banner in (note's probe; shot / wait --pixel-change / trusted
+  // input's suppression windows) awaitMark() it, which also sees a SIBLING
+  // command's mark that a per-message handle would miss.
   if (!['release', 'mark', 'unemulate'].includes(msg.type) && !drivenTabs.has(matches[0].id)) markTab(matches[0].id).catch(() => {});
   // Not `release`: it would flash ⏳ on the still-driven tab right before
   // releaseTab restores the site's own favicon. Fire-and-forget for the same
@@ -3150,6 +3265,12 @@ async function cmdUpload(tab, msg) {
 const shotFallbackQ = new Map(); // windowId -> captureVisibleTab fallback chain (see cmdShot's catch)
 async function cmdShot(tab, msg) {
   const format = msg.format === 'jpeg' ? 'jpeg' : 'png';
+  // First-ever shot on a fresh tab: let the in-flight auto-mark LAND before
+  // the banner-free capture window — its injectBanner queues behind groupTab's
+  // round trips and could otherwise arrive between removeBannerForCapture and
+  // captureScreenshot, baking the pill into the PNG (and, for --diff, into
+  // the baseline every later shot compares against).
+  await awaitMark(tab.id);
   return await withCdp(tab.id, async () => {
     try {
       await attachDbg(tab.id);
@@ -3196,15 +3317,33 @@ async function cmdShot(tab, msg) {
             // On change the saved file is the CHANGED REGION only — the one
             // thing a canvas-watcher actually wants to look at.
             const prev = shotBaselines.get(tab.id);
+            const nav0 = navSeq.get(tab.id) || 0; // commit-time guard below: a mid-capture/diff navigation must not let the OLD document's frame become the NEW one's baseline
             // --scale/--max cannot apply while a baseline exists (the diff is
             // pinned to the baseline's frame) — say so instead of a silent no-op.
             const ignored = prev && (msg.max !== undefined || msg.scale !== undefined) ? ' (--scale/--max ignored — the diff reuses the baseline frame)' : '';
             const cap = await captureViewport(tab.id, { ...msg, format: 'png' }, prev?.clip, true);
             const full = 'data:image/png;base64,' + cap.b64;
-            const setBase = () => shotBaselines.set(tab.id, { b64: cap.b64, clip: cap.clip });
+            // Commit guards: a release mid-capture (it takes no CDP lock — a
+            // supported interleaving) cleared the baselines, a navigation
+            // bumped navSeq — either way re-adding pins OLD-document pixels
+            // as the next session's baseline. Returns whether it committed;
+            // the notes must not claim a save that didn't happen.
+            const setBase = () => {
+              if (!drivenTabs.has(tab.id) || (navSeq.get(tab.id) || 0) !== nav0) return false;
+              shotBaselines.set(tab.id, { b64: cap.b64, clip: cap.clip });
+              return true;
+            };
             if (!prev) {
-              setBase();
-              return { note: 'diff: baseline saved — run the action, then shot <match> <out> --diff again; this file is the full capture', data: full };
+              const kept = setBase();
+              return { note: kept ? 'diff: baseline saved — run the action, then shot <match> <out> --diff again; this file is the full capture' : 'diff: page navigated or tab released mid-capture — no baseline kept; this file is the full capture', data: full };
+            }
+            // A navigation (or release) that landed mid-capture already
+            // deleted the baseline (onUpdated / releaseTab) — prev is the OLD
+            // document's pixels and diffing against them is the cross-document
+            // garbage diff the delete exists to prevent. Bail; the next
+            // --diff re-baselines. (setBase can't help here: navSeq moved.)
+            if (shotBaselines.get(tab.id) !== prev) {
+              return { note: 'diff: page navigated or tab released mid-capture — no baseline kept; run the action, then shot <match> <out> --diff again', data: full };
             }
             // Commit the baseline only once the comparison (and the crop) has
             // actually run — a throw mid-diff must not swallow the observed
@@ -3212,21 +3351,21 @@ async function cmdShot(tab, msg) {
             // (found by review).
             const cmp = await pixelDiff(prev.b64, cap.b64);
             if (cmp.error) {
-              setBase();
-              return { note: 'diff: ' + cmp.error + ignored, data: full };
+              const kept = setBase();
+              return { note: 'diff: ' + cmp.error + (kept ? '' : ' — but the baseline was NOT saved (page navigated or tab released mid-diff)') + ignored, data: full };
             }
             if (!cmp.changed) {
               cmp.bmp.close();
-              setBase();
-              return { note: 'diff: no pixel change since the previous shot (baseline updated)' + ignored, data: full };
+              const kept = setBase();
+              return { note: 'diff: no pixel change since the previous shot' + (kept ? ' (baseline updated)' : ' (page navigated or tab released mid-diff — baseline NOT updated)') + ignored, data: full };
             }
             const box = changedBox(cmp, cmp.bmp);
             const data = await cropDataUrl(cmp.bmp, box.x, box.y, box.w, box.h);
             cmp.bmp.close();
-            setBase();
+            const kept = setBase();
             const { x: cssX, y: cssY } = cssBox(cap, box);
             return {
-              note: `diff: ${cmp.pct}% of pixels changed — the saved file is the changed region (${box.w}×${box.h}px; CSS offset x=${cssX}, y=${cssY} for measure/crop). Baseline is now THIS shot.` + ignored,
+              note: `diff: ${cmp.pct}% of pixels changed — the saved file is the changed region (${box.w}×${box.h}px; CSS offset x=${cssX}, y=${cssY} for measure/crop). ` + (kept ? 'Baseline is now THIS shot.' : 'Page navigated or tab released mid-diff — baseline NOT updated.') + ignored,
               data,
             };
           }
@@ -3415,7 +3554,13 @@ async function handle(msg) {
   // only — a note nobody can see is wasted agent tokens, so fail loudly.
   if (msg.type === 'note') {
     const tab = await findTab(msg);
-    if (!drivenTabs.has(tab.id)) throw new Error('tab not marked — notes show in the pill on driven tabs (mark it first)');
+    // First-ever command on a fresh tab: the auto-mark (this command's OR a
+    // sibling's — the banner lands only after groupTab's Chrome API round
+    // trips either way) is still in flight, so an immediate probe would beat
+    // it and throw a spurious 'pill not visible'. Await the in-flight mark —
+    // NOT a fresh markTab: re-marking a ✕-hidden driven tab would resurrect
+    // the pill the human dismissed, and the probe must keep failing loudly.
+    await awaitMark(tab.id);
     // The pill the human hid (✕) or a chrome:// page silently swallows the
     // note while the agent believes the human was warned — probe and say so.
     // (Banner lookup is DOM — world-agnostic; no world option needed.)
@@ -3423,8 +3568,13 @@ async function handle(msg) {
     try {
       seen = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => !!document.getElementById('bridge-banner') });
     } catch {} // injection itself failed — chrome:// page etc.
-    if (!seen?.[0]?.result)
+    if (!seen?.[0]?.result) {
+      // A sibling's screenshot/pixel-wait/trusted-input window has the banner
+      // down RIGHT NOW — transient, not the durable ✕/chrome:// case; a
+      // 'the human hid the pill' misread sends the agent down a wrong path.
+      if (bannerSuppressed.has(tab.id)) throw new Error('pill temporarily down — a capture or trusted-input window is in flight on this tab; retry the note in a moment');
       throw new Error("pill not visible on this tab (hidden via ✕ or non-injectable page) — the human won't see this note");
+    }
     return { id: tab.id };
   }
 
