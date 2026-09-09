@@ -301,6 +301,15 @@ s_marks() {
   "${CLI[@]}" release "static.html?x=marks" >/dev/null
   "${CLI[@]}" tabs "static.html?x=marks" | grep -q '"driven":true' && bad "final release failed" || ok "release clears again"
   "${CLI[@]}" tabs "static.html?x=marks" | grep -q '"group"' && bad "release did not ungroup" || ok "release ungroups from the Bridge group"
+  # pill ⏏: a synthetic click must NOT release (a hostile page must not be
+  # able to strip its own driven markers) — only trusted input counts
+  "${CLI[@]}" snap "static.html?x=marks" >/dev/null
+  "${CLI[@]}" eval "static.html?x=marks" "document.getElementById('bridge-disconnect').click(); 'clicked'" >/dev/null 2>&1
+  "${CLI[@]}" tabs "static.html?x=marks" | grep -q '"driven":true' && ok "synthetic ⏏ click ignored (isTrusted guard)" || bad "synthetic click released the tab"
+  # pill ⏏: a trusted (CDP Input) click releases — the human's escape hatch
+  "${CLI[@]}" click "static.html?x=marks" "#bridge-disconnect" --trusted >/dev/null 2>&1
+  sleep 1
+  "${CLI[@]}" tabs "static.html?x=marks" | grep -q '"driven":true' && bad "trusted ⏏ click did not release" || ok "trusted ⏏ click releases the tab"
 }
 
 # ---------------------------------------------------------------- section 8
@@ -343,6 +352,13 @@ s_misc() {
   "${CLI[@]}" nav "$M" "$FX/static.html?x=marks" >/dev/null 2>&1
   "${CLI[@]}" eval "$M" "innerWidth+'x'+innerHeight" >>"$OUT/08.log" 2>&1
   if grep -q '375x667' <(tail -1 "$OUT/08.log") ; then bad "unemulate did not clear"; else ok "unemulate cleared (nav readback)"; fi
+  # release must clear emulation too (v1.18.13: marker-only release left
+  # phone-shaped tabs with a debugger infobar and nothing explaining why)
+  "${CLI[@]}" emulate "$M" 375 667 >/dev/null 2>&1
+  "${CLI[@]}" release "$M" >/dev/null 2>&1
+  "${CLI[@]}" nav "$M" "$FX/static.html?x=marks" >/dev/null 2>&1
+  "${CLI[@]}" eval "$M" "innerWidth+'x'+innerHeight" >>"$OUT/08.log" 2>&1
+  if grep -q '375x667' <(tail -1 "$OUT/08.log") ; then bad "release did not clear emulation"; else ok "release clears emulation"; fi
   # resize + back: assert on the command's own echo — window.outerWidth reads
   # 0 in a hidden/minimized window, so an eval readback can't verify it
   local w0 h0

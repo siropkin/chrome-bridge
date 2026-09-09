@@ -546,7 +546,7 @@ try {
     // sendCommand tore the shared session mid-flight (5.5% of interleaved
     // CDP commands in stress). (6 wrap sites: upload/net/emulate/unemulate/
     // shot/dialog.)
-    assert(bg.split('withCdp(').length === 11, 'ext: CDP handlers serialize per tab (helper + 9 wrap sites)');
+    assert(bg.split('withCdp(').length === 12, 'ext: CDP handlers serialize per tab (helper + 10 wrap sites — v1.18.13: release clears emulation behind the lock)');
     // open must not await the favicon/banner marking — executeScript sits
     // pending forever on an uncommitted navigation (unreachable URL), which
     // hung open past its 8s cap to the server's 70s timeout. The response
@@ -560,6 +560,21 @@ try {
     // v1.18.12 flow review): without the remap the new id sheds every
     // marker while the old id's state leaks.
     assert(bg.includes('chrome.tabs.onReplaced.addListener'), 'ext: prerender swap remaps tab state (onReplaced)');
+    // The pill's ⏏ is the human's escape hatch — but the click must only
+    // ever fire on trusted input: a hostile page can dispatchEvent a
+    // synthetic click and strip its own driven markers otherwise (the one
+    // signal README promises a page can't fake).
+    assert(bg.includes('chrome.runtime.onMessage.addListener') && bg.includes("msg?.type === 'self-release'"), 'pill: ⏏ self-release reaches the SW via runtime messaging');
+    assert(bg.includes('if (!e.isTrusted) return;'), 'pill: ⏏ ignores synthetic clicks (isTrusted guard — a page must not strip its own markers)');
+    assert(bg.includes('ready.then(() => releaseTab(sender.tab.id))'), 'pill: ⏏ release waits for hydration — a cold-waking click must not be silently undone');
+    assert(bg.includes("if (e.key === 'Enter' || e.key === ' ') selfRelease(e);"), 'pill: ⏏ keyboard = Enter/Space only — Tab must keep moving focus');
+    assert(bg.includes('dataset.v === chrome.runtime.getManifest().version') && bg.includes('dataset.bridgeHide'), 'pill: banner rebuilds on extension reload (dead handlers) and honors a ✕ hide on the catch-up path');
+    // Release = full cleanup: a marker-only release left phone-shaped tabs
+    // with a debugger infobar and nothing explaining why (v1.18.13 review).
+    assert(bg.includes('if (emulatedTabs.has(tabId)) await withCdp(tabId, () => clearEmulation(tabId)).catch'), 'ext: release clears device emulation, not just markers');
+    // A driven tab that navigated while the SW was dead must get its markers
+    // back at the next SW start — the bridge must never act on an unmarked tab.
+    assert(bg.includes('SW-death catch-up'), 'ext: hydration re-asserts markers on driven tabs (lost-event catch-up)');
     // The Bridge group is per-window: a cached global groupId MOVES
     // cross-window tabs into the wrong window (chrome.tabs.group relocates,
     // it does not throw — verified against Chromium's tabs_api.cc).

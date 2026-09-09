@@ -192,7 +192,7 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     --ask triages the log with local Gemini Nano — only
                                     the verdict costs cloud tokens, not the noise
   grid <match>                      toggle 8px alignment grid
-  mark|release <match>              add/remove driven-tab markers
+  mark|release <match>              add/remove driven-tab markers; release clears emulation too
   note <match> <text>              narrate to the human — shows in the driven tab's pill + history
                                     (use sparingly: before a risky/long sequence, or to explain why)
   watch                            live feed of every bridge command — the terminal twin of the pill;

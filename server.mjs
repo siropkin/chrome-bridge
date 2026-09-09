@@ -131,6 +131,7 @@ async function route(msg) {
       })
     );
     const stale = probes.filter((p) => p.unsupported);
+    const deaf = probes.filter((p) => !p.unsupported && p.tabs === null);
     const live = probes.filter((p) => p.tabs !== null);
     const matching = live.filter((p) => p.tabs.length);
     if (stale.length)
@@ -138,6 +139,16 @@ async function route(msg) {
         `⚠ ${stale.length} profile(s) can't be probed — an extension without multi-profile support is loaded (${stale
           .map((p) => seatTag(p.pid))
           .join(', ')}): reload it at chrome://extensions, or name a profile: --profile <name or id> (see: cli profiles)`
+      );
+    // A probe that timed out is "can't know", NOT "no tabs match": excluding
+    // it would auto-route into the other profile on a unique match — silently
+    // bypassing the ambiguity refusal, the exact thing it exists to prevent
+    // (usually a mid-restart service worker; retry or name a profile).
+    if (deaf.length)
+      throw new Error(
+        `⚠ ${deaf.length} profile(s) didn't answer the match probe (${deaf
+          .map((p) => seatTag(p.pid))
+          .join(', ')}) — usually a service-worker restart; retry the command, or name a profile: --profile <name or id> (see: cli profiles)`
       );
     if (!live.length) throw new Error('no profile answered — extensions disconnected?');
     if (!matching.length)

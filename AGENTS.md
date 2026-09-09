@@ -40,7 +40,7 @@ The bridge is for pages a plain HTTP request can't handle — interaction (click
 6. `wait <match> --text "Saved"` only when you need something specific without acting. Chain other dependent steps in one `batch` — stdin, one command per line — one process and one shell call instead of several.
 
 7. `shot <match> out.png` only when you need pixels. The long edge is capped at 1280px by default (models downscale bigger images on read anyway) — `--max 0` for native res, `--max 800 --format jpeg` for a cheap glance. Read screenshots in a subagent to keep image tokens out of the main context.
-8. **Always `release <match>` (or `close <match>`) when done. Always `unemulate` after emulating.** Tabs you only *read* (`snap`/`measure`/`console`/`net`) — `release` them; tabs you *opened* (`open`) — `close` them. The human comes back to a browser full of purple pills and mystery tabs otherwise; leaving either is a bug in your session, not their mess to clean.
+8. **Always `release <match>` (or `close <match>`) when done. `unemulate` when done emulating (`release` clears any live emulation too, but don't lean on that).** Tabs you only *read* (`snap`/`measure`/`console`/`net`) — `release` them; tabs you *opened* (`open`) — `close` them. The human comes back to a browser full of purple pills and mystery tabs otherwise; leaving either is a bug in your session, not their mess to clean. A human can also click the pill's ⏏ to disconnect your claim on a tab — if a tab you're driving keeps coming back unmarked, the human took it back: ask, don't re-mark and plow on.
 
 ## Commands
 
@@ -146,7 +146,7 @@ measure <match> <css>             rect + computed styles as JSON
 console <match> [--clear] [--ask [q]]   page console + errors (hook installs on first call);
                                   --ask triages the log with local Nano — only the verdict costs cloud tokens
 grid <match>                      toggle 8px alignment grid
-mark|release <match>              add/remove driven-tab markers
+mark|release <match>              add/remove driven-tab markers; release clears emulation too
 note <match> <text>               narrate to the human: text shows in the driven tab's pill + history.
                                   Use sparingly — before a risky/long sequence ("saving the draft,
                                   then verifying the toast"), or to explain a surprising step.

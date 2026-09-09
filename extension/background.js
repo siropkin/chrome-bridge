@@ -215,6 +215,11 @@ const drivenTabs = new Set();
 // before the next command's persist, emulatedTabs is gone while the device
 // override is still live and unemulate no-ops forever.
 let hydrated = false;
+// onReplaced pairs that fired before hydration completed — replayed inside
+// `ready` after the storage restore (the old id's state exists again) and
+// BEFORE the live prune (the old id is already gone from tabs.query; the
+// prune would delete the very state the replay needs to move).
+const pendingSwaps = [];
 function persist() {
   if (!hydrated) return;
   chrome.storage.session
@@ -227,10 +232,14 @@ function persist() {
     .catch(() => {});
 }
 
-// SW restarts wipe the in-memory maps — rehydrate from storage.session, merge
-// the 🟣 Bridge tab group (belt-and-braces: covers state written before this
-// mechanism existed), and prune ids of tabs that no longer exist. handle()
-// awaits `ready` so no command can observe a half-empty map.
+// SW restarts wipe the in-memory maps — rehydrate from storage.session and
+// prune ids of tabs that no longer exist. handle() awaits `ready` so no
+// command can observe a half-empty map. NOTE: the old belt-and-braces merge
+// from the 🟣 Bridge tab group is GONE on purpose: the group is a user-
+// editable strip object, so a human dragging a never-driven tab into it made
+// hydration resurrect the tab as driven — forever, with no release coming
+// (found by the flow review). Group membership is bridge-MADE state, not
+// bridge-proof state; storage.session is the only source of truth.
 const ready = (async () => {
   try {
     const s = await chrome.storage.session.get(['drivenTabs', 'emulatedTabs', 'tabStatus', 'tabActivity']);
@@ -239,11 +248,10 @@ const ready = (async () => {
     for (const [k, v] of Object.entries(s.tabStatus || {})) tabStatus.set(Number(k), v);
     for (const [k, v] of Object.entries(s.tabActivity || {})) tabActivity.set(Number(k), v);
   } catch {}
-  try {
-    for (const g of await chrome.tabGroups.query({ title: '🟣 Bridge' })) {
-      for (const t of await chrome.tabs.query({ groupId: g.id })) drivenTabs.add(t.id);
-    }
-  } catch {}
+  // Prerender swaps that fired before hydration (the swap itself is often the
+  // wake event): replay now — restored old-id state moves to the live new id
+  // in time to survive the prune right below.
+  for (const [n, o] of pendingSwaps.splice(0)) remapTabId(n, o);
   try {
     const live = new Set((await chrome.tabs.query({})).map((t) => t.id));
     for (const id of [...drivenTabs]) if (!live.has(id)) drivenTabs.delete(id);
@@ -257,21 +265,45 @@ const ready = (async () => {
   // navigation of that tab, forever.
   for (const id of [...tabStatus.keys()]) if (tabStatus.get(id) === '⏳') setFavicon(id, null);
   // What survived the restart is THE diagnostic question after reload trouble
-  // (storage.session dies on extension reload; only the group fallback then).
+  // (storage.session dies on extension reload; the re-mark on the next command
+  // rebuilds the rest).
   logLine(`hydrated driven=${drivenTabs.size} emulated=${emulatedTabs.size}`);
-  hydrated = true; // persist() is safe from here on
+  hydrated = true; // persist() is safe from here on — the catch-up below persists
+  // SW-death catch-up: a driven tab that navigated while the worker was dead
+  // lost its 'complete' event (never replayed) — findTab won't re-mark it
+  // (already driven) and pillInject no-ops without the banner, so the bridge
+  // could keep acting on a tab wearing NO markers. Re-assert banner, group
+  // and favicon on every driven tab each time the worker starts; convergence
+  // then holds across SW cycles no matter which events were lost — except a
+  // pill the human ✕'d on THIS document (respectHide), which stays hidden.
+  for (const id of [...drivenTabs]) {
+    groupTab(id).catch(() => {}); // strip marker, like markTab's
+    chrome.scripting.executeScript({ target: { tabId: id }, func: injectBanner, args: [true] }).catch(() => {});
+    if (tabStatus.get(id)) setFavicon(id, tabStatus.get(id));
+  }
+  persist(); // the ⏳ resets above became durable only now
 })();
 
 // Runs in the page; must be self-contained.
 // No document.title prefix: pages rewrite their title constantly (unread
 // counts, SPA navs), so it never stays put — and it leaks into any page that
 // reads its own title. The tab group is the strip marker; it can't clobber it.
-function injectBanner() {
-  if (document.getElementById('bridge-banner')) {
-    return;
+// Runs in the page; must be self-contained. respectHide (the SW-death
+// catch-up passes it): honor a ✕ hide recorded on THIS document instead of
+// resurrecting a pill the human dismissed — markTab's own re-mark (a new
+// agent action) still re-banners, matching the old behavior.
+function injectBanner(respectHide) {
+  const existing = document.getElementById('bridge-banner');
+  if (existing) {
+    // A banner from a previous extension load carries handlers bound to a
+    // dead service worker — ⏏/✕/history all dead after a reload. Rebuild.
+    if (existing.dataset.v === chrome.runtime.getManifest().version) return;
+    existing.remove();
   }
+  if (respectHide && document.documentElement.dataset.bridgeHide === '1') return; // ✕'d this document, no navigation since
   const d = document.createElement('div');
   d.id = 'bridge-banner';
+  d.dataset.v = chrome.runtime.getManifest().version; // load tag — handlers die with their worker, see the rebuild above
   // The viewport frame starts transparent: it lights up purple only while a
   // command is in flight (pillInject toggles it) — a peripheral "the agent is
   // acting RIGHT NOW" signal — while the pill carries identity + history and
@@ -298,16 +330,21 @@ function injectBanner() {
   x.style.opacity = '.75';
   x.onclick = (e) => {
     e.stopPropagation();
+    // Record the hide on the DOCUMENT: it survives SW restarts (the DOM
+    // outlives the worker) and dies with the next navigation — exactly the
+    // "hidden until next navigation" contract. The SW-death catch-up reads
+    // it to know not to resurrect the pill on a still-same document.
+    document.documentElement.dataset.bridgeHide = '1';
     d.remove();
   };
   x.onkeydown = (e) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       e.stopPropagation();
+      document.documentElement.dataset.bridgeHide = '1';
       d.remove();
     }
   };
-  pill.append(label, x);
   pill.title = 'An AI agent is driving this tab (chrome-bridge) — click for action history';
   // Click the pill body → a scrolling log of what the agent did on this tab
   // (pill.dataset.log, fed by pillInject). Click again to close. The ✕ span
@@ -330,6 +367,32 @@ function injectBanner() {
       pill.onclick(e);
     }
   };
+  // ⏏: the human's "disconnect the agent from this tab" — no CLI needed.
+  // Release, not hide: ✕ only hides until the next navigation; ⏏ ends the
+  // bridge's claim (markers, group, device emulation). isTrusted is the
+  // security boundary: a hostile page can dispatchEvent synthetic clicks,
+  // and without this guard it could strip its own driven markers while the
+  // agent keeps driving — the one signal README promises a page can't fake.
+  // Same defense wait --human already uses for trusted input.
+  const off = document.createElement('span');
+  off.id = 'bridge-disconnect';
+  off.textContent = ' ⏏';
+  off.title = 'disconnect the agent from this tab (release it)';
+  off.setAttribute('role', 'button');
+  off.tabIndex = 0;
+  off.setAttribute('aria-label', 'disconnect the agent from this tab');
+  off.style.opacity = '.75';
+  const selfRelease = (e) => {
+    if (!e.isTrusted) return; // synthetic — page JS can't fake trusted input
+    e.preventDefault();
+    e.stopPropagation();
+    chrome.runtime.sendMessage({ type: 'self-release' }).catch(() => {});
+  };
+  off.onclick = selfRelease;
+  off.onkeydown = (e) => {
+    if (e.key === 'Enter' || e.key === ' ') selfRelease(e); // Enter/Space only — Tab must keep moving focus (any-key released on keydown, found by review)
+  };
+  pill.append(label, x, off);
   d.appendChild(pill);
   (document.body || document.documentElement).appendChild(d);
 }
@@ -622,6 +685,11 @@ async function releaseTab(tabId) {
   inflight.delete(tabId);
   failedSinceOk.delete(tabId);
   stopTick(tabId);
+  // Release = the tab is the human's again, ALL of it. A marker-only release
+  // left phone-sized tabs with a live debugger infobar and nothing on screen
+  // to explain why (found by the flow review) — same clear as unemulate,
+  // serialized behind any in-flight CDP sibling.
+  if (emulatedTabs.has(tabId)) await withCdp(tabId, () => clearEmulation(tabId)).catch(() => {}); // best-effort like every other step — a wedged CDP clear must not abort the release tail
   await setFavicon(tabId, null); // restore the site's own favicon
   persist();
   try {
@@ -688,6 +756,13 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 // cdpRefs must DROP, not follow (onDetach fires with the old id and would
 // miss entries that had already moved).
 chrome.tabs.onReplaced.addListener((newTabId, oldTabId) => {
+  if (!hydrated) {
+    pendingSwaps.push([newTabId, oldTabId]); // replayed inside ready, after the storage restore
+    return;
+  }
+  remapTabId(newTabId, oldTabId);
+});
+function remapTabId(newTabId, oldTabId) {
   stopTick(oldTabId); // the ticker would inject into a dead id
   cdpRefs.delete(oldTabId);
   cdpQ.delete(oldTabId); // the dead session's pending chain can only wedge the new id (up to 65s)
@@ -704,6 +779,22 @@ chrome.tabs.onReplaced.addListener((newTabId, oldTabId) => {
     // Banner + group died with the old document — re-assert them on the new
     // id, or the pill stays gone until the next navigation.
     markTab(newTabId).catch(() => {});
+  }
+}
+
+// The pill's ⏏: the human can end the bridge's claim on a tab without the
+// CLI. sender.tab.id is set by the browser — page JS can't forge it, and the
+// click handler's isTrusted guard keeps synthesized clicks out. releaseTab
+// is idempotent on a non-driven tab, so no entry guard needed; it also clears
+// device emulation (release = the tab is the human's again, ALL of it).
+chrome.runtime.onMessage.addListener((msg, sender) => {
+  if (msg?.type === 'self-release' && sender?.tab?.id != null) {
+    logLine('self-release tab ' + sender.tab.id + ' (pill ⏏ — human)');
+    // Wait for hydration like every command does: this click may be the very
+    // event that woke a dead worker — releasing against the still-empty maps
+    // would no-op, then hydration + the catch-up would resurrect everything
+    // (found by review). On a live worker `ready` is already settled.
+    ready.then(() => releaseTab(sender.tab.id)).catch(() => {});
   }
 });
 
