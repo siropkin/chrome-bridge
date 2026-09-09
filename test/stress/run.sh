@@ -379,6 +379,14 @@ s_misc() {
     | "${CLI[@]}" batch >>"$OUT/08.log" 2>&1 || true
   "${CLI[@]}" eval "$M" "String(window.__stop)" >>"$OUT/08.log" 2>&1
   assert_grep "batch stops on first error" "$OUT/08.log" '^1$'
+  # reuse-nudge warnings (v1.18.16): duplicate open + same-URL nav both warn on the result
+  "${CLI[@]}" open "$FX/static.html?x=dup" --profile "$P1" >/dev/null
+  "${CLI[@]}" open "$FX/static.html?x=dup" --profile "$P1" >"$OUT/08-dup.log" 2>&1
+  assert_grep "duplicate open warns (drive the existing tab, keep its state)" "$OUT/08-dup.log" 'already shows this exact URL'
+  "${CLI[@]}" nav "static.html?x=dup" "$FX/static.html?x=dup" --profile "$P1" >"$OUT/08-navsame.log" 2>&1
+  assert_grep "same-URL nav warns it is a reload" "$OUT/08-navsame.log" 'already at this URL'
+  "${CLI[@]}" close "static.html?x=dup" --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" close "static.html?x=dup" --profile "$P1" >/dev/null 2>&1 # the dupe too
   # swlogs clean of unexpected errors
   "${CLI[@]}" swlogs --profile "$P1" >"$OUT/08-swlogs.log" 2>&1
   assert_ngrep "swlogs clean (no ERROR/REJECT)" "$OUT/08-swlogs.log" 'ERROR |REJECT '

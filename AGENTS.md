@@ -33,7 +33,7 @@ The bridge is for pages a plain HTTP request can't handle — interaction (click
 ## Core loop
 
 1. `tabs [match]` — find the tab (the optional match filters the list itself — a full browser's tab list is ~2KB). `<match>` is a URL/title substring; a driven tab wins, then the most recently active. If several tabs match, the result warns and names them — re-run with a longer match instead of trusting the pick. Two tabs with identical URLs can't be told apart this way — close one first.
-2. `open <url>` / `nav <match> <url>` — auto-marks the tab (🟣 corner tag + tab group). Every command that targets a tab marks it — reads (`snap`/`measure`/`console`/`net`/`shot`) included: the pill shows on any tab you are *looking at*, not just the ones you change.
+2. **Reuse beats fresh.** If step 1 found a tab already showing what you need, drive IT — don't open a copy. A fresh tab has no state (login is the profile's, but scroll, SPA position, and half-filled forms are the TAB's), and `nav` to the URL a tab already shows IS a reload. `open` only when no tab fits or you genuinely need clean state; both `open` (exact-URL dupe) and `nav` (same-URL reload) warn on the result when you skip this check. `open <url>` / `nav <match> <url>` auto-marks the tab (🟣 corner tag + tab group). Every command that targets a tab marks it — reads (`snap`/`measure`/`console`/`net`/`shot`) included: the pill shows on any tab you are *looking at*, not just the ones you change.
 3. **`snap <match>` — always snap before shooting.** The a11y tree with `@eN` refs is ~10× cheaper than a screenshot and usually answers the question. Only interactive/landmark elements appear — static text (`<p>`, `<div>`, `<pre>`) is not in the tree, so `--diff` can't see text changes; verify those with `wait --text` or `eval`, and canvas/pixel changes with `shot <match> out.png --diff` (changed region only) or `wait --pixel-change`. Trees truncate at 300 nodes: on a big page, `grep`/`--find` over a full snap can silently miss what's past the cut — take a `--skeleton` map first (cut subtrees read `… N inside`), or scope it: `snap <match> "[role=dialog]"` / `snap <match> @e12`. Re-checking after an action? `snap <match> --diff` prints only what changed. Looking for one thing? `snap <match> | grep -i save` — or, when you don't know what it's called, `snap <match> --find "the cancel button"` (local Nano picks matching lines, ~2s warm / ~20s first call while it loads; verify the shortlist). Link URLs are omitted except on nameless links (they were most of the bytes — you click refs, not URLs); add `--href` only if you truly need them.
    A snap reads like this — indented = nested, `@eN` is the ref you pass to click/fill/type, `*` = new since the last snap, collapsed lines keep their refs clickable:
 
@@ -62,9 +62,13 @@ profiles                          list connected Chrome profiles — id and name
 open <url>                        open + mark a new tab (waits for load, 8s cap;
                                   the reply's loaded:false means the cap fired on a
                                   still-loading page — snap/eval/wait --text work on
-                                  what's there; re-nav only if the URL itself failed)
+                                  what's there; re-nav only if the URL itself failed).
+                                  Warns if another tab already shows this exact URL —
+                                  drive the existing one instead (its state survives)
 nav <match> <url> [--diff]        navigate matching tab (waits for load, 8s cap;
-                                  same loaded:false semantics as open)
+                                  same loaded:false semantics as open). Nav to the URL
+                                  the tab already shows IS a reload (state resets) —
+                                  the result warns; skip nav to drive the page as-is
 close <match>                     close matching tab
 snap <match> [css|@ref] [--diff] [--href] [--skeleton] [--find "nl"]
                                   a11y tree with @eN refs; [css|@ref] scopes to a subtree

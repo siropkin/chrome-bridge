@@ -27,7 +27,7 @@ node <repo>/cli.mjs <command> …
 - **Add `--diff` to actions that matter — the result carries a verdict**: `succeeded` / `needs_human` (bot wall named → `wait <match> --human`) / `blocked` (rate limit) / `uncertain` (dispatched, nothing observable changed — verify another way; never read it as ok).
 - `paste <match> @e2 -- "long text"` — real-paste semantics for editors that revert `fill` (Quill, Reddit/LinkedIn rich composers); without `-- <text>` it pastes the OS clipboard.
 - `upload <match> @e5 ./report.pdf` — set a file input's files (CDP — hidden inputs work; target the input or an element wrapping it).
-- `nav <match> <url>` / `open <url>` / `close <match>` — tab lifecycle.
+- `nav <match> <url>` / `open <url>` / `close <match>` — tab lifecycle. Reuse beats fresh: if `tabs` shows one already on the page you need, drive it. `open` warns when another tab shows the exact URL, and `nav` to the tab's current URL warns — that IS a reload.
 - `wait <match> --text "Saved"` — wait after actions that trigger loads. `wait <match> --human` — hand CAPTCHA/2FA/login walls to the user: the pill tells them it's their turn; blocks until they act (default 2 min, max ~4.5 min), returns the diff of what they did. `wait <match> --pixel-change` — poll until pixels move (canvas changes the tree can't see); `shot <match> out.png --diff` saves only the changed region.
 - `batch` — commands on stdin, one per line: `printf 'click m @e4\nwait m --text "Saved"\nsnap m --diff\n' | node cli.mjs batch` — dependent chains in one process, one shell call.
 - `shot <match> out.png [--max 800] [--format jpeg]` — only when pixels matter; `--max` caps the long edge (default 1280).
@@ -49,6 +49,7 @@ node <repo>/cli.mjs <command> …
 ## Rules
 
 - **Escalate to the browser only when the page makes you.** If a plain HTTP request (`curl`) answers it, use that — the bridge is for interaction, logged-in views, JS-rendered or bot-protected pages.
+- **Reuse beats fresh.** Before `open`, check `tabs <substr>` — a tab already showing what you need is drivable as-is, with its login, scroll, and form state intact. Never `nav` a tab to the URL it already shows: that's a reload — SPA state, scroll position, and half-filled forms die. `open` only when no tab fits or you genuinely need clean state.
 - **Snap first, shot last.** A text tree costs roughly an order of magnitude fewer tokens than a screenshot and usually suffices.
 - **Act by ref**, not by CSS selector — refs are stable across re-snaps. (CSS pierces open shadow roots when you need it; `snap` already shows shadow-root elements with refs.)
 - **Always `release` when done. Always `unemulate` after emulating.**

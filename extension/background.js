@@ -3329,6 +3329,22 @@ async function handle(msg) {
   }
 
   if (msg.type === 'open') {
+    // Reuse-beats-fresh nudge: opening the exact URL an existing tab already
+    // shows is almost always a skipped `tabs` check — the fresh copy has no
+    // state (scroll, forms, SPA position). Warn on the result; the tab still
+    // opens — sometimes a clean copy is exactly what's wanted.
+    try {
+      const want = new URL(msg.url).href;
+      const dupe = (await chrome.tabs.query({})).some((t) => {
+        try {
+          return new URL(t.url || '').href === want;
+        } catch {
+          return false;
+        }
+      });
+      if (dupe)
+        msg._warn = '⚠ another tab already shows this exact URL — drive it directly (tabs → snap/click) to keep its state; this opened a fresh copy anyway';
+    } catch {} // URL shape already validated in handle()'s prelude
     // chrome.tabs.create resolves promptly — the HANG is the marking below:
     // executeScript sits pending forever on an uncommitted navigation (an
     // unreachable URL never gets a document), which used to blow the 8s cap
@@ -3355,6 +3371,15 @@ async function handle(msg) {
 
   if (msg.type === 'navigate') {
     const tab = await findTab(msg);
+    // nav to the URL the tab ALREADY shows is a reload — SPA state, scroll,
+    // form inputs die. Agents do it to "make sure"; name the cost. (The
+    // dialog-rescue nav is a deliberate reload — the warning is accurate
+    // there too.)
+    try {
+      if (new URL(tab.url).href === new URL(msg.url).href)
+        msg._warn =
+          '⚠ the tab was already at this URL — nav just reloaded it (state, scroll, form inputs reset). Skip nav to drive the existing page; when you want a refresh, this is it';
+    } catch {} // empty/unparseable url (still-pending tab) — no opinion
     // Listener before update: a fast page can hit 'complete' before
     // tabs.update resolves, and a missed event would mean a wasted 8s wait.
     const loaded = waitForLoad(tab.id);
