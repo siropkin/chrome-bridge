@@ -48,9 +48,13 @@ const imgDims = (b) => {
 async function cmd(msg) {
   let res;
   try {
+    // Same shared secret the server persists to its owner-only token file —
+    // without it any other local process could reach /cmd and drive the browser.
+    let authToken = '';
+    try { authToken = fs.readFileSync(new URL('./.bridge-token', import.meta.url), 'utf8').trim(); } catch {}
     res = await fetch(`${BASE}/cmd`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'x-bridge-token': authToken },
       body: JSON.stringify(PROFILE ? { ...msg, profile: PROFILE } : msg),
     });
   } catch (e) {

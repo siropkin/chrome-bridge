@@ -20,6 +20,18 @@ const CMD_TIMEOUT_MS = 70_000; // `wait` supports up to 60s
 // can't forge Host, so requiring a loopback Host closes every route at once.
 const LOOPBACK_HOST = /^(127\.0\.0\.1|localhost)(:\d+)?$/;
 
+// Shared secret so only the OS user that started this server (the one able to
+// read this owner-only file) can issue commands — a Host-header check alone
+// doesn't stop another local process/user from hitting this loopback port.
+const TOKEN_URL = new URL('./.bridge-token', import.meta.url);
+let AUTH_TOKEN;
+try {
+  AUTH_TOKEN = fs.readFileSync(TOKEN_URL, 'utf8').trim();
+} catch {
+  AUTH_TOKEN = (await import('node:crypto')).randomBytes(32).toString('hex');
+  fs.writeFileSync(TOKEN_URL, AUTH_TOKEN, { mode: 0o600 });
+}
+
 // server.log gets one durable line per command — cap it here, at boot, so all
 // three start paths (install.sh, cli start, manual) are covered by one guard.
 // ponytail: boot-time cap only — between restarts the log grows unbounded;
@@ -401,6 +413,13 @@ function handleWsData(seat, chunk, state) {
 }
 
 const server = http.createServer((req, res) => {
+  // Reject unauthenticated requests before any routing — /health stays open
+  // so `cli status` can report "not running" without needing the token.
+  if (req.url !== '/health' && req.headers['x-bridge-token'] !== AUTH_TOKEN) {
+    res.writeHead(401, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
+    return;
+  }
   if (!LOOPBACK_HOST.test(req.headers.host || '')) {
     res.writeHead(403);
     res.end();
