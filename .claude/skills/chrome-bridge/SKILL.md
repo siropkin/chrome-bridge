@@ -36,7 +36,7 @@ node <repo>/cli.mjs <command> …
 - **Add `--diff` to actions that matter — the result carries a verdict**: `succeeded` / `needs_human` (bot wall named → `wait <match> --human`) / `blocked` (rate limit) / `uncertain` (dispatched, nothing observable changed — verify another way; never read it as ok).
 - `paste <match> @e2 -- "long text"` — real-paste semantics for editors that revert `fill` (Quill, Reddit/LinkedIn rich composers); without `-- <text>` it pastes the OS clipboard.
 - `upload <match> @e5 ./report.pdf` — set a file input's files (CDP — hidden inputs work; target the input or an element wrapping it). `--diff` is its only option; an unknown `--flag` fails instead of becoming a file path.
-- `nav <match> <url> [--diff]` / `open <url>` / `close <match>` / `release <match>` — tab lifecycle. `close` is only for tabs YOU opened; a tab you found is the user's — `release` it, don't close it. `open` warns on an exact-URL dupe; `nav` to the tab's current URL warns — that IS a reload. `nav` rejects extra or unknown options before routing.
+- `nav <match> <url> [--diff]` / `open <url>` / `close <match> [--all]` / `release <match>` — tab lifecycle. `close` is only for tabs YOU opened; a tab you found is the user's — `release` it, don't close it. `close --all` closes every match — the remedy for identical-URL tabs no `<match>` can separate. `open` warns on an exact-URL dupe; `nav` to the tab's current URL warns — that IS a reload. `nav` rejects extra or unknown options before routing.
 - `scroll <match> down|up|top|bottom|@ref|css [--diff]` — scroll the page or an element into view; `--diff` shows what lazy-loaded in.
 - `wait <match> --text "Saved"` — wait after load-triggering actions. `wait <match> --human` — hand CAPTCHA/2FA/login walls to the user; blocks until they act (default 2 min, max ~4.5 min), returns the diff of what they did. `wait <match> --pixel-change` — poll until pixels move (canvas changes the tree can't see); `shot <match> out.png --diff` saves only the changed region.
 - `batch` — commands on stdin, one per line; dependent chains in one process, one shell call: `printf 'click m @e4\nwait m --text "Saved"\n' | node <repo>/cli.mjs batch`. Stops on first error.
@@ -53,7 +53,9 @@ node <repo>/cli.mjs <command> …
 - `history [match] [-n N]` — what the bridge already ran on this machine (server ring, last 300 commands); `--batch out` exports it as a replayable batch script. Typed/pasted text, dialog answers, clipboard pastes, and upload paths are redacted and commented out, so those steps do not replay. Post-mortems and session handoffs.
 - `swlogs` — service-worker console tail (errors/warnings).
 
-`<match>` is a URL-or-title substring; a driven tab wins, then the most recently active. Ambiguous matches return a warning naming the other tabs — re-run with a longer match.
+`<match>` is a URL-or-title substring and must identify exactly one tab in the selected profile. Ambiguous matches are refused before anything runs — re-run with a longer match.
+
+A timeout after dispatch means the extension may have acted before its reply was lost; inspect the tab or `history` before retrying a non-idempotent command. A timeout before dispatch explicitly did not run.
 
 ## Rules
 

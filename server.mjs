@@ -13,7 +13,9 @@ import { fileURLToPath } from 'node:url';
 // the extension can't read BRIDGE_PORT), cli.mjs, here. Change all three.
 const PORT = Number(process.env.BRIDGE_PORT || 9333);
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
-const CMD_TIMEOUT_MS = 70_000; // `wait` supports up to 60s
+// Kept overridable only for the hermetic timeout regression. Production
+// defaults to 70s because `wait` supports up to 60s.
+const CMD_TIMEOUT_MS = Math.max(100, Number(process.env.BRIDGE_CMD_TIMEOUT_MS) || 70_000);
 // Commands can carry a pasted value, but no CLI command needs an unbounded
 // request body. This also limits a malformed local request before JSON.parse
 // duplicates it in memory. Screenshot replies travel on the WebSocket instead
@@ -61,6 +63,7 @@ function dropSeatPending(seat, error) {
 function ask(seat, msg, timeoutMs = CMD_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     const t0 = Date.now();
+    let dispatched = false;
     const attempt = (triesLeft) => {
       // Re-resolve each try: an SW-restart reconnect replaces the seat entry —
       // retrying against the captured one would retry a dead object while a
@@ -72,16 +75,34 @@ function ask(seat, msg, timeoutMs = CMD_TIMEOUT_MS) {
         // below comes OUT of it (a '5s deaf-seat budget' probe used to retry
         // 10s and only then start its 5s write timeout — 15s total).
         const left = timeoutMs - (Date.now() - t0);
-        if (left <= 0) return reject(new Error('extension timeout'));
+        if (left <= 0)
+          return reject(
+            new Error(
+              dispatched
+                ? 'extension timeout after dispatch — the command may have run before its reply was lost; inspect the tab or history before retrying'
+                : 'extension timeout before dispatch — the command did not run; retry after the extension reconnects'
+            )
+          );
         const t = setTimeout(() => {
-          if (s.pending.delete(id)) reject(new Error('extension timeout'));
+          if (s.pending.delete(id))
+            reject(new Error('extension timeout after dispatch — the command may have run before its reply was lost; inspect the tab or history before retrying'));
         }, left);
         // Cleared on settle: one live 70s timer per command is storm litter.
         s.pending.set(id, (m) => {
           clearTimeout(t);
           resolve(m);
         });
-        s.socket.write(encodeFrame(JSON.stringify({ ...msg, id })));
+        try {
+          // Once write accepts the frame, the extension can act even if the
+          // reply is lost. Every later timeout must preserve that uncertainty
+          // so callers do not blindly retry a non-idempotent operation.
+          s.socket.write(encodeFrame(JSON.stringify({ ...msg, id })));
+          dispatched = true;
+        } catch (e) {
+          clearTimeout(t);
+          s.pending.delete(id);
+          reject(new Error('extension socket write failed before dispatch — the command did not run; retry after it reconnects: ' + String(e).slice(0, 120)));
+        }
         return;
       }
       if (triesLeft <= 0) {
@@ -518,6 +539,12 @@ const server = http.createServer((req, res) => {
       const t0 = Date.now();
       try {
         msg = JSON.parse(body);
+        // Underscore fields (_tabId, _warn, _pill) are INTERNAL — set by the
+        // extension while handling a command. A client that supplies them
+        // bypasses findTab's ambiguity refusal bookkeeping: its catch/finally
+        // would record activity and decrement an inflight counter on a tab no
+        // command ever resolved. Strip them at the only client ingress.
+        if (msg && typeof msg === 'object') for (const k of Object.keys(msg)) if (k.startsWith('_')) delete msg[k];
         out = await route(msg);
       } catch (e) {
         out = { ok: false, error: String(e) };

@@ -41,13 +41,13 @@ s_profiles() {
   SECTION=profiles; need2 || { bad "two profiles required (have: '$P1' only)"; return; }
   # A stopped/failed prior run can leave these fixed-name setup tabs behind.
   # Remove only this section's three exact fixture queries before creating its
-  # fresh pair; otherwise the first substring match wins and the parallel
-  # counter assertion reports a misleading product failure.
+  # fresh pair; otherwise every command on that match refuses (ambiguous) and
+  # the section reports a misleading product failure.
   local stale p
   for stale in 'static.html?a=dual' 'counter.html?a=p1' 'counter.html?a=p2'; do
     for p in "$P1" "$P2"; do
       [ -z "$p" ] && continue
-      while "${CLI[@]}" close "$stale" --profile "$p" >/dev/null 2>&1; do :; done
+      "${CLI[@]}" close "$stale" --all --profile "$p" >/dev/null 2>&1 || true # --all: a crashed run can leave identical dupes
     done
   done
   run_batch 01-interleave || true
@@ -95,11 +95,11 @@ s_churn() {
   if "${CLI[@]}" click "big.html?i=refs" "@$ref" 2>/dev/null | grep -q 'clicked'; then
     ok "ref survives a re-snap"
   else bad "ref dead after re-snap"; fi
-  "${CLI[@]}" nav "big.html?i=refs" "$FX/static.html" >/dev/null 2>&1
-  if "${CLI[@]}" click static.html "@$ref" --profile "$P1" 2>&1 | grep -q 'refs expire on navigation'; then
+  "${CLI[@]}" nav "big.html?i=refs" "$FX/static.html?x=refs" >/dev/null 2>&1
+  if "${CLI[@]}" click "static.html?x=refs" "@$ref" --profile "$P1" 2>&1 | grep -q 'refs expire on navigation'; then
     ok "ref expiry on nav errors clearly"
   else bad "stale ref after nav not reported"; fi
-  "${CLI[@]}" close static.html --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" close "static.html?x=refs" --profile "$P1" >/dev/null 2>&1
   # skeleton drill-down (wide tree)
   "${CLI[@]}" open "$FX/big.html?i=s" --profile "$P1" >/dev/null
   "${CLI[@]}" snap "big.html?i=s" --skeleton >"$OUT/skel.log" 2>&1
@@ -262,12 +262,14 @@ s_pixel() {
 # ---------------------------------------------------------------- section 5
 s_waits() {
   SECTION=waits
-  "${CLI[@]}" open "$FX/change.html" --profile "$P1" >/dev/null
-  "${CLI[@]}" wait change.html --text 'Stable block' >"$OUT/05.log" 2>&1
+  # ?x=wait: s_pixel's change.html tab is still open — a bare 'change.html'
+  # match is ambiguous here and every wait below would refuse.
+  "${CLI[@]}" open "$FX/change.html?x=wait" --profile "$P1" >/dev/null
+  "${CLI[@]}" wait "change.html?x=wait" --text 'Stable block' >"$OUT/05.log" 2>&1
   assert_grep "wait --text found" "$OUT/05.log" 'found text'
-  "${CLI[@]}" wait change.html '#mut' >>"$OUT/05.log" 2>&1
+  "${CLI[@]}" wait "change.html?x=wait" '#mut' >>"$OUT/05.log" 2>&1
   assert_grep "wait css found" "$OUT/05.log" 'found #mut'
-  "${CLI[@]}" wait change.html '.never-there' --timeout 1000 >>"$OUT/05.log" 2>&1 || true
+  "${CLI[@]}" wait "change.html?x=wait" '.never-there' --timeout 1000 >>"$OUT/05.log" 2>&1 || true
   assert_grep "css wait times out honestly" "$OUT/05.log" 'timeout after 1000ms waiting for .never-there'
   assert_ngrep "no double Error: prefix" "$OUT/05.log" 'async: Error:'
 }
@@ -390,14 +392,29 @@ s_misc() {
     | "${CLI[@]}" batch >>"$OUT/08.log" 2>&1 || true
   "${CLI[@]}" eval "$M" "String(window.__stop)" >>"$OUT/08.log" 2>&1
   assert_grep "batch stops on first error" "$OUT/08.log" '^1$'
-  # reuse-nudge warnings (v1.18.16): duplicate open + same-URL nav both warn on the result
+  # reuse-nudge warnings (v1.18.16): same-URL nav + duplicate open both warn on the result.
+  # nav FIRST: once the dup pair exists the match is ambiguous and nav refuses.
   "${CLI[@]}" open "$FX/static.html?x=dup" --profile "$P1" >/dev/null
-  "${CLI[@]}" open "$FX/static.html?x=dup" --profile "$P1" >"$OUT/08-dup.log" 2>&1
-  assert_grep "duplicate open warns (drive the existing tab, keep its state)" "$OUT/08-dup.log" 'already shows this exact URL'
   "${CLI[@]}" nav "static.html?x=dup" "$FX/static.html?x=dup" --profile "$P1" >"$OUT/08-navsame.log" 2>&1
   assert_grep "same-URL nav warns it is a reload" "$OUT/08-navsame.log" 'already at this URL'
-  "${CLI[@]}" close "static.html?x=dup" --profile "$P1" >/dev/null 2>&1
-  "${CLI[@]}" close "static.html?x=dup" --profile "$P1" >/dev/null 2>&1 # the dupe too
+  "${CLI[@]}" open "$FX/static.html?x=dup" --profile "$P1" >"$OUT/08-dup.log" 2>&1
+  assert_grep "duplicate open warns (drive the existing tab, keep its state)" "$OUT/08-dup.log" 'already shows this exact URL'
+  # Identical-URL pair: no single-match command can address either tab — --all drains both.
+  "${CLI[@]}" close "static.html?x=dup" --all --profile "$P1" >"$OUT/08-closeall.log" 2>&1
+  assert_grep "close --all drains the identical-URL dup pair" "$OUT/08-closeall.log" '"closed":2'
+  # Same-profile ambiguity must refuse BEFORE a page-side mutation. The
+  # profile is pinned, so this cannot be mistaken for cross-profile routing;
+  # both counters are read back independently after the rejected common match.
+  "${CLI[@]}" open "$FX/counter.html?x=amb-a" --profile "$P1" >/dev/null
+  "${CLI[@]}" open "$FX/counter.html?x=amb-b" --profile "$P1" >/dev/null
+  "${CLI[@]}" eval 'counter.html?x=amb' "document.getElementById('c').textContent='99'" --profile "$P1" >"$OUT/08-ambiguous.log" 2>&1 && bad "same-profile ambiguous eval must refuse" || true
+  assert_grep "same-profile ambiguity refuses before dispatch" "$OUT/08-ambiguous.log" 'refusing to choose one'
+  local ambA ambB
+  ambA=$("${CLI[@]}" eval 'counter.html?x=amb-a' "document.getElementById('c').textContent" --profile "$P1" 2>/dev/null)
+  ambB=$("${CLI[@]}" eval 'counter.html?x=amb-b' "document.getElementById('c').textContent" --profile "$P1" 2>/dev/null)
+  if [ "$ambA" = 0 ] && [ "$ambB" = 0 ]; then ok "ambiguous command left both tabs unchanged"; else bad "ambiguous command mutated a tab ($ambA, $ambB)"; fi
+  "${CLI[@]}" close "counter.html?x=amb-a" --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" close "counter.html?x=amb-b" --profile "$P1" >/dev/null 2>&1
   # swlogs clean of unexpected errors
   "${CLI[@]}" swlogs --profile "$P1" >"$OUT/08-swlogs.log" 2>&1
   assert_ngrep "swlogs clean (no ERROR/REJECT)" "$OUT/08-swlogs.log" 'ERROR |REJECT '
@@ -431,8 +448,9 @@ s_edges() {
 # ---------------------------------------------------------------- cleanup
 cleanup() {
   SECTION=cleanup
-  # close every tab this suite opened, on BOTH profiles (loop: close acts on
-  # one match at a time; without --profile a multi-profile match is refused)
+  # close every tab this suite opened, on BOTH profiles. --all: a broad fixture
+  # match hits several same-profile tabs and the refusal would break a
+  # one-at-a-time loop on the first try; the explicit plural close drains them.
   local m p rc=0
   for m in "stress/fixtures/static.html" "stress/fixtures/counter.html" \
            "stress/fixtures/big.html" "stress/fixtures/rich.html" "stress/fixtures/change.html" \
@@ -441,9 +459,7 @@ cleanup() {
            "localhost:9334/fixtures/iframe.html"; do
     for p in "$P1" "$P2"; do
       [ -z "$p" ] && continue
-      for _ in 1 2 3 4 5 6; do
-        "${CLI[@]}" close "$m" --profile "$p" >/dev/null 2>&1 || break
-      done
+      "${CLI[@]}" close "$m" --all --profile "$p" >/dev/null 2>&1 || true # no matches left = fine
     done
   done
   "${CLI[@]}" tabs "stress/fixtures" >"$OUT/leftover.log" 2>&1

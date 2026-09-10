@@ -8,7 +8,7 @@ import fs from 'node:fs';
 
 const PORT = 9871;
 const ROOT = new URL('..', import.meta.url).pathname;
-const env = { ...process.env, BRIDGE_PORT: String(PORT) };
+const env = { ...process.env, BRIDGE_PORT: String(PORT), BRIDGE_CMD_TIMEOUT_MS: '750' };
 // The fake extension's handshake version mirrors the repo manifest — cli
 // health compares the two, and a hardcode here would trip its warning.
 const MANIFEST_V = JSON.parse(fs.readFileSync(`${ROOT}extension/manifest.json`, 'utf8')).version;
@@ -157,6 +157,8 @@ try {
   ext.onMessage((msg) => {
     const respond = (result) => ext.send({ id: msg.id, ok: true, result });
     if (msg.type === 'ping') return respond('pong');
+    if (msg.type === 'timeout-test') return; // regression: server must label post-dispatch uncertainty
+    if (msg.type === 'strip-test') return respond(Object.keys(msg).filter((k) => k.startsWith('_')).join(',') || 'clean');
     if (msg.type === 'tabs')
       return respond([{ id: 1, url: 'https://example.com/', title: 'Example', active: true, driven: false }]);
     if (msg.type === 'probe')
@@ -219,6 +221,30 @@ try {
 
   const ev = await cli('eval', 'example.com', 'document.title');
   assert(ev.status === 0 && ev.stdout.includes('"echo"'), 'cli eval round-trip');
+
+  // The relay accepted this frame, but the extension never replied. A bare
+  // "extension timeout" invites a blind retry of a click/fill that may already
+  // have landed; the response must state the post-dispatch uncertainty.
+  const timeoutReply = await fetch(`http://127.0.0.1:${PORT}/cmd`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ type: 'timeout-test', urlMatch: 'example.com' }),
+  }).then((r) => r.json());
+  assert(
+    timeoutReply.ok === false && /timeout after dispatch.*may have run.*inspect the tab or history/i.test(timeoutReply.error),
+    'server: post-dispatch timeout warns that the command may have run',
+    JSON.stringify(timeoutReply)
+  );
+
+  // Client-supplied internal fields (_tabId/_pill) must never reach the
+  // extension: the refusal's "no marking, no bookkeeping" guarantee and the
+  // per-tab inflight counters both trust them to be extension-set.
+  const stripReply = await fetch(`http://127.0.0.1:${PORT}/cmd`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ type: 'strip-test', urlMatch: 'example.com', _tabId: 999, _pill: true }),
+  }).then((r) => r.json());
+  assert(stripReply.ok === true && stripReply.result === 'clean', 'server: /cmd strips client-supplied underscore-internal fields', JSON.stringify(stripReply));
 
   const shotPath = '/tmp/chrome-bridge-selftest.png';
   const shot = await cli('shot', 'example.com', shotPath);
@@ -660,13 +686,21 @@ try {
     assert(bg.includes("msg.type === 'note' ? 4000 : 800"), 'pill: a note holds its label ~4s — a ~100ms note command must not flash unseen');
     assert(bg.includes("replace(/^(Error:\\s*)+/, '')"), 'pill history: doubled Error: nesting deduped (the feed fix 756df17, third surface)');
     // Tab-match confusion: a lookalike URL path (evil.com/github.com matches
-    // 'github.com') must not silently win — findTab warns on ambiguity (the
-    // warning rides the result via onmessage), prefers driven tabs over MRU,
-    // and mutating commands auto-mark so acting on a tab is never invisible.
-    assert(bg.includes('tabs match') && bg.includes('msg._warn'), 'ext: findTab warns on an ambiguous match');
-    assert(bg.includes('drivenTabs.has(b.id)'), 'ext: findTab prefers driven tabs over most-recently-active');
-    assert(bg.includes('MUTATING.has(msg.type)') && bg.includes('markTab(matches[0].id)'), 'ext: mutating commands auto-mark the tab');
-    assert(bg.includes('if (msg._warn)'), 'ext: onmessage appends the ambiguous-match warning to the result');
+    // 'github.com') must be a no-op. A driven/MRU preference is only a
+    // heuristic, and returning a warning after dispatch is too late for a
+    // mutating command. Keep the refusal before _tabId/marking as a source
+    // tripwire; the real-browser fixture below proves neither counter moves.
+    const findTabBlock = bg.slice(bg.indexOf('async function findTab'), bg.indexOf('async function cmdFetch'));
+    assert(
+      findTabBlock.includes('refusing to choose one') && findTabBlock.indexOf('if (matches.length > 1)') < findTabBlock.indexOf('msg._tabId = matches[0].id'),
+      'ext: findTab refuses ambiguous same-profile matches before selecting a tab'
+    );
+    assert(!findTabBlock.includes('drivenTabs.has(b.id)'), 'ext: findTab has no driven/MRU ambiguity fallback');
+    assert(findTabBlock.includes("!['release', 'mark', 'unemulate'].includes(msg.type)"), 'ext: unique tab commands still auto-mark');
+    assert(bg.includes('bad relay message — reconnecting') && bg.includes("if (!msg || typeof msg !== 'object' || Array.isArray(msg))"), 'ext: malformed relay frames trigger a clean reconnect');
+    assert(bg.includes('if (msg.all)') && bg.includes('closed: matches.length'), 'ext: close --all drains every match — the remedy for identical-URL tabs no <match> can separate');
+    assert(serverSrc.includes("k.startsWith('_')"), 'server: /cmd strips underscore-internal fields (_tabId/_pill are extension-set only)');
+    assert(cliSrc.includes("takeFlags(args, ['--all'], 1"), 'cli: close accepts --all');
 
     // Contract drift tripwires: the command list lives in 3 places (cli USAGE,
     // handle() dispatch, ACT_VERBS) kept in sync by hand — fail here when they

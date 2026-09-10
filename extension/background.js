@@ -95,7 +95,19 @@ function connect() {
     }
   };
   s.onmessage = async (e) => {
-    const msg = JSON.parse(e.data);
+    // The local relay is normally the only peer, but a malformed WebSocket
+    // frame must not throw out of this async event handler and strand the
+    // socket in an apparently connected, command-deaf state. Close this
+    // connection and let onclose establish a known-good seat instead.
+    let msg;
+    try {
+      msg = JSON.parse(e.data);
+      if (!msg || typeof msg !== 'object' || Array.isArray(msg)) throw new Error('message must be an object');
+    } catch {
+      logLine('bad relay message — reconnecting');
+      s.close();
+      return;
+    }
     if (msg.type === 'seat-taken') {
       // This profile already holds a live socket (a service-worker reconnect
       // race — the server keeps ONE seat per profile). Intercept BEFORE
@@ -109,8 +121,9 @@ function connect() {
     let failed = false;
     try {
       let result = await handle(msg);
-      // findTab's ambiguous-match warning rides on the result whatever its
-      // shape — the agent must see that its <match> was contested.
+      // A few legacy/diagnostic call paths can still attach a warning. Keep
+      // it visible whatever the result shape is; tab-targeting commands now
+      // reject ambiguity before they can dispatch an action (findTab).
       if (msg._warn) {
         if (typeof result === 'string') result += '\n' + msg._warn;
         else if (Array.isArray(result)) result = { result, warning: msg._warn }; // spread would reshape the array into {0:…}
@@ -3055,14 +3068,12 @@ async function findTab(msg) {
   if (!matches.length) {
     throw new Error(`no tab matching "${msg.urlMatch}" — the tab may have navigated (the match is a URL/title substring); run tabs to re-find it`);
   }
-  // Driven tabs first (the bridge already touched them), then most recently
-  // active. A substring match can land on a lookalike tab — a malicious page
-  // can stuff its URL path with bait like "github.com"
-  // (evil.com/github.com/login matches 'github.com') — so on ambiguity, name
-  // the competition: the warning rides the result (see onmessage) and the
-  // agent can re-run with a longer match instead of acting blind.
-  matches.sort((a, b) => (drivenTabs.has(b.id) ? 1 : 0) - (drivenTabs.has(a.id) ? 1 : 0) || (b.lastAccessed || 0) - (a.lastAccessed || 0));
-  msg._tabId = matches[0].id;
+  // Never choose one tab from an ambiguous substring match. The old
+  // driven-then-most-recently-active tie-breaker was only a heuristic: a
+  // newly opened lookalike, a navigation race, or stale lastAccessed metadata
+  // could make a normal command act on the wrong tab before its warning was
+  // returned. Refuse before marking, recording activity, or dispatching any
+  // page/CDP operation; the caller must provide a narrower match.
   if (matches.length > 1) {
     const host = (t) => {
       try {
@@ -3075,12 +3086,14 @@ async function findTab(msg) {
         return String(t.url).slice(0, 40);
       }
     };
-    msg._warn =
-      `⚠ ${matches.length} tabs match "${msg.urlMatch}" — acting on ${host(matches[0])}; also matched: ` +
-      matches.slice(1, 4).map(host).join(', ') +
-      (matches.length > 4 ? ` (+${matches.length - 4} more)` : '') +
-      '. To pick another, re-run with a longer <match>.';
+    throw new Error(
+      `⚠ ${matches.length} tabs match "${msg.urlMatch}" — refusing to choose one; matched: ` +
+        matches.slice(0, 4).map(host).join(', ') +
+        (matches.length > 4 ? ` (+${matches.length - 4} more)` : '') +
+        '. Re-run with a longer <match>.'
+    );
   }
+  msg._tabId = matches[0].id;
   // Every command resolving here marks the tab, reads included (owner's
   // call: the pill must show on any tab the agent is LOOKING at, not just
   // the ones it changes — a read-only session used to leave the browser
@@ -3544,6 +3557,18 @@ async function handle(msg) {
   }
 
   if (msg.type === 'close') {
+    // --all drains EVERY same-profile match. findTab's refusal leaves no way
+    // to address identical-URL tabs (no longer <match> can tell them apart),
+    // and a broad one-at-a-time close loop is exactly the ambiguity the
+    // refusal exists to stop — an explicit plural close is not a guess. No
+    // marking/recording: the tabs are about to not exist.
+    if (msg.all) {
+      const ts = await chrome.tabs.query({});
+      const matches = ts.filter((t) => (t.url || '').includes(msg.urlMatch) || (t.title || '').includes(msg.urlMatch)); // same predicate as findTab
+      if (!matches.length) throw new Error(`no tab matching "${msg.urlMatch}" — already closed? (the match is a URL/title substring)`);
+      await chrome.tabs.remove(matches.map((t) => t.id));
+      return { closed: matches.length };
+    }
     const tab = await findTab(msg);
     await chrome.tabs.remove(tab.id);
     return { id: tab.id };

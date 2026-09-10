@@ -174,7 +174,7 @@ You're handing an agent your logged-in browser — the design assumes you want t
 |---|---|
 | `tabs` | List tabs (id, url, title, driven flag, tab group when grouped); with several Chrome profiles connected, merged with a `profile` tag |
 | `profiles` | List connected Chrome profiles — id and name (for `--profile`) + version |
-| `open <url>` · `nav <match> <url> [--diff]` · `close <match>` | Tab lifecycle — `open`/`nav` wait for the page to load (8s cap; `loaded:false` in the reply means the cap fired on a still-loading page — `snap`/`eval`/`wait --text` work on what's there). `nav` accepts only its shown arguments and `--diff`; a typo fails before routing |
+| `open <url>` · `nav <match> <url> [--diff]` · `close <match> [--all]` | Tab lifecycle — `open`/`nav` wait for the page to load (8s cap; `loaded:false` in the reply means the cap fired on a still-loading page — `snap`/`eval`/`wait --text` work on what's there). `nav` accepts only its shown arguments and `--diff`; a typo fails before routing. `close --all` closes every match — the remedy for identical-URL tabs no `<match>` can separate |
 | `snap <match> [css\|@ref] [--diff] [--href] [--skeleton] [--find "nl"]` | Accessibility-tree snapshot with `@eN` refs — **cheap; use it before screenshots**. Scope to a subtree (CSS or `@ref`), diff against the last snap, or include all link URLs with `--href`. `--skeleton` on dense pages: a depth-limited map where cut subtrees read `… N inside` (drill: `snap <match> @ref`) instead of silently missing the 300-node cut. `--find "the cancel button"` has local Gemini Nano (~2s, no cloud tokens) pick the matching lines — a shortlist to verify, not ground truth. Lines prefixed `*` are elements new since the previous snap |
 | `click <match> <@ref\|css> [--dbl] [--diff] [--trusted]` | Click (scrolls into view, full pointer/mouse event sequence, overlay-coverage check); `--dbl` double-clicks; `--trusted` drives CDP Input — isTrusted=true, so canvas tools (Figma) accept it |
 | `drag <match> <@ref\|css> <@ref\|css> [--diff] [--trusted]` | Drag one element onto another (synthetic pointer sequence; `--trusted` = CDP Input — isTrusted, and legacy HTML5 dragstart/drop fire) |
@@ -203,7 +203,9 @@ You're handing an agent your logged-in browser — the design assumes you want t
 | `swlogs` | Service-worker console tail (errors/warnings) |
 | `start` · `stop` | Server lifecycle — `start` spawns it detached if down (agents can self-heal a dead server) |
 
-`<match>` is a substring of the tab URL or title; a driven tab wins, then the most recently active. If several match, the result warns and names them — re-run with a longer match. Refs survive re-`snap`s (an element keeps its `@eN` while its role+name are unchanged) and expire on navigation — re-`snap` after `nav`. `snap` walks open shadow roots (their elements get refs and click/fill straight in), and CSS selectors pierce open roots too.
+`<match>` is a substring of the tab URL or title and must identify exactly one tab in the selected profile. If several match, the command is refused before it marks or acts on anything — re-run with a longer match. Refs survive re-`snap`s (an element keeps its `@eN` while its role+name are unchanged) and expire on navigation — re-`snap` after `nav`. `snap` walks open shadow roots (their elements get refs and click/fill straight in), and CSS selectors pierce open roots too.
+
+If a command times out **after dispatch**, it may have acted before its reply was lost: inspect the tab or `history` before retrying a non-idempotent operation. A timeout **before dispatch** explicitly did not run.
 
 </details>
 

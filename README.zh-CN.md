@@ -172,7 +172,7 @@ HTTP API 只有一个命令端点:`POST /cmd`,Body 如 `{"type": "snap", "urlMat
 |---|---|
 | `tabs` | 列出标签页(id、url、标题、是否被驱动);多个 Chrome 配置同时连接时合并输出,带 `profile` 标记 |
 | `profiles` | 列出已连接的 Chrome 配置——id 和 name(用于 `--profile`)+ 版本 |
-| `open <url>` · `nav <match> <url> [--diff]` · `close <match>` | 标签页生命周期——`open`/`nav` 等待页面加载完成(8 秒上限;返回中的 `loaded:false` 表示超时触发时页面仍在加载——`snap`/`eval`/`wait --text` 对已加载部分照常可用)。`nav` 只接受所示参数和 `--diff`;拼写错误会在路由前失败 |
+| `open <url>` · `nav <match> <url> [--diff]` · `close <match> [--all]` | 标签页生命周期——`open`/`nav` 等待页面加载完成(8 秒上限;返回中的 `loaded:false` 表示超时触发时页面仍在加载——`snap`/`eval`/`wait --text` 对已加载部分照常可用)。`nav` 只接受所示参数和 `--diff`;拼写错误会在路由前失败。`close --all` 关闭所有匹配项——这是处理任何 `<match>` 都无法区分的相同 URL 标签页的办法 |
 | `snap <match> [css\|@ref] [--diff] [--href] [--skeleton] [--find "nl"]` | 无障碍树快照,带 `@eN` 引用——**便宜,优先于截图使用**。可限定子树(CSS 或 `@ref`)、与上一次快照对比,`--href` 输出全部链接 URL。`--skeleton` 用于密集页面:深度受限的地图,被裁剪的子树显示 `… N inside`(钻取:`snap <match> @ref`),不再无声错过 300 节点截断。`--find "取消按钮"` 由本地 Gemini Nano 挑出匹配行(~2 秒,无云端 token)——是待验证的候选清单,不是绝对正确。`*` 前缀标记上次快照后新增的元素 |
 | `click <match> <@ref\|css> [--dbl] [--diff] [--trusted]` | 点击(自动滚动到可见位置,完整 pointer/mouse 事件序列,遮挡检测);`--dbl` 双击;`--trusted` 走 CDP Input(isTrusted=true,画布类应用如 Figma 接受) |
 | `drag <match> <@ref\|css> <@ref\|css> [--diff] [--trusted]` | 把一个元素拖到另一个上(合成指针序列;`--trusted` 走 CDP Input——isTrusted,且触发传统 HTML5 dragstart/drop) |
@@ -201,7 +201,9 @@ HTTP API 只有一个命令端点:`POST /cmd`,Body 如 `{"type": "snap", "urlMat
 | `swlogs` | 服务工作线程控制台日志尾部(错误/警告) |
 | `start` · `stop` | 服务器生命周期——`start` 在服务器未运行时分离启动(智能体可以自愈挂掉的服务器) |
 
-`<match>` 是标签页 URL 或标题的子串;被驱动的标签页优先,然后是最近活动的。匹配多个时结果会警告并列出其他标签页——用更长的匹配重试,不要盲信选中的那个。引用在重复 `snap` 之间保持稳定(只要 role+name 不变,元素就保持它的 `@eN`),但导航后失效——`nav` 之后请重新 `snap`。`snap` 会遍历开放的 shadow root(其中的元素带引用、可直接点击/填写),CSS 选择器也能穿透开放的 shadow root。
+`<match>` 是标签页 URL 或标题的子串，并且必须在所选配置文件中唯一标识一个标签页。匹配多个时，命令会在标记或执行任何操作前拒绝执行——请用更长的匹配重试。引用在重复 `snap` 之间保持稳定(只要 role+name 不变,元素就保持它的 `@eN`),但导航后失效——`nav` 之后请重新 `snap`。`snap` 会遍历开放的 shadow root(其中的元素带引用、可直接点击/填写),CSS 选择器也能穿透开放的 shadow root。
+
+命令在**已派发后**超时，表示扩展可能已执行操作但回复丢失：重试点击、填写、上传、导航等非幂等操作前，请先检查标签页或 `history`。在**派发前**超时则明确表示命令没有运行。
 
 </details>
 

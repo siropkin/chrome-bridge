@@ -180,7 +180,8 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     snap/eval/wait --text work on what's there)
   nav <match> <url> [--diff]        navigate matching tab (waits for load, 8s cap;
                                     same loaded:false semantics as open)
-  close <match>                     close matching tab
+  close <match> [--all]             close the matching tab — --all closes every match
+                                    (the remedy for identical-URL tabs no <match> can separate)
   snap <match> [css|@ref] [--diff] [--href] [--skeleton] [--find "nl"]
                                     a11y-tree snapshot with @eN refs (cheap — use before shot);
                                     [css|@ref] scopes to a subtree (@ref = the --skeleton drill-down),
@@ -297,8 +298,8 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
   start                             start the server (detached) if it's down
   stop                              stop the server
 
-<match> is a substring of the tab URL or title; a driven tab wins, then the most
-recently active. Ambiguous matches print a warning naming the other tabs — re-run with a
+<match> is a substring of the tab URL or title. It must identify exactly one tab in the
+selected profile; ambiguous matches are refused before anything runs — re-run with a
 longer match. Every command that targets a tab marks it (🟣 pill + tab group) —
 reads (snap/measure/console/net) included; release when you're done.
 Refs (@eN) come from snap; they survive re-snaps but expire on navigation.
@@ -545,7 +546,12 @@ async function run(cmdName, args) {
       break;
     }
 
-    case 'close':
+    case 'close': {
+      const rest = takeFlags(args, ['--all'], 1, 'close <match> [--all]');
+      print(await cmd({ type: 'close', urlMatch: rest[0], ...(args.includes('--all') ? { all: true } : {}) }));
+      break;
+    }
+
     case 'mark':
     case 'release':
     case 'unemulate':
@@ -578,11 +584,6 @@ async function run(cmdName, args) {
       // is "not reached". Echo it to stderr, which survives the pipe.
       const ti = typeof out === 'string' ? out.lastIndexOf('… truncated at') : -1;
       if (ti >= 0) console.error(out.slice(ti).split('\n')[0]);
-      // Same pipe-survival for the ambiguous-match warning: it trails the
-      // 300-line tree on stdout, where a grep pipe eats it — stderr keeps it
-      // visible. The stdout copy stays (full-output parsers see no change).
-      const warn = typeof out === 'string' ? out.split('\n').find((l) => l.startsWith('⚠ ')) : null;
-      if (warn) console.error(warn);
       break;
     }
 

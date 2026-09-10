@@ -45,9 +45,8 @@ count_tabs() { "${CLI[@]}" tabs "$1" 2>/dev/null | grep -o '"url"' | wc -l | tr 
 incr() { # incr <match> <profile> <rc-log> — one atomic counter increment
   wrun "$3" "${CLI[@]}" eval "$1" "const el=document.getElementById('c');el.textContent=String(+el.textContent+1);el.textContent" --profile "$2"
 }
-# head -1: an ambiguous match appends a '⚠ N tabs match' warning line to the
-# result — the counter value is the first line, the warning must not poison
-# numeric compares.
+# head -1: the counter value is the first line — keep any stray extra output
+# out of the numeric compares.
 read_counter() { "${CLI[@]}" eval "$1" "document.getElementById('c').textContent" --profile "$2" 2>/dev/null | head -1; }
 
 P1=""; P2=""
@@ -378,12 +377,10 @@ cleanup() {
   local p
   for p in "$P1" "$P2"; do
     [ -z "$p" ] && continue
-    # close acts on ONE match at a time and this suite opens ~25 tabs per
-    # profile — a 6-iteration cap leaves most of them behind (run-1 bug:
-    # stale tabs then made every later run's matches ambiguous)
-    for _ in $(seq 1 60); do
-      "${CLI[@]}" close "ps=" --profile "$p" >/dev/null 2>&1 || break
-    done
+    # --all: ~25 tabs per profile carry ?ps= — a one-at-a-time close loop is
+    # dead the moment the refusal sees 2+ matches (run-1 bug: leaked tabs then
+    # made every later run's matches ambiguous)
+    "${CLI[@]}" close "ps=" --all --profile "$p" >/dev/null 2>&1 || true
   done
   local n; n=$(count_tabs "ps=")
   [ "$n" = 0 ] && ok "zero leftover ps= tabs" || bad "$n leftover ps= tabs"
