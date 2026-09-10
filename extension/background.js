@@ -2704,7 +2704,9 @@ const nanoSrc = (context, question) => `(async () => {
 // regardless. Binary comes back base64 (a JS string can't hold the bytes
 // honestly); the CLI decodes it into --out.
 const fetchSrc = (url) => `(async () => {
-  const res = await fetch(${JSON.stringify(url)}, { credentials: 'include' });
+  const __u = new URL(${JSON.stringify(url)}, location.href);
+  if (!/^https?:$/.test(__u.protocol)) throw new Error('cmdFetch: only http(s) URLs are allowed, got ' + __u.protocol);
+  const res = await fetch(__u.href, { credentials: 'include' });
   const ct = res.headers.get('content-type') || '';
   if (!/text|json|xml|javascript|csv/i.test(ct)) {
     const buf = new Uint8Array(await res.arrayBuffer());
