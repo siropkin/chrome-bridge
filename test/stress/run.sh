@@ -85,7 +85,7 @@ s_churn() {
   run_batch 02-churn || true
   assert_grep "burst open+close 12 tabs" "$OUT/02-churn.log" '"loaded":true'
   [ "$(grep -c '"loaded":true' "$OUT/02-churn.log")" -ge 12 ] && ok "12 tabs opened in burst" || bad "burst open count"
-  assert_grep "re-find by match after burst" "$OUT/02-churn.log" 'big.html\?i=7'
+  assert_grep "re-find by match after burst" "$OUT/02-churn.log" 'big.html\?i=07'
   # refs survive re-snaps, expire on nav
   "${CLI[@]}" open "$FX/big.html?i=refs" --profile "$P1" >/dev/null
   local ref
