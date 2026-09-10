@@ -33,7 +33,7 @@ Local browser storage only, on your machine:
 
 All of it lives in session storage and is cleared when the browser closes. No browsing history, credentials, or page content is persisted beyond the browser session.
 
-The local server also keeps a `server.log` at the repo root: one line per command (timestamp, command, URL fragment, selector) — typed `fill`/`type`/`paste` values are excluded by design, though page text can appear inside error lines. It is truncated to 5MB on server start, readable only by your user account, and deletable anytime.
+The local server also keeps a `server.log` at the repo root: one line per command (timestamp, command, URL fragment, selector) — typed `fill`/`type`/`paste` values and dialog answers are excluded by design, though page text can appear inside error lines. It is truncated to 5MB on server start, readable only by your user account, and deletable anytime. `history --batch` also comments out pasted/typed text, dialog answers, clipboard pastes, and upload paths rather than retaining them for replay.
 
 ## What is transmitted
 

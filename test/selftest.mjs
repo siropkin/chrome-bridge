@@ -406,6 +406,28 @@ try {
   const big = await bigRes.json();
   assert(big.ok && big.result.length === 3 * 1024 * 1024, 'server: 3MB frame round-trip');
 
+  // Local requests are a control boundary too: reject an oversized command
+  // before buffering/parsing it, then prove the live extension seat survived.
+  const tooLarge = await fetch(`http://127.0.0.1:${PORT}/cmd`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ type: 'ping', padding: 'x'.repeat(2 * 1024 * 1024) }),
+  });
+  assert(tooLarge.status === 413, 'server: oversized command body rejected');
+  const chunkedTooLarge = await new Promise((resolve) => {
+    const r = http.request({ host: '127.0.0.1', port: PORT, path: '/cmd', method: 'POST', headers: { 'content-type': 'application/json' } }, (res) => {
+      res.resume();
+      resolve(res.statusCode);
+    });
+    r.on('error', () => resolve(0));
+    // No Content-Length: exercise streaming accounting rather than the early
+    // header check above.
+    r.end(JSON.stringify({ type: 'ping', padding: 'x'.repeat(2 * 1024 * 1024) }));
+  });
+  assert(chunkedTooLarge === 413, 'server: oversized chunked command body rejected');
+  h = await cli('health');
+  assert(JSON.parse(h.stdout).extension === true, 'server survives oversized command body');
+
   const nt = await cli('note', 'example.com', 'saving', 'the', 'draft');
   assert(nt.status === 0 && nt.stdout.includes('"text":"saving the draft"'), 'cli note joins text args', nt.stdout + nt.stderr);
   const ntNoArgs = await cli('note', 'example.com');
@@ -526,8 +548,16 @@ try {
   const histExport = await cli('history', 'example.com', '--batch', histPath);
   const histScript = fs.readFileSync(histPath, 'utf8');
   assert(
-    histExport.status === 0 && histScript.includes('# secret · fill example.com @e2 --diff -- "***"') && histScript.includes('eval example.com document.title'),
-    'cli history --batch exports replayable, quoted commands (fill/type/paste values redacted + commented — secrets never reach the export)',
+    histExport.status === 0 &&
+      histScript.includes('# secret · fill example.com @e2 --diff -- "***"') &&
+      histScript.includes('# secret · dialog example.com dismiss --text "***"') &&
+      histScript.includes('# secret · upload example.com @e5 "***" --diff') &&
+      !histScript.includes('clipboard text') &&
+      !histScript.includes('explicit paste text') &&
+      !histScript.includes('no thanks') &&
+      !histScript.includes(`${ROOT}package.json`) &&
+      histScript.includes('eval example.com document.title'),
+    'cli history --batch omits typed, pasted, dialog, clipboard, and upload-path secrets',
     histExport.stdout + '\n' + histScript
   );
   fs.unlinkSync(histPath);
@@ -852,6 +882,33 @@ try {
     setTimeout(() => { s.destroy(); resolve(false); }, 1000);
   });
   assert(evilWs, 'server: WS upgrade with browser Origin rejected');
+
+  // A seat must use RFC 6455 masked client frames. An unmasked local client
+  // is discarded rather than being parsed as an extension reply, and cannot
+  // take down the live bridge.
+  const unmaskedWs = await new Promise((resolve) => {
+    const s = net.connect(PORT, '127.0.0.1');
+    let handshaken = false;
+    let buf = Buffer.alloc(0);
+    s.on('data', (c) => {
+      buf = Buffer.concat([buf, c]);
+      if (!handshaken && buf.includes(Buffer.from('\r\n\r\n'))) {
+        handshaken = true;
+        s.write(Buffer.from([0x81, 0x02, 0x7b, 0x7d])); // unmasked '{}'
+      }
+    });
+    s.on('connect', () =>
+      s.write(
+        `GET /ws?id=malformed-test HTTP/1.1\r\nHost: 127.0.0.1:${PORT}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${crypto.randomBytes(16).toString('base64')}\r\nSec-WebSocket-Version: 13\r\n\r\n`
+      )
+    );
+    s.on('close', () => resolve(handshaken));
+    s.on('error', () => resolve(handshaken));
+    setTimeout(() => { s.destroy(); resolve(false); }, 1000);
+  });
+  assert(unmaskedWs, 'server: unmasked WS client frame rejected');
+  h = await cli('health');
+  assert(JSON.parse(h.stdout).extension === true, 'server survives malformed WS frame');
 
   // DNS-rebinding guard: a non-loopback Host is refused on every route, even
   // with no Origin/Sec-Fetch headers at all (a rebound page is "same-origin",

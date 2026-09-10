@@ -14,6 +14,13 @@ import { fileURLToPath } from 'node:url';
 const PORT = Number(process.env.BRIDGE_PORT || 9333);
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const CMD_TIMEOUT_MS = 70_000; // `wait` supports up to 60s
+// Commands can carry a pasted value, but no CLI command needs an unbounded
+// request body. This also limits a malformed local request before JSON.parse
+// duplicates it in memory. Screenshot replies travel on the WebSocket instead
+// and have their own, deliberately larger cap below.
+const MAX_CMD_BYTES = 2 * 1024 * 1024;
+const MAX_WS_FRAME_BYTES = 32 * 1024 * 1024;
+const MAX_WS_BUFFER_BYTES = MAX_WS_FRAME_BYTES + 64 * 1024;
 // DNS-rebinding guard for both faces: a page served from evil.com:9333 whose
 // DNS flips to 127.0.0.1 becomes "same-origin" with the bridge — the Origin/
 // Sec-Fetch guards still block its POSTs, but GET /log would read fine. Fetch
@@ -248,7 +255,10 @@ const CLI_LINES = {
     `snap ${shellq(m.urlMatch)}${m.scope ? ' ' + shellq(m.scope) : ''}${m.href ? ' --href' : ''}${m.skeleton ? ' --skeleton' : ''}${m.find ? ' --find ' + shellq(m.find) : ''}${D(m)}`,
   click: (m) => `click ${shellq(m.urlMatch)} ${shellq(m.target)}${m.dbl ? ' --dbl' : ''}${m.trusted ? ' --trusted' : ''}${D(m)}`,
   drag: (m) => `drag ${shellq(m.urlMatch)} ${shellq(m.from)} ${shellq(m.to)}${m.trusted ? ' --trusted' : ''}${D(m)}`,
-  dialog: (m) => `dialog ${shellq(m.urlMatch)} ${m.accept ? 'accept' : 'dismiss'}${m.text ? ' --text ' + shellq(m.text) : ''}`,
+  // A prompt answer can be a password, one-time code, or recovery token. It
+  // must not be retained in a replay export any more than text typed into a
+  // field; the command is commented out by pushAct below.
+  dialog: (m) => `dialog ${shellq(m.urlMatch)} ${m.accept ? 'accept' : 'dismiss'}${m.text ? ' --text "***"' : ''}`,
   // fill/type: flags first, then the '--' separator, then the value — a value
   // starting with '--' (dev.to front-matter) would otherwise die on the
   // fill parser's stray-flag scan at replay. The VALUE ITSELF IS REDACTED:
@@ -258,17 +268,15 @@ const CLI_LINES = {
   // replay skips the step instead of typing literal stars.
   fill: (m) => `fill ${shellq(m.urlMatch)} ${shellq(m.target)}${D(m)} -- "***"`,
   type: (m) => `type ${shellq(m.urlMatch)} ${shellq(m.target)}${m.trusted ? ' --trusted' : ''}${D(m)} -- "***"`,
-  // paste: a clipboard read (clip) is re-read at replay time, not embedded —
-  // the exported script shouldn't freeze (or leak) what the clipboard held.
-  // The explicit-value branch is redacted like fill/type.
-  paste: (m) =>
-    m.clip
-      ? `paste ${shellq(m.urlMatch)}${m.target ? ' ' + shellq(m.target) : ''}${D(m)}`
-      : `paste ${shellq(m.urlMatch)}${m.target ? ' ' + shellq(m.target) : ''}${D(m)} -- "***"`,
+  // A clipboard-mode replay would read whatever sensitive content happens to
+  // be on the clipboard later. Treat BOTH paste modes as non-replayable.
+  paste: (m) => `paste ${shellq(m.urlMatch)}${m.target ? ' ' + shellq(m.target) : ''}${D(m)} -- "***"`,
   press: (m) => `press ${shellq(m.urlMatch)} ${shellq(m.key)}${m.target ? ' ' + shellq(m.target) : ''}${m.trusted ? ' --trusted' : ''}${D(m)}`,
   hover: (m) => `hover ${shellq(m.urlMatch)} ${shellq(m.target)}${m.trusted ? ' --trusted' : ''}${D(m)}`,
   scroll: (m) => `scroll ${shellq(m.urlMatch)} ${shellq(m.target)}${D(m)}`,
-  upload: (m) => `upload ${shellq(m.urlMatch)} ${shellq(m.target)} ${(m.files || []).map(shellq).join(' ')}${D(m)}`,
+  // Absolute paths and filenames are local sensitive data; never preserve
+  // them in a durable replay file.
+  upload: (m) => `upload ${shellq(m.urlMatch)} ${shellq(m.target)} "***"${D(m)}`,
   fetch: (m) => `fetch ${shellq(m.urlMatch)} ${shellq(m.url)}`,
   ask: (m) => `ask ${shellq(m.urlMatch)} ${shellq(m.question)}`,
   wait: (m) =>
@@ -331,7 +339,7 @@ function pushAct(msg, out, ms) {
   // AND commented out here — a replay must skip the step, not type "***".
   const replay = CLI_LINES[msg.type]?.(msg);
   const prof = msg.profile ? `--profile ${seatTag(msg.profile)} ` : '';
-  const secret = msg && (msg.type === 'fill' || msg.type === 'type' || (msg.type === 'paste' && !msg.clip));
+  const secret = !!msg && (['fill', 'type', 'paste', 'upload'].includes(msg.type) || (msg.type === 'dialog' && !!msg.text));
   const cmd = replay == null ? null : !out.ok ? `# failed · ${prof}${replay}` : secret ? `# secret · ${prof}${replay}` : prof + replay;
   activity.push({ seq: ++actSeq, line, cmd });
   if (activity.length > 300) activity.shift();
@@ -360,6 +368,16 @@ function encodeFrame(data, op = 0x1) {
 }
 
 function handleWsData(seat, chunk, state) {
+  // RFC 6455 clients MUST mask frames. More importantly here, accepting an
+  // arbitrary unmasked/local stream made it easy for a malformed seat to grow
+  // the reassembly buffer without bound. Keep enough room for one legitimate
+  // screenshot-sized extension reply, then drop the seat.
+  if (state.buf.length + chunk.length > MAX_WS_BUFFER_BYTES) {
+    state.buf = Buffer.alloc(0);
+    state.fragments = [];
+    seat.socket.destroy();
+    return;
+  }
   state.buf = state.buf.length ? Buffer.concat([state.buf, chunk]) : chunk;
   while (true) {
     const buf = state.buf;
@@ -378,8 +396,20 @@ function handleWsData(seat, chunk, state) {
       len = Number(buf.readBigUInt64BE(2));
       off = 10;
     }
+    if (!Number.isSafeInteger(len) || len > MAX_WS_FRAME_BYTES) {
+      state.buf = Buffer.alloc(0);
+      state.fragments = [];
+      seat.socket.destroy();
+      return;
+    }
     const maskLen = masked ? 4 : 0;
     if (buf.length < off + maskLen + len) return;
+    if (!masked) {
+      state.buf = Buffer.alloc(0);
+      state.fragments = [];
+      seat.socket.destroy();
+      return;
+    }
     let payload = buf.subarray(off + maskLen, off + maskLen + len);
     if (masked) {
       const mask = buf.subarray(off, off + 4);
@@ -396,10 +426,35 @@ function handleWsData(seat, chunk, state) {
       continue;
     }
     if (op === 0xa) continue;
+    // The bridge only speaks text JSON. Reject unsupported opcodes and bad
+    // continuation sequences rather than treating their bytes as a command
+    // reply; a hostile local client cannot turn framing ambiguity into server
+    // work or a misleading result.
+    if (op === 0x1 && state.fragments.length) {
+      seat.socket.destroy();
+      return;
+    }
+    if (op === 0x0 && !state.fragments.length) {
+      seat.socket.destroy();
+      return;
+    }
+    if (op !== 0x1 && op !== 0x0) {
+      seat.socket.destroy();
+      return;
+    }
     state.fragments.push(payload);
+    state.fragmentBytes += payload.length;
+    if (state.fragmentBytes > MAX_WS_FRAME_BYTES) {
+      state.buf = Buffer.alloc(0);
+      state.fragments = [];
+      state.fragmentBytes = 0;
+      seat.socket.destroy();
+      return;
+    }
     if (fin) {
       const msg = Buffer.concat(state.fragments).toString();
       state.fragments = [];
+      state.fragmentBytes = 0;
       seat.onMessage(msg); // replies are per-seat: ids are only unique within one socket
     }
   }
@@ -431,9 +486,34 @@ const server = http.createServer((req, res) => {
       res.end();
       return;
     }
+    const declared = Number(req.headers['content-length']);
+    if (Number.isFinite(declared) && declared > MAX_CMD_BYTES) {
+      res.writeHead(413);
+      res.end();
+      req.resume();
+      return;
+    }
     let body = '';
-    req.on('data', (c) => (body += c));
+    let bytes = 0;
+    let tooLarge = false;
+    req.on('data', (c) => {
+      bytes += c.length;
+      if (bytes > MAX_CMD_BYTES) {
+        tooLarge = true;
+        // Stop retaining chunks before an oversized request can consume the
+        // server heap. The response is sent from end/aborted below.
+        req.pause();
+        req.resume();
+        return;
+      }
+      body += c;
+    });
     req.on('end', async () => {
+      if (tooLarge) {
+        res.writeHead(413);
+        res.end(JSON.stringify({ ok: false, error: 'command request too large' }));
+        return;
+      }
       let msg, out;
       const t0 = Date.now();
       try {
@@ -560,7 +640,7 @@ server.on('upgrade', (req, socket) => {
   };
   seats.set(id, seat);
   console.log(`[bridge] extension connected origin=${origin || 'none'} v=${v || '?'} id=${id}`);
-  const state = { buf: Buffer.alloc(0), fragments: [] };
+  const state = { buf: Buffer.alloc(0), fragments: [], fragmentBytes: 0 };
   socket.on('data', (chunk) => handleWsData(seat, chunk, state));
   const onGone = () => {
     if (seats.get(id) === seat) {

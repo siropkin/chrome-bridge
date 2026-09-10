@@ -50,7 +50,7 @@ node <repo>/cli.mjs <command> …
 - `emulate <match> <w> <h> [mobile]` / `emulate <match> focus` / `unemulate <match>` — device view without resizing the window; `mobile` and `focus` are the only modes.
 - `note <match> <text>` — narrate to the human watching the driven tab (pill + history): before a risky/long sequence or to explain a surprising step. Sparing — the pill already shows every command; notes add intent.
 - `watch` — live feed of every bridge command in the user's terminal. Not for you (you see the results) — suggest it when the user wants to follow along.
-- `history [match] [-n N]` — what the bridge already ran on this machine (server ring, last 300 commands); `--batch out` exports it as a replayable batch script. Post-mortems and session handoffs.
+- `history [match] [-n N]` — what the bridge already ran on this machine (server ring, last 300 commands); `--batch out` exports it as a replayable batch script. Typed/pasted text, dialog answers, clipboard pastes, and upload paths are redacted and commented out, so those steps do not replay. Post-mortems and session handoffs.
 - `swlogs` — service-worker console tail (errors/warnings).
 
 `<match>` is a URL-or-title substring; a driven tab wins, then the most recently active. Ambiguous matches return a warning naming the other tabs — re-run with a longer match.

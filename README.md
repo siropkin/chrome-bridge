@@ -161,6 +161,7 @@ You're handing an agent your logged-in browser — the design assumes you want t
 - **Automation you can see.** Driven tabs wear a 🟣 pill that narrates each action, join a 🟣 tab group, and light a purple frame while a command runs; `node cli.mjs watch` mirrors the feed in your terminal. The pill's ⏏ disconnects the agent from a tab with one trusted click. The tab group is the driven-tab signal a malicious page can't fake.
 - **Why an unpacked extension?** So you can read exactly what runs — the entire extension is one readable file (`extension/background.js`) plus a manifest, not a minified store bundle.
 - **Prompt injection.** Everything the bridge returns is untrusted page content; the rules agents should follow are in [AGENTS.md](AGENTS.md). Note `upload`: it makes the browser read any local path the agent names into the page's file input, and the page can submit it — never let a page tell you (or the agent) what to attach.
+- **Replay exports omit secrets.** `history --batch` comments out typed or pasted text, dialog answers, clipboard pastes, and upload paths rather than retaining or replaying them. Review the exported script before using it for a post-mortem or handoff.
 - **CDP attach is detectable.** `net`/`emulate`/`shot` (and `upload`/`dialog`) attach Chrome's debugger, which page JS can detect (DevTools-attach side effects like the `Runtime.enable` leak) — anti-bot systems can flag the session, and it's your real logged-in profile. The non-CDP commands (`snap`, `click`, `fill`, `eval`, …) don't attach it.
 - **Chrome's "debugging this browser" bar.** While one of those CDP commands runs, Chrome shows its own *"'Chrome Bridge' is debugging this browser"* infobar — that is the bridge working as intended, and the bar disappears when the action finishes. Pressing its Cancel just stops that one action.
 
@@ -198,7 +199,7 @@ You're handing an agent your logged-in browser — the design assumes you want t
 | `mark <match>` · `release <match>` | Add/remove the driven-tab corner tag + 🟣 tab group; `release` also clears device emulation — the tab is fully the human's again |
 | `note <match> <text>` | Narrate to the human — the text appears in the driven tab's pill and its history (the pill already shows *what* runs; notes add *why*) |
 | `watch` | Live feed of every bridge command in your terminal — the twin of the in-page pill. Run it next to your agent session and follow along; Ctrl-C to exit |
-| `history [match] [-n N] [--batch out]` | What the bridge already ran on this machine (server ring, last 300 commands) — filter by match, take the newest N; `--batch out` exports it as a replayable batch script (failed commands commented out; fill/type/paste values redacted, never exported). Post-mortems and session handoffs |
+| `history [match] [-n N] [--batch out]` | What the bridge already ran on this machine (server ring, last 300 commands) — filter by match, take the newest N; `--batch out` exports it as a replayable batch script (failed commands commented out; typed/pasted text, dialog answers, clipboard pastes, and upload paths redacted, never exported). Post-mortems and session handoffs |
 | `swlogs` | Service-worker console tail (errors/warnings) |
 | `start` · `stop` | Server lifecycle — `start` spawns it detached if down (agents can self-heal a dead server) |
 

@@ -179,9 +179,10 @@ history [match] [-n N] [--batch out]
                                   what already ran on this machine (the server ring holds the
                                   last 300 commands) — post-mortems and session handoffs;
                                   --batch out writes a replayable batch script (failed commands
-                                  commented out; fill/type/paste values are redacted and their
-                                  lines commented as '# secret ·' — secrets never reach the
-                                  export; shot paths and multiline eval don't survive)
+                                  commented out; fill/type/paste values, dialog answers, clipboard
+                                  pastes, and upload paths are redacted and their lines commented
+                                  as '# secret ·' — secrets never reach the export; shot paths and
+                                  multiline eval don't survive)
 swlogs                            service-worker console tail (errors/warnings)
 emulate <match> <w> <h> [mobile]  CDP device view (no window resize); 'emulate <match> focus'
                                   makes the page believe it's focused — focus-gated work (pages
