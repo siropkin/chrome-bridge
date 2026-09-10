@@ -12,7 +12,7 @@ node <repo>/cli.mjs <command> …
 
 `node <repo>/cli.mjs health` → `{"ok":true,"extension":true}`
 
-- `bridge server not running` → run `node <repo>/cli.mjs start` (spawns it detached; a loaded extension reconnects on its own)
+- `bridge server not running` → run `node <repo>/cli.mjs start` (spawns it detached and waits briefly for a loaded extension to reconnect)
 - `extension not connected` → tell the user to load/reload `<repo>/extension/` at `chrome://extensions` (Developer mode → Load unpacked). You cannot click that button yourself.
 - a stderr warning like `⚠ extension 1.18.12 is loaded, the repo has 1.18.13` → the loaded extension is old code (after `git pull`, health still passes) → tell the user to reload the extension at `chrome://extensions`.
 

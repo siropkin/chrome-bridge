@@ -96,10 +96,53 @@ function readClipboard() {
 }
 
 // POSIX-ish word split honoring 'single'/"double" quotes — including quotes
-// glued onto bare words (a"b c" → `ab c`), like a shell. Two steps: split
-// into maximal runs of bare/quoted parts, then strip the quotes per part.
-const tokenize = (line) =>
-  (line.match(/(?:[^\s'"]+|"[^"]*"|'[^']*')+/g) || []).map((t) => t.replace(/"([^"]*)"|'([^']*)'/g, (_, d, s) => d ?? s));
+// glued onto bare words (a"b c" → `ab c`), like a shell. Backslash escapes
+// inside double quotes make JSON-stringified history entries replayable too:
+// the old regex splitter could not round-trip a value containing BOTH quote
+// types (the server wrapped it in a quote that also appeared in the value).
+function tokenize(line) {
+  const out = [];
+  let token = '';
+  let quote = null;
+  let started = false;
+  const escapes = { b: '\b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v' };
+  const push = () => {
+    if (started) out.push(token);
+    token = '';
+    started = false;
+  };
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quote) {
+      if (ch === quote) {
+        quote = null;
+        continue;
+      }
+      if (ch === '\\' && quote === '"') {
+        const next = line[++i];
+        if (next === 'u' && /^[0-9a-fA-F]{4}$/.test(line.slice(i + 1, i + 5))) {
+          token += String.fromCharCode(parseInt(line.slice(i + 1, i + 5), 16));
+          i += 4;
+        } else token += escapes[next] ?? next ?? '\\';
+        continue;
+      }
+      token += ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      push();
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      started = true;
+    } else {
+      token += ch;
+      started = true;
+    }
+  }
+  if (quote) throw new Error('unterminated quote in batch line');
+  push();
+  return out;
+}
 
 // Flag-strip + stray-flag scan shared by the flat-positional commands — the
 // hand-copied skeletons had already drifted once (a '--dfif' typo nearly got
@@ -323,8 +366,8 @@ async function run(cmdName, args) {
       // The body-shape check matters, not just any 200: a foreign server
       // squatting on 9333 must not read as "bridge already running" (the
       // spawned child would die on EADDRINUSE and start would lie 'started').
-      const bridgeUp = () => fetch(`${BASE}/health`).then((r) => r.json()).then((h) => h?.ok === true).catch(() => false);
-      if (await bridgeUp()) {
+      const bridgeHealth = () => fetch(`${BASE}/health`).then((r) => r.json()).then((h) => (h?.ok === true ? h : null)).catch(() => null);
+      if (await bridgeHealth()) {
         print('already running');
         break;
       }
@@ -337,13 +380,26 @@ async function run(cmdName, args) {
         stdio: ['ignore', log, log],
       });
       child.unref();
-      let up = false;
-      for (let i = 0; i < 20 && !up; i++) {
+      let health = null;
+      for (let i = 0; i < 20 && !health; i++) {
         await new Promise((r) => setTimeout(r, 250));
-        up = await bridgeUp();
+        health = await bridgeHealth();
       }
-      if (!up) fail('server did not come up in 5s — check ' + logPath);
-      print('started (log: ' + logPath + ') — a loaded extension reconnects on its own');
+      if (!health) fail('server did not come up in 5s — check ' + logPath);
+      // The server accepts HTTP before the MV3 worker observes its socket's
+      // close event and runs its 500ms reconnect. Without this grace, the
+      // natural `start && health` preflight often reported a perfectly loaded
+      // extension as disconnected and sent agents to ask for an unnecessary
+      // chrome://extensions reload.
+      for (let i = 0; i < 8 && !health.extension; i++) {
+        await new Promise((r) => setTimeout(r, 250));
+        health = await bridgeHealth();
+      }
+      print(
+        health?.extension
+          ? 'started (log: ' + logPath + ') — extension connected'
+          : 'started (log: ' + logPath + ') — server ready; extension not connected yet (if it was already loaded, run health again in a moment)'
+      );
       break;
     }
 

@@ -524,6 +524,23 @@ try {
   );
   fs.unlinkSync(histPath);
 
+  // History output is a batch file, so its quoting must round-trip hostile
+  // but valid page text. The old single-regex parser broke here when a field
+  // contained both quote types (and a backslash), silently changing a replay.
+  const quoted = `both 'quotes' and "double" \\ slash`;
+  const quoteNote = await cli('note', quoted, quoted);
+  const quotePath = '/tmp/chrome-bridge-selftest-quoted.batch';
+  const quoteExport = await cli('history', quoted, '--batch', quotePath);
+  const quoteReplay = await cliStdin(fs.readFileSync(quotePath, 'utf8'), 'batch');
+  let replayed;
+  try { replayed = JSON.parse(quoteReplay.stdout); } catch {}
+  assert(
+    quoteNote.status === 0 && quoteExport.status === 0 && replayed?.urlMatch === quoted && replayed?.text === quoted,
+    'history --batch round-trips both quote types and backslashes',
+    quoteExport.stdout + '\n' + fs.readFileSync(quotePath, 'utf8') + '\n' + quoteReplay.stdout + quoteReplay.stderr
+  );
+  fs.unlinkSync(quotePath);
+
   const helpFlag = await cli('--help');
   assert(helpFlag.status === 0 && helpFlag.stdout.includes('chrome-bridge CLI'), 'cli --help prints usage, exit 0', helpFlag.stdout + helpFlag.stderr);
   const unknown = await cli('nope');
@@ -1034,7 +1051,11 @@ try {
   const wDown = await cli('watch');
   assert(wDown.status !== 0 && wDown.stderr.includes('not running'), 'cli watch fails cleanly with the server down', wDown.stdout + wDown.stderr);
   const start = await cli('start');
-  assert(start.status === 0 && start.stdout.includes('started'), 'cli start brings the server up', start.stdout + start.stderr);
+  assert(
+    start.status === 0 && start.stdout.includes('server ready; extension not connected yet'),
+    'cli start waits through reconnect grace, then names a genuinely absent extension',
+    start.stdout + start.stderr
+  );
   const hUp = await cli('health');
   assert(hUp.status === 0 && JSON.parse(hUp.stdout).ok === true, 'health ok after start', hUp.stdout + hUp.stderr);
   await cli('stop'); // leave no detached server behind

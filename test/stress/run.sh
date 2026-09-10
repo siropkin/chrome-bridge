@@ -39,6 +39,17 @@ need2() { [ -n "$P2" ]; } # multi-profile sections skip silently via the caller
 # ---------------------------------------------------------------- section 1
 s_profiles() {
   SECTION=profiles; need2 || { bad "two profiles required (have: '$P1' only)"; return; }
+  # A stopped/failed prior run can leave these fixed-name setup tabs behind.
+  # Remove only this section's three exact fixture queries before creating its
+  # fresh pair; otherwise the first substring match wins and the parallel
+  # counter assertion reports a misleading product failure.
+  local stale p
+  for stale in 'static.html?a=dual' 'counter.html?a=p1' 'counter.html?a=p2'; do
+    for p in "$P1" "$P2"; do
+      [ -z "$p" ] && continue
+      while "${CLI[@]}" close "$stale" --profile "$p" >/dev/null 2>&1; do :; done
+    done
+  done
   run_batch 01-interleave || true
   assert_grep "interleave: 5 clean P1 increments" "$OUT/01-interleave.log" '^1$'
   local i; for i in 1 2 3 4 5; do

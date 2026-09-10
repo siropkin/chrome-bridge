@@ -222,7 +222,12 @@ let actSeq = 0;
 // line as /cmd itself).
 const shellq = (s) => {
   s = String(s);
-  return /[\s'"#]/.test(s) || /^--/.test(s) ? (s.includes('"') ? `'${s}'` : `"${s}"`) : s;
+  // JSON's double-quoted representation is line-safe and, paired with the
+  // batch tokenizer's double-quote escapes, round-trips every string. The
+  // prior "pick the other quote" shortcut emitted invalid batch lines for a
+  // value containing both ' and ". Backslashes need quoting too now that the
+  // tokenizer recognizes escapes in quoted history entries.
+  return /[\s'"#\\]/.test(s) || /^--/.test(s) ? JSON.stringify(s) : s;
 };
 const D = (m) => (m.diff ? ' --diff' : '');
 // Adding a command? SEVEN registries stay in sync (a missing one fails SILENTLY):
