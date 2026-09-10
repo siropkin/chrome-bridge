@@ -364,6 +364,8 @@ try {
   assert(fillTypo.status !== 0 && fillTypo.stderr.includes('unknown flag --dfif') && fillTypo.stderr.includes("'--' separator"), 'cli fill rejects a typoed flag instead of typing it, error teaches the -- separator', fillTypo.stdout + fillTypo.stderr);
   const navDiff = await cli('nav', 'example.com', 'https://example.org/x', '--diff');
   assert(navDiff.status === 0 && navDiff.stdout.includes('"url":"https://example.org/x"') && navDiff.stdout.includes('"diff":true'), 'cli nav --diff', navDiff.stdout + navDiff.stderr);
+  const navTypo = await cli('nav', 'example.com', 'https://example.org/x', '--dfif');
+  assert(navTypo.status !== 0 && navTypo.stderr.includes('unknown flag --dfif'), 'cli nav rejects an unknown flag before routing', navTypo.stdout + navTypo.stderr);
 
   const scrollDiff = await cli('scroll', 'example.com', 'down', '--diff');
   assert(scrollDiff.status === 0 && scrollDiff.stdout.includes('"target":"down"') && scrollDiff.stdout.includes('"diff":true'), 'cli scroll --diff', scrollDiff.stdout + scrollDiff.stderr);
@@ -377,6 +379,8 @@ try {
   assert(up.status === 0 && up.stdout.includes('"files":["') && up.stdout.includes(`${ROOT}package.json`) && up.stdout.includes('"diff":true'), 'cli upload resolves absolute paths + --diff', up.stdout + up.stderr);
   const upMissing = await cli('upload', 'example.com', '@e5', '/nope/missing-file.txt');
   assert(upMissing.status !== 0 && upMissing.stderr.includes('file not found'), 'cli upload rejects missing file before round trip', upMissing.stdout + upMissing.stderr);
+  const upTypo = await cli('upload', 'example.com', '@e5', '--dfif');
+  assert(upTypo.status !== 0 && upTypo.stderr.includes('unknown flag --dfif'), 'cli upload rejects an unknown flag before treating it as a file', upTypo.stdout + upTypo.stderr);
   const upNoArgs = await cli('upload', 'example.com');
   assert(upNoArgs.status !== 0 && upNoArgs.stderr.includes('usage: upload'), 'cli upload usage error', upNoArgs.stdout + upNoArgs.stderr);
 
@@ -459,6 +463,8 @@ try {
   assert(dlg.status === 0 && dlg.stdout.includes('"accept":true') && !dlg.stdout.includes('"text"'), 'cli dialog accept sends no text', dlg.stdout + dlg.stderr);
   const dlgText = await cli('dialog', 'example.com', 'dismiss', '--text', 'no thanks');
   assert(dlgText.status === 0 && dlgText.stdout.includes('"accept":false') && dlgText.stdout.includes('"text":"no thanks"'), 'cli dialog dismiss --text', dlgText.stdout + dlgText.stderr);
+  const dlgTextBare = await cli('dialog', 'example.com', 'accept', '--text');
+  assert(dlgTextBare.status !== 0 && dlgTextBare.stderr.includes('--text needs an answer'), 'cli dialog rejects a missing --text answer', dlgTextBare.stdout + dlgTextBare.stderr);
   const dlgBad = await cli('dialog', 'example.com', 'maybe');
   assert(dlgBad.status !== 0 && dlgBad.stderr.includes('usage: dialog'), 'cli dialog validates the action', dlgBad.stdout + dlgBad.stderr);
   const drg = await cli('drag', 'example.com', '@e1', '@e2', '--diff');
@@ -480,6 +486,8 @@ try {
   assert(emuFocus.status === 0 && emuFocus.stdout.includes('"focus":true') && !emuFocus.stdout.includes('"width"'), 'cli emulate focus mode (no w/h)', emuFocus.stdout + emuFocus.stderr);
   const emu = await cli('emulate', 'example.com', '375', '667', 'mobile');
   assert(emu.status === 0 && emu.stdout.includes('"width":375') && emu.stdout.includes('"mobile":true'), 'cli emulate wire shape', emu.stdout + emu.stderr);
+  const emuExtra = await cli('emulate', 'example.com', '375', '667', 'tablet');
+  assert(emuExtra.status !== 0 && emuExtra.stderr.includes('usage: emulate'), 'cli emulate rejects an unknown mode instead of ignoring it', emuExtra.stdout + emuExtra.stderr);
   const rsz = await cli('resize', 'example.com', '800', '600');
   assert(rsz.status === 0 && rsz.stdout.includes('"width":800') && rsz.stdout.includes('"height":600'), 'cli resize wire shape', rsz.stdout + rsz.stderr);
   const opn = await cli('open', 'https://example.org/');

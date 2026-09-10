@@ -536,8 +536,11 @@ async function run(cmdName, args) {
 
     case 'nav':
     case 'navigate': {
-      const rest = args.filter((a) => a !== '--diff');
-      if (!rest[0] || !rest[1]) fail('usage: nav <match> <url> [--diff]');
+      // Match/action commands fail locally on a typoed flag. Silently
+      // ignoring --dfif here is worse than a normal usage error: an agent can
+      // reasonably believe its requested observation mode ran on a real tab.
+      const rest = takeFlags(args, ['--diff'], 2, 'nav <match> <url> [--diff]');
+      if (rest.length !== 2) fail('usage: nav <match> <url> [--diff]');
       print(await cmd({ type: 'navigate', urlMatch: rest[0], url: rest[1], ...(args.includes('--diff') ? { diff: true } : {}) }));
       break;
     }
@@ -608,8 +611,10 @@ async function run(cmdName, args) {
 
     case 'dialog': {
       if (!args[0] || !['accept', 'dismiss'].includes(args[1])) fail('usage: dialog <match> accept|dismiss [--text s]');
-      const ti = args.indexOf('--text');
-      const text = ti >= 0 ? args.slice(ti + 1).filter((a) => !a.startsWith('--')).join(' ') : null;
+      const rest = args.slice(2);
+      if (rest.length && rest[0] !== '--text') fail('usage: dialog <match> accept|dismiss [--text s]');
+      const text = rest.length ? rest.slice(1).join(' ') : null;
+      if (rest.length && !text) fail('--text needs an answer');
       print(await cmd({ type: 'dialog', urlMatch: args[0], accept: args[1] === 'accept', ...(text ? { text } : {}) }));
       break;
     }
@@ -678,6 +683,8 @@ async function run(cmdName, args) {
     case 'upload': {
       const rest = args.filter((a) => a !== '--diff');
       if (!rest[0] || !rest[1] || !rest[2]) fail('usage: upload <match> <@ref|css> <file...> [--diff]');
+      const stray = rest.slice(2).find((a) => a.startsWith('--'));
+      if (stray) fail(`unknown flag ${stray} (flags: --diff)`);
       // Resolve to absolute paths here — Chrome (not this process) opens them,
       // so a relative path would mean nothing on the other side of the WS.
       const files = rest.slice(2).map((f) => {
@@ -894,11 +901,13 @@ async function run(cmdName, args) {
       // emulate focus: the page believes it's focused — focus-GATED work
       // keeps running in a background tab (spike, #18).
       if (cmdName === 'emulate' && args[1] === 'focus') {
-        if (!args[0]) fail('usage: emulate <match> focus');
+        if (!args[0] || args.length !== 2) fail('usage: emulate <match> focus');
         print(await cmd({ type: 'emulate', urlMatch: args[0], focus: true }));
         break;
       }
       if (!args[0] || !args[1] || !args[2]) fail(`usage: ${cmdName} <match> <w> <h>${cmdName === 'emulate' ? ' [mobile]|focus' : ''}`);
+      if ((cmdName === 'emulate' && args.length > 4) || (cmdName === 'resize' && args.length > 3) || (cmdName === 'emulate' && args[3] && args[3] !== 'mobile'))
+        fail(`usage: ${cmdName} <match> <w> <h>${cmdName === 'emulate' ? ' [mobile]|focus' : ''}`);
       const w = Number(args[1]);
       const h = Number(args[2]);
       if (!Number.isFinite(w) || !Number.isFinite(h) || w < 1 || h < 1) fail(`${cmdName} needs numeric <w> <h>`);

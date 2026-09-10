@@ -171,16 +171,16 @@ HTTP API 只有一个命令端点:`POST /cmd`,Body 如 `{"type": "snap", "urlMat
 |---|---|
 | `tabs` | 列出标签页(id、url、标题、是否被驱动);多个 Chrome 配置同时连接时合并输出,带 `profile` 标记 |
 | `profiles` | 列出已连接的 Chrome 配置——id 和 name(用于 `--profile`)+ 版本 |
-| `open <url>` · `nav <match> <url> [--diff]` · `close <match>` | 标签页生命周期——`open`/`nav` 等待页面加载完成(8 秒上限;返回中的 `loaded:false` 表示超时触发时页面仍在加载——`snap`/`eval`/`wait --text` 对已加载部分照常可用) |
+| `open <url>` · `nav <match> <url> [--diff]` · `close <match>` | 标签页生命周期——`open`/`nav` 等待页面加载完成(8 秒上限;返回中的 `loaded:false` 表示超时触发时页面仍在加载——`snap`/`eval`/`wait --text` 对已加载部分照常可用)。`nav` 只接受所示参数和 `--diff`;拼写错误会在路由前失败 |
 | `snap <match> [css\|@ref] [--diff] [--href] [--skeleton] [--find "nl"]` | 无障碍树快照,带 `@eN` 引用——**便宜,优先于截图使用**。可限定子树(CSS 或 `@ref`)、与上一次快照对比,`--href` 输出全部链接 URL。`--skeleton` 用于密集页面:深度受限的地图,被裁剪的子树显示 `… N inside`(钻取:`snap <match> @ref`),不再无声错过 300 节点截断。`--find "取消按钮"` 由本地 Gemini Nano 挑出匹配行(~2 秒,无云端 token)——是待验证的候选清单,不是绝对正确。`*` 前缀标记上次快照后新增的元素 |
 | `click <match> <@ref\|css> [--dbl] [--diff] [--trusted]` | 点击(自动滚动到可见位置,完整 pointer/mouse 事件序列,遮挡检测);`--dbl` 双击;`--trusted` 走 CDP Input(isTrusted=true,画布类应用如 Figma 接受) |
 | `drag <match> <@ref\|css> <@ref\|css> [--diff] [--trusted]` | 把一个元素拖到另一个上(合成指针序列;`--trusted` 走 CDP Input——isTrusted,且触发传统 HTML5 dragstart/drop) |
-| `dialog <match> accept\|dismiss [--text s]` | 通过 CDP 应答 JS 对话框——仅当对话框在调试器会话期间(net/shot/…)打开时可达;若在未挂载的标签页上卡死则无法应答:用 `nav <match> <url>` 恢复(导航会丢弃对话框) |
+| `dialog <match> accept\|dismiss [--text s]` | 通过 CDP 应答 JS 对话框——仅当对话框在调试器会话期间(net/shot/…)打开时可达;若在未挂载的标签页上卡死则无法应答:用 `nav <match> <url>` 恢复(导航会丢弃对话框)。`--text` 必须带应答内容 |
 | `fill <match> <@ref\|css> <value> [--diff]` | 设置输入框的值——React 安全(原生 setter + input/change 事件);原生 `<select>` 按选项值或标签匹配 |
 | `type <match> <@ref\|css> <text> [--diff] [--trusted]` · `press <match> <key> [@ref] [--diff] [--trusted]` · `hover <match> <@ref\|css> [--diff] [--trusted]` | 逐字符输入(自动补全 UI)、按键(`Control+k` 组合键可用)、悬停;`--trusted` 走 CDP 输入(isTrusted——Enter 能触发表单提交等浏览器默认行为) |
 | `paste <match> [@ref\|css] [--diff] [-- <text>]` | 以真实粘贴的语义写入聚焦(或指定)的字段——会回退 `fill` 的富文本编辑器(Quill、Reddit/LinkedIn 编辑器)接受粘贴;不给 `-- <text>` 时读取系统剪贴板 |
 | `scroll <match> <up\|down\|top\|bottom\|@ref\|css> [--diff]` | 滚动——自动找到真正的滚动容器(Linear、Gmail 这类应用外壳滚动的是内部面板,不是窗口) |
-| `upload <match> <@ref\|css> <file...> [--diff]` | 通过 CDP 设置文件输入框的文件——隐藏输入框也可用;目标是输入框或包裹它的元素 |
+| `upload <match> <@ref\|css> <file...> [--diff]` | 通过 CDP 设置文件输入框的文件——隐藏输入框也可用;目标是输入框或包裹它的元素。只有 `--diff` 选项;未知的 `--flag` 会失败,不会被当作文件 |
 | `ask <match> <question>` | *(实验性)* 本地 Gemini Nano 根据页面文本回答——无云端 token,质量仅供预筛 |
 | `wait <match> <css\|--text t\|--human\|--pixel-change> [--timeout ms]` | 等待元素或可见文本出现(MutationObserver 驱动,页面一变即返回;默认 10 秒,上限 60 秒)。`--human` 把标签页交给你——验证码/两步验证/登录墙:小标签提示轮到你了,命令阻塞到你完成操作(默认 2 分钟),然后返回你所做改动的快照 diff。`--pixel-change` 轮询直到像素变化(无障碍树看不到的画布变化) |
 | `eval <match> <js\|-> [--world main\|isolated]` | 在页面中执行 JS;`-` 从 stdin 读取 |
@@ -190,7 +190,7 @@ HTTP API 只有一个命令端点:`POST /cmd`,Body 如 `{"type": "snap", "urlMat
 | `measure <match> <css>` | 元素位置 + 计算样式,JSON 输出——不看像素也能知道布局真相 |
 | `console <match> [--clear] [--ask [q]]` | 页面 console + 未捕获错误(首次调用时安装钩子);`--ask` 用本地 Gemini Nano 分诊日志——只有结论消耗云端 token |
 | `grid <match>` | 开关 8px 对齐网格覆盖层 |
-| `emulate <match> <w> <h> [mobile]` · `emulate <match> focus` · `unemulate <match>` | 桌面 / 移动设备视图切换——CDP 模拟,无需调整窗口大小;`focus` 让页面相信自己处于焦点状态——依赖焦点的后台标签页任务继续运行(不会渲染被遮挡的窗口) |
+| `emulate <match> <w> <h> [mobile]` · `emulate <match> focus` · `unemulate <match>` | 桌面 / 移动设备视图切换——CDP 模拟,无需调整窗口大小;`focus` 让页面相信自己处于焦点状态——依赖焦点的后台标签页任务继续运行(不会渲染被遮挡的窗口)。只接受 `mobile` 和 `focus` 两种模式 |
 | `resize <match> <w> <h>` | 调整窗口大小 |
 | `batch` | 从 stdin 逐行读取命令,一个进程跑完整序列;遇错即停 |
 | `mark <match>` · `release <match>` | 添加 / 移除驱动标记(右下角 🟣 标签)+ 标签页分组 |

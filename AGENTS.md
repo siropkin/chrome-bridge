@@ -68,7 +68,8 @@ open <url>                        open + mark a new tab (waits for load, 8s cap;
 nav <match> <url> [--diff]        navigate matching tab (waits for load, 8s cap;
                                   same loaded:false semantics as open). Nav to the URL
                                   the tab already shows IS a reload (state resets) —
-                                  the result warns; skip nav to drive the page as-is
+                                  the result warns; skip nav to drive the page as-is.
+                                  Only --diff is accepted; typos fail before routing
 close <match>                     close matching tab
 snap <match> [css|@ref] [--diff] [--href] [--skeleton] [--find "nl"]
                                   a11y tree with @eN refs; [css|@ref] scopes to a subtree
@@ -99,7 +100,7 @@ dialog <match> accept|dismiss [--text s]
                                   only if it opened during a live debugger session (net/shot/
                                   etc.); a dialog that wedged an unattached tab cannot be
                                   answered: recover with nav <match> <url> — navigation drops
-                                  it (--text answers a prompt)
+                                  it (--text answers a prompt and needs an answer)
 fill <match> <@ref|css> <value> [--diff]   set input value (React-safe); on a native <select>
                                   matches option value or label — the error lists options on a miss;
                                   a value starting with '--' goes after a bare '--' separator:
@@ -114,7 +115,9 @@ paste <match> [@ref|css] [--diff] [-- <text>]
                                   editors that own their model (Quill, Reddit/LinkedIn rich
                                   composers) revert fill but take a paste; without -- <text>
                                   it reads the OS clipboard (pbpaste/xclip/Get-Clipboard)
-upload <match> <@ref|css> <file...> [--diff]   set a file input's files (CDP; hidden inputs work)
+upload <match> <@ref|css> <file...> [--diff]   set a file input's files (CDP; hidden inputs work;
+                                  --diff is the only option — an unknown --flag fails,
+                                  rather than being treated as a file)
 press <match> <key> [@ref|css] [--diff] [--trusted]   key press (Enter/Tab/Escape/Backspace/
                                   Delete/Insert/arrows/Home/End/PageUp/PageDown, or one char —
                                   space = " "; unknown names fail loud) on focused or given
@@ -182,7 +185,8 @@ history [match] [-n N] [--batch out]
 swlogs                            service-worker console tail (errors/warnings)
 emulate <match> <w> <h> [mobile]  CDP device view (no window resize); 'emulate <match> focus'
                                   makes the page believe it's focused — focus-gated work (pages
-                                  pausing on blur) keeps running in a background tab; it does
+                                  pausing on blur) keeps running in a background tab; mobile/focus
+                                  are the only modes; it does
                                   NOT render an occluded window
 unemulate <match>                 clear emulation + detach debugger
 resize <match> <w> <h>            resize the window
