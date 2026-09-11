@@ -272,6 +272,7 @@ const CLI_LINES = {
   unemulate: (m) => `unemulate ${shellq(m.urlMatch)}`,
   tabs: (m) => `tabs${m.urlMatch ? ' ' + shellq(m.urlMatch) : ''}`,
   swlogs: () => 'swlogs',
+  extreload: () => 'extreload',
   snap: (m) =>
     `snap ${shellq(m.urlMatch)}${m.scope ? ' ' + shellq(m.scope) : ''}${m.href ? ' --href' : ''}${m.skeleton ? ' --skeleton' : ''}${m.find ? ' --find ' + shellq(m.find) : ''}${D(m)}`,
   click: (m) => `click ${shellq(m.urlMatch)} ${shellq(m.target)}${m.dbl ? ' --dbl' : ''}${m.trusted ? ' --trusted' : ''}${D(m)}`,

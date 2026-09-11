@@ -67,7 +67,7 @@ Set up chrome-bridge — the bridge that lets you drive my real, logged-in Chrom
 
    (`stop` reporting "nothing was running" is fine; the stop-then-start pair guarantees the server runs the code you just fetched, not some older copy from another location — a loaded extension reconnects on its own.)
 
-   - health prints a ⚠ line saying the loaded extension's version differs from the repo → ask me to reload the extension at `chrome://extensions`, then re-run health.
+   - health prints a ⚠ line saying the loaded extension's version differs from the repo → run `node <repo>/cli.mjs extreload` (reloads the extension from disk), then re-run health; if the warning persists, ask me to reload the extension at `chrome://extensions`.
    - health reports `"extension":true` (with no ⚠) → jump to step 4.
    - health reports `"extension":false` → step 3. But if the extension was connected before your restart, wait ~10s and re-run health once first — it reconnects on its own after a server restart.
    - server won't start → show me the error and the last lines of `<repo>/server.log` (if it exists), then stop.

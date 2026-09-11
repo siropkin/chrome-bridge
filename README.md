@@ -69,7 +69,7 @@ Set up chrome-bridge — the bridge that lets you drive my real, logged-in Chrom
 
    (`stop` reporting "nothing was running" is fine; the stop-then-start pair guarantees the server runs the code you just fetched, not some older copy from another location — a loaded extension reconnects on its own.)
 
-   - health prints a ⚠ line saying the loaded extension's version differs from the repo → ask me to reload the extension at `chrome://extensions`, then re-run health.
+   - health prints a ⚠ line saying the loaded extension's version differs from the repo → run `node <repo>/cli.mjs extreload` (reloads the extension from disk), then re-run health; if the warning persists, ask me to reload the extension at `chrome://extensions`.
    - health reports `"extension":true` (with no ⚠) → jump to step 4.
    - health reports `"extension":false` → step 3. But if the extension was connected before your restart, wait ~10s and re-run health once first — it reconnects on its own after a server restart.
    - server won't start → show me the error and the last lines of `<repo>/server.log` (if it exists), then stop.
@@ -126,7 +126,7 @@ MCP bridges (mcp-chrome, BrowserMCP) need an MCP-capable client and a configured
 
 After loading the extension you won't see anything until the bridge server is running and your AI tool sends its first command — from then on, any tab the agent touches wears the purple 🟣 pill. Silence before that is normal, not a broken install.
 
-**Upgrades**: after `git pull`, restart the server — it runs the code from when it was started, and its health check still passes, so nothing else reminds you. Also reload the extension at `chrome://extensions` (the service worker is old code too — `node cli.mjs health` prints a warning when the loaded extension's version differs from the repo):
+**Upgrades**: after `git pull`, restart the server — it runs the code from when it was started, and its health check still passes, so nothing else reminds you. Also reload the extension with `node cli.mjs extreload` (the service worker is old code too — `node cli.mjs health` prints a warning when the loaded extension's version differs from the repo):
 
 ```bash
 node cli.mjs stop && node cli.mjs start
@@ -201,6 +201,7 @@ You're handing an agent your logged-in browser — the design assumes you want t
 | `watch` | Live feed of every bridge command in your terminal — the twin of the in-page pill. Run it next to your agent session and follow along; Ctrl-C to exit |
 | `history [match] [-n N] [--batch out]` | What the bridge already ran on this machine (server ring, last 300 commands) — filter by match, take the newest N; `--batch out` exports it as a replayable batch script (failed commands commented out; typed/pasted text, dialog answers, clipboard pastes, and upload paths redacted, never exported). Post-mortems and session handoffs |
 | `swlogs` | Service-worker console tail (errors/warnings) |
+| `extreload` | Reload the extension from disk — picks up code changes without the chrome://extensions click (the stale-version health warning's fix) |
 | `start` · `stop` | Server lifecycle — `start` spawns it detached if down (agents can self-heal a dead server) |
 
 `<match>` is a substring of the tab URL or title and must identify exactly one tab in the selected profile. If several match, the command is refused before it marks or acts on anything — re-run with a longer match. Refs survive re-`snap`s (an element keeps its `@eN` while its role+name are unchanged) and expire on navigation — re-`snap` after `nav`. `snap` walks open shadow roots (their elements get refs and click/fill straight in), and CSS selectors pierce open roots too.

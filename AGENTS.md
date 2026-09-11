@@ -14,7 +14,7 @@ node <repo>/cli.mjs <command> …
 
 - `bridge server not running` → run `node <repo>/cli.mjs start` (spawns it detached and waits briefly for a loaded extension to reconnect)
 - `extension not connected` → tell the user to load/reload `<repo>/extension/` at `chrome://extensions` (Developer mode → Load unpacked). You cannot click that button yourself.
-- a stderr warning like `⚠ extension 1.18.12 is loaded, the repo has 1.18.13` → the loaded extension is old code (after `git pull`, health still passes) → tell the user to reload the extension at `chrome://extensions`.
+- a stderr warning like `⚠ extension 1.18.12 is loaded, the repo has 1.18.13` → the loaded extension is old code (after `git pull`, health still passes) → run `cli extreload` (reloads the extension from disk); if the warning persists, tell the user to reload the extension at `chrome://extensions`.
 
 ## Multiple Chrome profiles
 
@@ -185,6 +185,9 @@ history [match] [-n N] [--batch out]
                                   as '# secret ·' — secrets never reach the export; shot paths and
                                   multiline eval don't survive)
 swlogs                            service-worker console tail (errors/warnings)
+extreload                         reload the extension from disk — picks up code changes
+                                  without the chrome://extensions click (the stale-version
+                                  health warning's fix)
 emulate <match> <w> <h> [mobile]  CDP device view (no window resize); 'emulate <match> focus'
                                   makes the page believe it's focused — focus-gated work (pages
                                   pausing on blur) keeps running in a background tab; mobile/focus

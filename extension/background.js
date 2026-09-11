@@ -2389,7 +2389,25 @@ async function cdpKeyEvent(tabId, keyIn) {
   // treats it as modified typing and the command never fires (Cmd+V inserted
   // nothing).
   const accel = isChar && (bits & (1 | 2 | 4)) !== 0;
-  await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', { ...base, type: accel ? 'rawKeyDown' : 'keyDown', ...(isChar && !accel ? { text: key, unmodifiedText: key } : {}) });
+  if (accel) {
+    // Accelerators need the MODIFIER KEYS themselves held, not just the bits
+    // on the char event — Blink matches editing commands (paste, select all)
+    // from the accumulated modifier state. Wrap the char event in real
+    // modifier down/up events (Puppeteer does the same), and drop the char's
+    // nativeVirtualKeyCode: vk is a WINDOWS keycode, and a wrong mac keycode
+    // breaks the binding lookup.
+    const MODKEYS = [];
+    if (bits & 4) MODKEYS.push({ key: 'Meta', code: 'MetaLeft', windowsVirtualKeyCode: 91, nativeVirtualKeyCode: 55 }); // 55 = kVK_Command
+    if (bits & 2) MODKEYS.push({ key: 'Control', code: 'ControlLeft', windowsVirtualKeyCode: 17, nativeVirtualKeyCode: 59 }); // kVK_Control
+    if (bits & 1) MODKEYS.push({ key: 'Alt', code: 'OptionLeft', windowsVirtualKeyCode: 18, nativeVirtualKeyCode: 58 }); // kVK_Option
+    for (const m of MODKEYS) await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', { ...m, modifiers: bits, type: 'rawKeyDown' });
+    const { nativeVirtualKeyCode, ...noNative } = base;
+    await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', { ...noNative, type: 'rawKeyDown' });
+    await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', { ...noNative, type: 'keyUp' });
+    for (const m of MODKEYS.reverse()) await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', { ...m, modifiers: 0, type: 'keyUp' });
+    return;
+  }
+  await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', { ...base, type: 'keyDown', ...(isChar ? { text: key, unmodifiedText: key } : {}) });
   await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', { ...base, type: 'keyUp' });
 }
 
@@ -3476,6 +3494,16 @@ async function handle(msg) {
 
   if (msg.type === 'swlogs') {
     return swLogs;
+  }
+
+  if (msg.type === 'extreload') {
+    // Reload from disk — picks up unpacked-extension code changes without the
+    // manual chrome://extensions click. Reply FIRST: the reload kills this
+    // worker, so the ack must be on the wire before we go. Same effect as the
+    // manual reload: storage.session wipes, tab marks re-derive from the
+    // 🟣 group, Chrome clears emulation when the debugger detaches.
+    setTimeout(() => chrome.runtime.reload(), 250);
+    return 'reloading from disk — the extension reconnects in a few seconds; tab marks survive (re-derived from the 🟣 group), emulation and in-flight debugger commands do not';
   }
 
   if (msg.type === 'tabs') {

@@ -289,6 +289,9 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     fill/type/paste values redacted as '# secret ·' lines;
                                     shot output paths and multiline eval code don't survive)
   swlogs                            service-worker console tail (errors/warnings)
+  extreload                         reload the extension from disk — picks up code changes
+                                    without the chrome://extensions click (the stale-version
+                                    health warning's fix)
   emulate <match> <w> <h> [mobile]  CDP device view (no window resize); 'focus' instead of
                                     <w> <h> emulates page focus (focus-gated work keeps running
                                     in a background tab — does NOT render an occluded window)
@@ -339,7 +342,7 @@ async function run(cmdName, args) {
           } catch {}
           for (const p of h.profiles) {
             if (mine && p.v && p.v !== mine)
-              console.error(`⚠ extension ${p.v} is loaded (profile ${p.name || p.id.slice(0, 4)}), the repo has ${mine} — reload the extension at chrome://extensions`);
+              console.error(`⚠ extension ${p.v} is loaded (profile ${p.name || p.id.slice(0, 4)}), the repo has ${mine} — run \`cli extreload\` (or reload at chrome://extensions)`);
           }
         }
       } catch {
@@ -425,6 +428,10 @@ async function run(cmdName, args) {
 
     case 'swlogs':
       print((await cmd({ type: 'swlogs' })).join('\n') || '(no errors or warnings logged)');
+      break;
+
+    case 'extreload':
+      print(await cmd({ type: 'extreload' }));
       break;
 
     // Live feed of every command the bridge runs — the terminal twin of the

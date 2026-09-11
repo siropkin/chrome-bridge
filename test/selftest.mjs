@@ -713,8 +713,9 @@ try {
     const verbBlock = bg.slice(bg.indexOf('const ACT_VERBS'), bg.indexOf('};', bg.indexOf('const ACT_VERBS')));
     const verbKeys = new Set([...verbBlock.matchAll(/^  (\w+): \[/gm)].map((m) => m[1]));
     // ping/swlogs/tabs/probe never reach findTab (no pill; probe is a
-    // server-internal routing query); note is special-cased in activityPhrases.
-    const NO_VERBS = ['ping', 'swlogs', 'tabs', 'note', 'probe'];
+    // server-internal routing query); note is special-cased in activityPhrases;
+    // extreload restarts the worker — no tab, no pill.
+    const NO_VERBS = ['ping', 'swlogs', 'tabs', 'note', 'probe', 'extreload'];
     assert(
       [...handleTypes].filter((t) => !NO_VERBS.includes(t)).sort().join() === [...verbKeys].sort().join(),
       'drift: ACT_VERBS keys vs handle() types',
