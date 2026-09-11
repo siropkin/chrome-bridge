@@ -2384,7 +2384,12 @@ async function cdpKeyEvent(tabId, keyIn) {
     modifiers: bits,
   };
   // keyDown with `text` is what inserts the character (DevTools does the same).
-  await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', { ...base, type: 'keyDown', ...(isChar ? { text: key, unmodifiedText: key } : {}) });
+  // With Ctrl/Alt/Meta held it is NOT text entry — it's an accelerator
+  // (Cmd+V paste, Cmd+A select all): send rawKeyDown without text, or Chrome
+  // treats it as modified typing and the command never fires (Cmd+V inserted
+  // nothing).
+  const accel = isChar && (bits & (1 | 2 | 4)) !== 0;
+  await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', { ...base, type: accel ? 'rawKeyDown' : 'keyDown', ...(isChar && !accel ? { text: key, unmodifiedText: key } : {}) });
   await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', { ...base, type: 'keyUp' });
 }
 
@@ -2738,13 +2743,30 @@ async function runEval(tabId, code, world = 'auto') {
       return { ok: false, error: String(e) };
     }
   };
-  const run = (w) =>
-    chrome.scripting.executeScript({
-      target: { tabId },
-      world: w,
-      func: injected,
-      args: [code],
-    });
+  const run = async (w) => {
+    try {
+      return await chrome.scripting.executeScript({
+        target: { tabId },
+        world: w,
+        func: injected,
+        args: [code],
+      });
+    } catch (e) {
+      // After a debugger session dies EXTERNALLY (infobar cancel, DevTools
+      // opening, a debugger-hostile page like console.cloud.google.com),
+      // Chrome leaves the tab reporting its http(s) URL while injection fails
+      // as if the document were another extension's page — every command then
+      // dies with Chrome's misleading error until a reload. Name it and the
+      // remedy instead. A tab genuinely ON another extension's page keeps the
+      // original error (its URL is chrome-extension://).
+      if (/Cannot access a chrome-extension:\/\/ URL/.test(String(e))) {
+        const url = (await chrome.tabs.get(tabId).catch(() => null))?.url || '';
+        if (/^https?:/.test(url))
+          throw new Error('tab wedged after an external debugger detach — reload it (nav <match> <its url>) and retry');
+      }
+      throw e;
+    }
+  };
 
   // Cached world first; on CSP failure fall through to the full ladder.
   const worlds = world === 'auto' ? [...new Set([worldCache.get(tabId), 'ISOLATED', 'MAIN'])] : [world];
