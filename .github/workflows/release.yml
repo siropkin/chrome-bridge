@@ -79,4 +79,7 @@ jobs:
           refresh-token: ${{ secrets.CHROME_REFRESH_TOKEN }}
           # `publish: false` uploads as a draft — review in the CWS dashboard,
           # then click Publish. Flip to `true` once you trust the pipeline.
+          # ITEM_NOT_UPDATABLE = a previous version is still pending review —
+          # the store accepts one draft at a time; publish (or cancel) the
+          # pending one, then re-run this job (`gh run rerun <id>`).
           publish: false
