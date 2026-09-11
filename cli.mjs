@@ -45,7 +45,9 @@ const imgDims = (b) => {
   return null;
 };
 
-async function cmd(msg) {
+// soft: return { error } instead of exiting — for callers that translate a
+// known server-side failure into their own advice (extreload's bootstrap).
+async function cmd(msg, soft) {
   let res;
   try {
     res = await fetch(`${BASE}/cmd`, {
@@ -64,7 +66,10 @@ async function cmd(msg) {
   // Two real causes, one message: the server died mid-reply (restart/stop with
   // the command in flight) or something else owns the port.
   if (!out) fail(`unreadable response from bridge on port ${PORT} — the server died mid-reply (restart?), or another server owns the port`);
-  if (!out.ok) fail(out.error);
+  if (!out.ok) {
+    if (soft) return { error: String(out.error) };
+    fail(out.error);
+  }
   return out.result;
 }
 
@@ -341,8 +346,13 @@ async function run(cmdName, args) {
             mine = JSON.parse(fs.readFileSync(fileURLToPath(new URL('./extension/manifest.json', import.meta.url)), 'utf8')).version;
           } catch {}
           for (const p of h.profiles) {
-            if (mine && p.v && p.v !== mine)
-              console.error(`⚠ extension ${p.v} is loaded (profile ${p.name || p.id.slice(0, 4)}), the repo has ${mine} — run \`cli extreload\` (or reload at chrome://extensions)`);
+            if (mine && p.v && p.v !== mine) {
+              // Bare extreload is refused when several profiles are connected
+              // (route() can't pick one) — name the stale profile in the fix.
+              const fix =
+                h.profiles.length > 1 ? `cli extreload --profile ${JSON.stringify(p.name || p.id.slice(0, 4))}` : 'cli extreload';
+              console.error(`⚠ extension ${p.v} is loaded (profile ${p.name || p.id.slice(0, 4)}), the repo has ${mine} — run \`${fix}\` (or reload at chrome://extensions)`);
+            }
           }
         }
       } catch {
@@ -430,9 +440,20 @@ async function run(cmdName, args) {
       print((await cmd({ type: 'swlogs' })).join('\n') || '(no errors or warnings logged)');
       break;
 
-    case 'extreload':
-      print(await cmd({ type: 'extreload' }));
+    case 'extreload': {
+      const r = await cmd({ type: 'extreload' }, true);
+      // The command's own bootstrap trap: an extension OLD enough to need it
+      // (pre-1.18.20) has no extreload handler — its handle() falls through to
+      // 'unknown type'. That case is exactly the one manual reload.
+      if (r?.error)
+        fail(
+          /unknown type/.test(r.error)
+            ? 'the loaded extension predates extreload — reload it once by hand at chrome://extensions'
+            : r.error
+        );
+      print(r);
       break;
+    }
 
     // Live feed of every command the bridge runs — the terminal twin of the
     // pill in the driven tab. For the human watching the session, not for you

@@ -1007,6 +1007,13 @@ async function detachDbg(tabId) {
 // tab, extension reload) invalidates the refcount silently — without this, a
 // stale count makes every later unemulate's detach a no-op and the session
 // stays wedged until the tab closes.
+// The mid-command error names all three causes: the third is the dangerous
+// one — on a debugger-hostile page (console.cloud.google.com kills sessions
+// on sight) 'retry the command' alone re-attaches, gets re-killed, and wedges
+// the tab for ALL commands until a nav reload.
+const DBG_GONE =
+  'the "debugging this browser" infobar was dismissed, DevTools opened on this tab, or the page itself killed the session (debugger-hostile, e.g. console.cloud.google.com); ' +
+  'retry the command — if every command on the tab then fails (even snap), the tab wedged: heal it with nav <match> <its url>';
 chrome.debugger.onDetach.addListener((src) => {
   if (cdpRefs.delete(src.tabId) || emulatedTabs.has(src.tabId)) logLine('dbg DETACHED EXTERNALLY ' + src.tabId);
   emulatedTabs.delete(src.tabId);
@@ -1027,10 +1034,10 @@ chrome.debugger.onDetach.addListener((src) => {
     // don't also fast-reject its withCdp, or the partial capture (the useful
     // part) turns into a bare error.
     c.detached = true; // captureNetwork reports the cut-short capture
-    c.kill?.(new Error('debugger detached during capture setup — the "debugging this browser" infobar was dismissed or DevTools opened on this tab; retry the command')); // pre-sleep awaits race this
+    c.kill?.(new Error('debugger detached during capture setup — ' + DBG_GONE)); // pre-sleep awaits race this
     c.wake?.(); // and stops sleeping out the rest of --dur
   } else {
-    cdpInflight.get(src.tabId)?.(new Error('debugger detached mid-command — the "debugging this browser" infobar was dismissed or DevTools opened on this tab; retry the command'));
+    cdpInflight.get(src.tabId)?.(new Error('debugger detached mid-command — ' + DBG_GONE));
     cdpInflight.delete(src.tabId);
   }
 });
@@ -2384,11 +2391,13 @@ async function cdpKeyEvent(tabId, keyIn) {
     modifiers: bits,
   };
   // keyDown with `text` is what inserts the character (DevTools does the same).
-  // With Ctrl/Alt/Meta held it is NOT text entry — it's an accelerator
+  // With Ctrl/Meta held it is NOT text entry — it's an accelerator
   // (Cmd+V paste, Cmd+A select all): send rawKeyDown without text, or Chrome
   // treats it as modified typing and the command never fires (Cmd+V inserted
-  // nothing).
-  const accel = isChar && (bits & (1 | 2 | 4)) !== 0;
+  // nothing). Alt-ONLY chords stay text entry: Option+letter is glyph entry
+  // on macOS and Alt+letter a menu mnemonic on Windows — and the EDIT commands
+  // below would fire destructively on them (Alt+x cutting the selection).
+  const accel = isChar && (bits & (BITS.control | BITS.meta)) !== 0;
   if (accel) {
     // Accelerators need the MODIFIER KEYS themselves held, not just the bits
     // on the char event — Blink matches editing commands (paste, select all)
@@ -2397,18 +2406,24 @@ async function cdpKeyEvent(tabId, keyIn) {
     // nativeVirtualKeyCode: vk is a WINDOWS keycode, and a wrong mac keycode
     // breaks the binding lookup.
     const MODKEYS = [];
-    if (bits & 4) MODKEYS.push({ key: 'Meta', code: 'MetaLeft', windowsVirtualKeyCode: 91, nativeVirtualKeyCode: 55 }); // 55 = kVK_Command
-    if (bits & 2) MODKEYS.push({ key: 'Control', code: 'ControlLeft', windowsVirtualKeyCode: 17, nativeVirtualKeyCode: 59 }); // kVK_Control
-    if (bits & 1) MODKEYS.push({ key: 'Alt', code: 'OptionLeft', windowsVirtualKeyCode: 18, nativeVirtualKeyCode: 58 }); // kVK_Option
-    for (const m of MODKEYS) await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', { ...m, modifiers: bits, type: 'rawKeyDown' });
+    if (bits & BITS.meta) MODKEYS.push({ bit: BITS.meta, key: 'Meta', code: 'MetaLeft', windowsVirtualKeyCode: CDP_KEYCODE.Meta, nativeVirtualKeyCode: 55 }); // 55 = kVK_Command
+    if (bits & BITS.control) MODKEYS.push({ bit: BITS.control, key: 'Control', code: 'ControlLeft', windowsVirtualKeyCode: CDP_KEYCODE.Control, nativeVirtualKeyCode: 59 }); // kVK_Control
+    if (bits & BITS.alt) MODKEYS.push({ bit: BITS.alt, key: 'Alt', code: 'AltLeft', windowsVirtualKeyCode: CDP_KEYCODE.Alt, nativeVirtualKeyCode: 58 }); // kVK_Option
+    // Modifier state accumulates like a physical keyboard — each down adds its
+    // bit, each up drops it. Claiming every bit on every event hands the page
+    // modifier states no keyboard produces (altKey set on the Meta keydown).
+    let held = 0;
+    for (const { bit, ...ev } of MODKEYS) await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', { ...ev, modifiers: (held |= bit), type: 'rawKeyDown' });
     const { nativeVirtualKeyCode, ...noNative } = base;
     // Modifier events alone still don't fire Blink's editing commands — name
-    // the command explicitly via CDP's `commands` field (Chrome ≥ 94).
-    const EDIT = { a: 'selectAll', c: 'copy', v: 'paste', x: 'cut', z: bits & 8 ? 'redo' : 'undo' };
-    const editCmd = EDIT[key.toLowerCase()];
+    // the command explicitly via CDP's `commands` field (Chrome ≥ 94). Never
+    // with Alt held (Ctrl+Alt = AltGr text entry on Windows): no platform
+    // binds Alt+letter to these edits.
+    const EDIT = { a: 'selectAll', c: 'copy', v: 'paste', x: 'cut', z: bits & BITS.shift ? 'redo' : 'undo' };
+    const editCmd = bits & BITS.alt ? undefined : EDIT[key.toLowerCase()];
     await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', { ...noNative, type: 'rawKeyDown', ...(editCmd ? { commands: [editCmd] } : {}) });
     await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', { ...noNative, type: 'keyUp' });
-    for (const m of MODKEYS.reverse()) await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', { ...m, modifiers: 0, type: 'keyUp' });
+    for (const { bit, ...ev } of MODKEYS.reverse()) await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', { ...ev, modifiers: (held &= ~bit), type: 'keyUp' });
     return;
   }
   await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', { ...base, type: 'keyDown', ...(isChar ? { text: key, unmodifiedText: key } : {}) });
@@ -3503,11 +3518,13 @@ async function handle(msg) {
   if (msg.type === 'extreload') {
     // Reload from disk — picks up unpacked-extension code changes without the
     // manual chrome://extensions click. Reply FIRST: the reload kills this
-    // worker, so the ack must be on the wire before we go. Same effect as the
-    // manual reload: storage.session wipes, tab marks re-derive from the
-    // 🟣 group, Chrome clears emulation when the debugger detaches.
+    // worker, so the ack must be on the wire before we go. storage.session
+    // wipes with the worker — driven-tab memory (marks, pill history) is GONE
+    // after reconnect: tabs keep their 🟣 group (Chrome-side) but the bridge
+    // forgets they're driven (the group is not a source of truth — the merge
+    // was removed on purpose). Chrome clears emulation on debugger detach.
     setTimeout(() => chrome.runtime.reload(), 250);
-    return 'reloading from disk — the extension reconnects in a few seconds; tab marks survive (re-derived from the 🟣 group), emulation and in-flight debugger commands do not';
+    return 'reloading from disk — the extension reconnects in a few seconds. NOT surviving: driven-tab memory (marks, pill history — re-mark tabs you were driving; they keep the 🟣 group but the bridge forgets them), emulation, in-flight debugger commands';
   }
 
   if (msg.type === 'tabs') {

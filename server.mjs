@@ -181,7 +181,7 @@ async function route(msg) {
     seat = seats.values().next().value;
   } else {
     // Multi-seat: probe every profile for matching tabs. Commands without a
-    // <match> (open, ping, swlogs) can't be probed — refuse with the hint.
+    // <match> (open, ping, swlogs, extreload) can't be probed — refuse with the hint.
     if (!msg.urlMatch) throw new Error(`multiple profiles are connected — name one: --profile <name or id> (see: cli profiles)`);
     const probes = await Promise.all(
       [...seats.entries()].map(async ([pid, s]) => {
@@ -362,7 +362,14 @@ function pushAct(msg, out, ms) {
   const replay = CLI_LINES[msg.type]?.(msg);
   const prof = msg.profile ? `--profile ${seatTag(msg.profile)} ` : '';
   const secret = !!msg && (['fill', 'type', 'paste', 'upload'].includes(msg.type) || (msg.type === 'dialog' && !!msg.text));
-  const cmd = replay == null ? null : !out.ok ? `# failed · ${prof}${replay}` : secret ? `# secret · ${prof}${replay}` : prof + replay;
+  // extreload can't ride a replay either: mid-batch it restarts the worker out
+  // from under the later lines (driven-tab memory and emulation die with it).
+  const cmd =
+    replay == null ? null
+    : !out.ok ? `# failed · ${prof}${replay}`
+    : secret ? `# secret · ${prof}${replay}`
+    : msg.type === 'extreload' ? `# worker-restart · ${prof}${replay}`
+    : prof + replay;
   activity.push({ seq: ++actSeq, line, cmd });
   if (activity.length > 300) activity.shift();
   console.log('[act] ' + line); // server.log gets a durable copy for post-mortems

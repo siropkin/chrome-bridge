@@ -130,6 +130,7 @@ After loading the extension you won't see anything until the bridge server is ru
 
 ```bash
 node cli.mjs stop && node cli.mjs start
+node cli.mjs extreload
 ```
 
 **Port**: the bridge lives on 127.0.0.1:9333 everywhere. `BRIDGE_PORT` moves the server and CLI (the installer insists on 9333) — but the extension always dials 9333; if you must change the port, edit `extension/background.js` too. Server won't start and `server.log` shows `EADDRINUSE` → something else holds 9333: find it with `lsof -i :9333` (often an old server from another checkout — `node <that-repo>/cli.mjs stop` frees it).

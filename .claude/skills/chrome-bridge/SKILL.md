@@ -15,7 +15,7 @@ If the bridge isn't set up yet, have the user paste `https://raw.githubuserconte
 
 ## Default flow
 
-1. `health` — server down? Run `node <repo>/cli.mjs start` yourself (detached; it waits briefly for an already-loaded extension to reconnect). If it still reports disconnected, or emits a stale-version stderr warning, run `node <repo>/cli.mjs extreload`; if the warning persists, tell the user to reload it at `chrome://extensions`.
+1. `health` — server down? Run `node <repo>/cli.mjs start` yourself (detached; it waits briefly for an already-loaded extension to reconnect). Still `disconnected` → the user must load/reload it at `chrome://extensions` (extreload can't reach a disconnected extension). A stale-version stderr warning → run `node <repo>/cli.mjs extreload`; if the warning persists, tell the user to reload it at `chrome://extensions`.
 2. `tabs <substr>` — a tab already on the page you need? Drive IT. Otherwise `open <url>`.
 3. `snap <match>` — find the `@eN` refs. Screenshot only if the tree can't answer it.
 4. `click|fill|type <match> @eN … --diff` — the verdict says if it worked. Re-snap after any `nav`. Login/CAPTCHA wall → `wait <match> --human`.

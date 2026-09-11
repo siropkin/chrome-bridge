@@ -124,10 +124,11 @@ MCP 桥(mcp-chrome、BrowserMCP)要求客户端支持 MCP,还需要配置长期�
 
 加载扩展后,在桥接服务器运行、AI 工具发出第一条命令之前,你不会看到任何变化——从那时起,智能体触碰的每个标签页才会戴上紫色 🟣 小标签。此前的安静是正常的,不是安装失败。
 
-**升级**:执行 `git pull` 后要重启服务器——它运行的仍是启动时的代码,而且 health 检查依然通过,没有别的东西会提醒你。同时要在 `chrome://extensions` 重新加载扩展(服务工作线程也是旧代码——加载的扩展版本和仓库不一致时,`node cli.mjs health` 会打印警告):
+**升级**:执行 `git pull` 后要重启服务器——它运行的仍是启动时的代码,而且 health 检查依然通过,没有别的东西会提醒你。同时用 `node cli.mjs extreload` 重新加载扩展(服务工作线程也是旧代码——加载的扩展版本和仓库不一致时,`node cli.mjs health` 会打印警告):
 
 ```bash
 node cli.mjs stop && node cli.mjs start
+node cli.mjs extreload
 ```
 
 **端口**:桥接器固定使用 127.0.0.1:9333。`BRIDGE_PORT` 可以移动服务器和 CLI(安装器强制要求 9333)——但扩展始终拨打 9333;如果必须换端口,需要同时修改 `extension/background.js`。服务器起不来且 `server.log` 显示 `EADDRINUSE` → 9333 被别的进程占用:用 `lsof -i :9333` 找到它(常常是另一个检出里的旧服务器——`node <那个仓库>/cli.mjs stop` 即可释放)。
@@ -199,6 +200,7 @@ HTTP API 只有一个命令端点:`POST /cmd`,Body 如 `{"type": "snap", "urlMat
 | `watch` | 终端里实时显示桥接器的每条命令——小标签的孪生。在智能体会话旁边运行,跟着看;Ctrl-C 退出 |
 | `history [match] [-n N] [--batch out]` | 本机上桥接器已经执行过的命令(服务端环形缓冲,最近 300 条)——按 match 过滤、取最新 N 条;`--batch out` 导出为可重放的 batch 脚本(失败的命令已注释掉;键入/粘贴文本、对话框回答、剪贴板粘贴和上传路径都会打码，绝不导出)。用于事后排查和会话交接 |
 | `swlogs` | 服务工作线程控制台日志尾部(错误/警告) |
+| `extreload` | 从磁盘重新加载扩展——不用点 chrome://extensions 就能加载新代码(即 health 版本过期警告的修复办法) |
 | `start` · `stop` | 服务器生命周期——`start` 在服务器未运行时分离启动(智能体可以自愈挂掉的服务器) |
 
 `<match>` 是标签页 URL 或标题的子串，并且必须在所选配置文件中唯一标识一个标签页。匹配多个时，命令会在标记或执行任何操作前拒绝执行——请用更长的匹配重试。引用在重复 `snap` 之间保持稳定(只要 role+name 不变,元素就保持它的 `@eN`),但导航后失效——`nav` 之后请重新 `snap`。`snap` 会遍历开放的 shadow root(其中的元素带引用、可直接点击/填写),CSS 选择器也能穿透开放的 shadow root。
