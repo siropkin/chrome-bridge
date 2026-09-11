@@ -507,26 +507,21 @@ const server = http.createServer((req, res) => {
       res.end();
       return;
     }
+    // Never answer before the request is fully drained: responding while the
+    // body is still inbound closes the socket with unread data, and the
+    // resulting RST can erase the 413 before the client reads it (flaky
+    // ECONNRESET on Node 18 CI, whose default agent sends Connection: close).
+    // Drain-and-discard, then reject — one path for declared and chunked.
     const declared = Number(req.headers['content-length']);
-    if (Number.isFinite(declared) && declared > MAX_CMD_BYTES) {
-      res.writeHead(413);
-      res.end();
-      req.resume();
-      return;
-    }
     let body = '';
     let bytes = 0;
-    let tooLarge = false;
+    let tooLarge = Number.isFinite(declared) && declared > MAX_CMD_BYTES;
     req.on('data', (c) => {
       bytes += c.length;
-      if (bytes > MAX_CMD_BYTES) {
-        tooLarge = true;
-        // Stop retaining chunks before an oversized request can consume the
-        // server heap. The response is sent from end/aborted below.
-        req.pause();
-        req.resume();
-        return;
-      }
+      if (bytes > MAX_CMD_BYTES) tooLarge = true;
+      // Past the limit: keep draining but stop retaining chunks before an
+      // oversized request can consume the server heap.
+      if (tooLarge) return;
       body += c;
     });
     req.on('end', async () => {

@@ -439,18 +439,20 @@ try {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ type: 'ping', padding: 'x'.repeat(2 * 1024 * 1024) }),
   });
-  assert(tooLarge.status === 413, 'server: oversized command body rejected');
+  assert(tooLarge.status === 413, 'server: oversized command body rejected', 'got ' + tooLarge.status);
   const chunkedTooLarge = await new Promise((resolve) => {
     const r = http.request({ host: '127.0.0.1', port: PORT, path: '/cmd', method: 'POST', headers: { 'content-type': 'application/json' } }, (res) => {
       res.resume();
       resolve(res.statusCode);
     });
     r.on('error', () => resolve(0));
-    // No Content-Length: exercise streaming accounting rather than the early
-    // header check above.
-    r.end(JSON.stringify({ type: 'ping', padding: 'x'.repeat(2 * 1024 * 1024) }));
+    // Multiple write()s force chunked framing — a single end(body) lets Node
+    // auto-set Content-Length, which would only re-test the header path above.
+    r.write('{"type":"ping","padding":"');
+    for (let i = 0; i < 32; i++) r.write('x'.repeat(72 * 1024)); // 2.25MB in 32 chunks
+    r.end('"}');
   });
-  assert(chunkedTooLarge === 413, 'server: oversized chunked command body rejected');
+  assert(chunkedTooLarge === 413, 'server: oversized chunked command body rejected', 'got ' + chunkedTooLarge);
   h = await cli('health');
   assert(JSON.parse(h.stdout).extension === true, 'server survives oversized command body');
 
