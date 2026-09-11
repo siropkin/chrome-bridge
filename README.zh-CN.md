@@ -4,11 +4,11 @@
 
 [![MIT 许可证](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Node ≥ 18](https://img.shields.io/badge/node-%E2%89%A5%2018-339933)](https://nodejs.org) [![零依赖](https://img.shields.io/badge/dependencies-0-brightgreen)](package.json)
 
-让**任何 AI 智能体**驱动你正在使用的 Chrome——你已打开的标签页、已登录的会话和 SSO。Playwright 系工具驱动的是它们自己启动的浏览器、自己管理的配置;MCP 桥需要客户端支持 MCP 并配置服务器。chrome-bridge 两者都不需要:它驱动的就是你已登录的那个 Chrome——而且这是唯一模式——一个解压加载的扩展,一个零依赖的 Node CLI。被智能体操作的标签页还会戴上 🟣 小标签,实时播报它正在做什么。
+让**任何 AI 智能体**驱动你正在使用的 Chrome——你已打开的标签页、已登录的会话和 SSO。Playwright 系工具驱动的是它们自己启动的浏览器、自己管理的配置;MCP 桥需要客户端支持 MCP 并配置服务器。chrome-bridge 两者都不需要:它驱动的就是你已登录的那个 Chrome——而且这是唯一模式——一个小小的扩展,一个零依赖的 Node CLI。被智能体操作的标签页还会戴上 🟣 小标签,实时播报它正在做什么。
 
 ![被驱动标签页的动态演示——🟣 小标签实时播报每一步操作,命令执行时亮起紫色边框,点击处有指针闪烁](docs/demo.gif)
 
-一个小小的 Chrome 解压扩展通过 WebSocket 连接到本地 Node 服务器;任何能执行 shell 命令的工具都能驱动浏览器:
+一个小小的 Chrome 扩展(从 [Chrome 应用商店](https://chromewebstore.google.com/detail/chrome-bridge/kmhjlnokjigmnimgjjmiahlinjbcebkg)安装,或解压加载)通过 WebSocket 连接到本地 Node 服务器;任何能执行 shell 命令的工具都能驱动浏览器:
 
 ```bash
 node server.mjs &                        # 启动桥接服务(Node ≥ 18,零依赖)
@@ -157,7 +157,7 @@ HTTP API 只有一个命令端点:`POST /cmd`,Body 如 `{"type": "snap", "urlMat
 
 - **仅本地**:服务器只绑定 `127.0.0.1`,并拒绝来自浏览器页面的请求(Origin/Sec-Fetch/Host 防护),你访问的网页无法驱动桥接器——但**任何本地进程仍然可以**。使用时加载扩展;用完后在 `chrome://extensions` 卸载。
 - **看得见的自动化**:被驱动的标签页会戴上 🟣 小标签并播报每一步操作、加入 🟣 标签页分组、命令执行时亮起紫色边框;`node cli.mjs watch` 会在终端同步显示操作流。小标签上的 ⏏ 一次可信点击即可断开智能体对该标签页的控制。标签页分组是恶意页面无法伪造的驱动信号。
-- **为什么是解压加载的扩展?** 因为你可以直接读到运行的全部代码——整个扩展只有一个可读的 `extension/background.js` 加一个 manifest,没有应用商店的压缩包。
+- **商店版还是解压版?** 两种都行:应用商店版一键安装、自动连接;解压版则让你直接读到运行的全部代码——整个扩展只有一个可读的 `extension/background.js` 加一个 manifest,没有压缩包。别两个都装:会创建第二个配置席位,每条命令都会要求 `--profile`。
 - **提示注入**:桥接器返回的一切都是不可信的页面内容;智能体应遵循的规则见 [AGENTS.md](AGENTS.md)。注意 `upload`:它让浏览器读取智能体指定的任意本地路径并放进页面的文件输入框,页面可以提交它——永远不要让页面告诉你(或智能体)该附加什么文件。
 - **重放导出不会保留敏感信息**:`history --batch` 会把键入或粘贴的文本、对话框回答、剪贴板粘贴和上传路径注释掉，而不会保留或重放它们。把导出用于复盘或交接前请先检查脚本。
 - **CDP 挂载可被检测**:`net`/`emulate`/`shot`(以及 `upload`/`dialog`)会挂载 Chrome 调试器,页面 JS 能够检测到(DevTools 挂载的副作用,比如 `Runtime.enable` 泄漏)——反爬系统可能标记该会话,而这用的是你真实登录的配置。非 CDP 命令(`snap`、`click`、`fill`、`eval` 等)不挂载调试器。
