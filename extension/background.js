@@ -2402,7 +2402,11 @@ async function cdpKeyEvent(tabId, keyIn) {
     if (bits & 1) MODKEYS.push({ key: 'Alt', code: 'OptionLeft', windowsVirtualKeyCode: 18, nativeVirtualKeyCode: 58 }); // kVK_Option
     for (const m of MODKEYS) await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', { ...m, modifiers: bits, type: 'rawKeyDown' });
     const { nativeVirtualKeyCode, ...noNative } = base;
-    await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', { ...noNative, type: 'rawKeyDown' });
+    // Modifier events alone still don't fire Blink's editing commands — name
+    // the command explicitly via CDP's `commands` field (Chrome ≥ 94).
+    const EDIT = { a: 'selectAll', c: 'copy', v: 'paste', x: 'cut', z: bits & 8 ? 'redo' : 'undo' };
+    const editCmd = EDIT[key.toLowerCase()];
+    await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', { ...noNative, type: 'rawKeyDown', ...(editCmd ? { commands: [editCmd] } : {}) });
     await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', { ...noNative, type: 'keyUp' });
     for (const m of MODKEYS.reverse()) await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', { ...m, modifiers: 0, type: 'keyUp' });
     return;
