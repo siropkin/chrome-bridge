@@ -49,7 +49,8 @@ else
   echo "  1. open chrome://extensions"
   echo "  2. enable Developer mode (top right)"
   echo "  3. Load unpacked → $ROOT/extension/"
-  echo "  (installed from the Chrome Web Store? skip this — the store copy connects on its own)"
+  echo "  (installed from the Chrome Web Store? skip this — the store copy connects on its own:"
+  echo "   https://chromewebstore.google.com/detail/chrome-bridge/kmhjlnokjigmnimgjjmiahlinjbcebkg)"
   [ "$(uname)" = "Darwin" ] && open -a "Google Chrome" "chrome://extensions" || true
 fi
 

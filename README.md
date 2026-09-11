@@ -74,7 +74,7 @@ Set up chrome-bridge — the bridge that lets you drive my real, logged-in Chrom
    - health reports `"extension":false` → step 3. But if the extension was connected before your restart, wait ~10s and re-run health once first — it reconnects on its own after a server restart.
    - server won't start → show me the error and the last lines of `<repo>/server.log` (if it exists), then stop.
 
-3. The one click only I can do — unless I installed Chrome Bridge from the Chrome Web Store, in which case skip this step entirely: the store copy connects on its own, and loading the unpacked folder too creates a second profile seat that makes every command demand `--profile`. Otherwise: ask me to open `chrome://extensions`, enable Developer mode, click Load unpacked, and select the `<repo>/extension` folder. On macOS you may run `open -a "Google Chrome" "chrome://extensions"` first. Then poll `node <repo>/cli.mjs health` every 5s (up to ~90s) until it reports `"extension":true`; if it doesn't, tell me what's still missing and stop — don't keep polling.
+3. The one click only I can do — unless I installed Chrome Bridge from the [Chrome Web Store](https://chromewebstore.google.com/detail/chrome-bridge/kmhjlnokjigmnimgjjmiahlinjbcebkg), in which case skip this step entirely: the store copy connects on its own, and loading the unpacked folder too creates a second profile seat that makes every command demand `--profile`. Otherwise: ask me to open `chrome://extensions`, enable Developer mode, click Load unpacked, and select the `<repo>/extension` folder. On macOS you may run `open -a "Google Chrome" "chrome://extensions"` first. Then poll `node <repo>/cli.mjs health` every 5s (up to ~90s) until it reports `"extension":true`; if it doesn't, tell me what's still missing and stop — don't keep polling.
 
 4. Install your integration — pick the ONE that applies to you:
    - Claude Code — copy the skill so it auto-loads on browser tasks in every project (use `./.claude/skills/` instead of `~/.claude/skills/` only if I told you to scope it to this project):
@@ -102,7 +102,7 @@ Prefer to do it yourself? The manual path:
 git clone https://github.com/siropkin/chrome-bridge && cd chrome-bridge && ./install.sh
 ```
 
-`install.sh` starts the server and opens `chrome://extensions` (macOS; on Linux open it yourself); then load the extension as above. Details in [Install detail](#install-detail). Installed Chrome Bridge from the Chrome Web Store? Skip the Load unpacked step — the store copy already connects; loading the unpacked folder too creates a second profile seat and every command will demand `--profile`.
+`install.sh` starts the server and opens `chrome://extensions` (macOS; on Linux open it yourself); then load the extension as above. Details in [Install detail](#install-detail). Installed Chrome Bridge from the [Chrome Web Store](https://chromewebstore.google.com/detail/chrome-bridge/kmhjlnokjigmnimgjjmiahlinjbcebkg)? Skip the Load unpacked step — the store copy already connects; loading the unpacked folder too creates a second profile seat and every command will demand `--profile`.
 
 That's the whole integration. `AGENTS.md` is a self-contained operating manual — commands, recipes, gotchas — that any agent with file or web access can read. Agents with web access can read it straight from GitHub: `https://raw.githubusercontent.com/siropkin/chrome-bridge/master/AGENTS.md`.
 
