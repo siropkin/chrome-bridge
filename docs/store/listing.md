@@ -1,7 +1,7 @@
 # Chrome Web Store listing — canonical copy
 
 Paste-ready text for the Chrome Web Store console (no API for these fields — copy by hand).
-Keep in sync with README.md's pitch sections. Last synced: v1.21.0 (onboarding flow).
+Keep in sync with README.md's pitch sections. Last synced: v1.22.0 (driving-reliability sweep).
 
 ## Short description (max 132 chars)
 
@@ -25,6 +25,8 @@ WHAT YOU GET
 • Full local control: everything runs on 127.0.0.1, nothing leaves your machine. No cloud relay, no account, no telemetry.
 • Automation you can see: every tab the agent touches wears a 🟣 pill narrating each action, joins a 🟣 tab group, and shows status in the favicon. One trusted click on ⏏ disconnects the agent from a tab.
 • Point the agent at an exact tab: the toolbar popup copies a tab reference (id:…) that pins every command to that tab.
+• Honest actions: if the page re-sorts under a saved element reference, the action fails loudly instead of clicking the wrong element; a click the app ignored says so instead of faking success; typing into heavy editors (docs, block editors) is paced and verified.
+• Rich paste: the agent can drop whole structured documents (headings, lists, links) into block editors in one shot.
 • No residue: a `doctor` command finds and cleans any leftover markers, and dead-session markers are reaped automatically on browser restart.
 • Multiple Chrome profiles supported — the agent never silently acts in your personal browser when you meant the work one.
 
