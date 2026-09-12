@@ -276,7 +276,14 @@ async function route(msg) {
   // `wait --human` blocks for minutes (CAPTCHA/2FA handoff) — the 70s command
   // cap would kill it mid-handoff. 285s, just under the CLI HTTP client's
   // 5-min wall, which is the real ceiling (undici aborts the fetch at 300s).
-  return await ask(seat, msg, msg.type === 'wait' && msg.human ? 285_000 : CMD_TIMEOUT_MS);
+  if (msg.type === 'wait' && msg.human) return await ask(seat, msg, 285_000);
+  // `type` pays per-char: the inter-key cadence PLUS the page's own per-event
+  // framework work (a heavy block editor spends ~50-100ms per keystroke —
+  // #29/#32: a 650-char payload legitimately needs >70s, and a timed-out
+  // reply invites a retry while the first loop is still typing). Scale the
+  // budget with the payload; the 285s ceiling is the same 300s undici wall.
+  if (msg.type === 'type') return await ask(seat, msg, Math.min(285_000, CMD_TIMEOUT_MS + (msg.value?.length || 0) * 100));
+  return await ask(seat, msg, CMD_TIMEOUT_MS);
 }
 
 // --- activity feed (`cli.mjs watch`) ----------------------------------------

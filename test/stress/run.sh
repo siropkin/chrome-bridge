@@ -537,6 +537,30 @@ s_refs() {
   "${CLI[@]}" close "x=refs" >/dev/null 2>&1
 }
 
+s_type() {
+  SECTION=type
+  "${CLI[@]}" open "$FX/editor.html?x=type" --profile "$P1" >/dev/null 2>&1
+  # #30: the node under the caret is REPLACED on the first keystroke and focus
+  # falls back to body — type must follow the live caret, not abort.
+  "${CLI[@]}" type "x=type" '#rewrite' 'hello brave editor' >"$OUT/type-rewrite.log" 2>&1
+  assert_grep "block-rewrite editor: full payload lands" "$OUT/type-rewrite.log" 'typed 18 chars'
+  "${CLI[@]}" eval "x=type" "document.getElementById('rewrite').textContent" >>"$OUT/type-rewrite.log" 2>&1
+  assert_grep "block-rewrite editor: readback is complete" "$OUT/type-rewrite.log" '^hello brave editor$'
+  # #32: a second type while one is still running must refuse, not interleave.
+  # The slow editor keeps the first type in flight long enough to overlap.
+  "${CLI[@]}" type "x=type" '#heavy' "$(printf 'x%.0s' {1..10})" >/dev/null 2>&1 &
+  local bg=$!
+  sleep 3
+  "${CLI[@]}" type "x=type" '#heavy' 'overlap' >"$OUT/type-guard.log" 2>&1 && bad "overlapping type must refuse" || true
+  assert_grep "in-flight type guard names the lost-reply cause" "$OUT/type-guard.log" 'another type is still running'
+  wait $bg 2>/dev/null
+  # #29: 60 chars at ~1.2s of framework work per keystroke ≈ 74s — over the old
+  # flat 70s cap; the payload-scaled budget must let it finish. (~75s here.)
+  "${CLI[@]}" type "x=type" '#heavy' "$(printf 'h%.0s' {1..60})" >"$OUT/type-heavy.log" 2>&1
+  assert_grep "heavy editor: long type survives past the old 70s cap" "$OUT/type-heavy.log" 'typed 60 chars'
+  "${CLI[@]}" close "x=type" --profile "$P1" >/dev/null 2>&1
+}
+
 # ---------------------------------------------------------------- section 12
 s_doctor() {
   SECTION=doctor
@@ -584,7 +608,7 @@ cleanup() {
 }
 
 # ---------------------------------------------------------------- main
-ALL="profiles churn interact dialog pixel waits net marks misc edges ids refs doctor cleanup"
+ALL="profiles churn interact dialog pixel waits net marks misc edges ids refs type doctor cleanup"
 SECTIONS=${*:-$ALL}
 cd "$REPO"
 detect_profiles || { echo "FAIL: no connected profile (cli profiles)"; exit 1; }
@@ -597,7 +621,7 @@ for sec in $SECTIONS; do
   case $sec in
     profiles) s_profiles ;; churn) s_churn ;; interact) s_interact ;; dialog) s_dialog ;;
     pixel) s_pixel ;; waits) s_waits ;; net) s_net ;; marks) s_marks ;; misc) s_misc ;;
-    edges) s_edges ;; ids) s_ids ;; refs) s_refs ;; doctor) s_doctor ;; cleanup) cleanup ;;
+    edges) s_edges ;; ids) s_ids ;; refs) s_refs ;; type) s_type ;; doctor) s_doctor ;; cleanup) cleanup ;;
     *) echo "unknown section: $sec" ;;
   esac
 done

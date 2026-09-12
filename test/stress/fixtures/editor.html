@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>stress editor</title>
+<style>div[contenteditable] { border: 1px solid #999; min-height: 1.4em; margin: 8px; padding: 4px; }</style>
+</head>
+<body>
+  <h1>Block-editor behaviors that broke type (#29/#30/#32)</h1>
+
+  <!-- #30: the framework REPLACES the caret's block node on the first input
+       and re-places the caret in the fresh node — but focus falls back to
+       body. Old code threw 'element detached mid-typing' and dropped the
+       remaining payload; the caret-follow must keep typing into the fresh
+       node. -->
+  <div id="rewrite" contenteditable="true"></div>
+
+  <!-- #29: heavy framework pipeline — every input event costs ~1.2s of
+       synchronous work. 60 chars ≈ 74s > the old flat 70s command cap. -->
+  <div id="heavy" contenteditable="true"></div>
+
+  <script>
+    (() => {
+      const rw = document.getElementById('rewrite');
+      rw.addEventListener('input', () => {
+        const old = document.getElementById('rewrite');
+        if (!old) return;
+        const fresh = old.cloneNode(false);
+        fresh.textContent = old.textContent; // keep what landed so far
+        old.replaceWith(fresh);
+        // caret at the end of the fresh node, focus NOT restored (vc.ru shape)
+        const r = document.createRange();
+        r.selectNodeContents(fresh); r.collapse(false);
+        const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+      }, { once: true });
+
+      document.getElementById('heavy').addEventListener('input', () => {
+        const t0 = performance.now();
+        while (performance.now() - t0 < 1200); // the framework's per-keystroke bill
+      });
+    })();
+  </script>
+</body>
+</html>

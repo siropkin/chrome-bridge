@@ -761,6 +761,7 @@ try {
     // events can't answer a CAPTCHA, and page JS must not be able to flip the
     // flag) and the server must hold it past the 70s command cap.
     assert(bg.includes('waitHuman') && bg.includes('e.isTrusted'), 'ext: wait --human completes only on trusted input');
+    assert(serverSrc.includes("msg.type === 'type') return await ask(seat, msg, Math.min(285_000, CMD_TIMEOUT_MS + (msg.value?.length || 0) * 100)"), 'server: type reply budget scales with payload length, capped at the undici wall (#29)');
     assert(bg.includes("world: 'ISOLATED'") && bg.includes('__bridgeHumanActed'), 'ext: the human-acted flag lives in the ISOLATED world (page JS cannot flip it)');
     assert(serverSrc.includes("msg.type === 'wait' && msg.human"), 'server: wait --human rides the long-wait path past the 70s cap');
     // The click coverage check must treat a shadow HOST containing the target
@@ -780,6 +781,9 @@ try {
     assert(bg.includes('BRIDGE_SEL') && bg.includes('inBridge'), 'ext: settle ignores the bridge-injected DOM (pill ticker, cursor, grid)');
     assert(bg.includes("el.id === 'bridge-banner'") && bg.includes("el.id === 'bridge-cursor'"), 'ext: snap excludes the bridge UI (the pill is not page content)');
     assert(bg.includes('Math.min(25, 15000 / text.length)'), 'ext: type caps its total inter-char sleep budget (~15s) for long text');
+    assert(bg.includes("document.visibilityState === 'hidden'") && bg.includes('MessageChannel'), 'ext: type cadence on hidden tabs is an unthrottled MessageChannel hop, not a 1s-clamped setTimeout (#29/#32)');
+    assert(bg.includes('__bridgeTyping') && bg.includes('another type is still running'), 'ext: overlapping type refuses while a previous loop runs (#32)');
+    assert(bg.includes("closest?.('[contenteditable]')") && bg.includes('anchorNode'), 'ext: type follows the live caret when the editor rewrites the caret block mid-typing (#30)');
     assert(bg.includes('no observable page effect') && bg.includes('MutationObserver'), 'ext: click watches for an observable effect and names --trusted when the app ignored it (#23)');
     assert(bg.includes('cssVisualViewport.clientWidth') && bg.includes('#24'), 'ext: shot --full clips to at least the viewport size (no narrow-strip full shots, #24)');
     assert(bg.includes('settleFrames') && bg.split('await settleFrames(').length === 3, 'ext: captures wait two rAFs before reading the compositor (mid-redirect tiled-shot race, #25)');

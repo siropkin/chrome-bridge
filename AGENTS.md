@@ -234,6 +234,8 @@ Always `fill`, never set `.value` in `eval` — `fill` uses the native value set
 
 `fill` sets the value in one shot — autocomplete dropdowns don't react. Use `type <match> @eN "query"` (per-char key events), then `wait`/`snap --diff` for the dropdown, then `press <match> ArrowDown` + `press <match> Enter` or click the option.
 
+Long payloads: `type`'s reply budget scales with length (~100ms/char over the 70s floor) because heavy editors spend real framework time per keystroke — a slow `type` is normal, not hung. If one still times out, its page-side loop may have kept running: **readback with `eval` before retrying** (a retried `type` while one is still running refuses loudly — concurrent loops garble the text). For whole paragraphs, prefer `paste` — one event, no per-char cost.
+
 ### Watch network requests
 
 `net <match> [--dur ms] [--filter /api] [--body /api]` — attaches CDP for N ms (default 4000, the "debugging" infobar shows while attached), returns one line per request: `POST 200 /api/graphql 2kB 341ms ⟵ api-client.js:88` (the `⟵` names the initiator — the script file:line that issued the request). Trigger the action first, then read the list. `--body <substr>` appends the response body (JSON/text only, ≤8 requests, 1500 chars each) under each matching line and implies `--filter`; for anything it skips (binary, unavailable), replay the request with `fetch <match> <url> [--out file]` — it runs in the page, so the logged-in session rides it.

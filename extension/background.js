@@ -2103,17 +2103,33 @@ const fillSrc = (target, value) => `(() => {
 const typeSrc = (target, text) => `(async () => {
   ${DEEPQ}
   const sel = ${JSON.stringify(target)}, text = ${JSON.stringify(text)};
+  // In-flight guard (#32): a type whose reply was lost to a timeout KEEPS
+  // RUNNING page-side — a retried second loop interleaves keystrokes with it
+  // and both garble the payload. Refuse the overlap loudly.
+  if (window.__bridgeTyping) throw new Error('another type is still running on this page (its reply was likely lost to a timeout) — readback with eval, wait for it to finish, then type only the remainder');
+  window.__bridgeTyping = true;
+  try {
   let el = mustQuery(sel);
   ${FILE_INPUT_GUARD}
   el.scrollIntoView({ block: 'center' });
   el.focus?.();
   for (const ch of text) {
     if (!el.isConnected) {
-      // Frameworks sometimes swap the input for a fresh element mid-typing
-      // (Wikipedia Codex does this on first keystroke) — follow the focus.
+      // Frameworks swap the node under the caret mid-typing (Wikipedia Codex
+      // on first keystroke; block editors rewrite the caret's block after
+      // edits — #30). Follow the LIVE focus first, then the caret: on the
+      // contenteditable path chars land at the selection wherever it sits
+      // (execCommand inserts there), so a caret that survived the rewrite in
+      // a fresh sibling node beats aborting and dropping the rest of the
+      // payload.
       const a = document.activeElement;
       if ((a && /^(INPUT|TEXTAREA)$/.test(a.tagName)) || a?.isContentEditable) el = a;
-      else throw new Error('element detached mid-typing and focus is not on a text field — re-snap and retry');
+      else {
+        const an = window.getSelection()?.anchorNode;
+        const ce = an && (an.nodeType === 1 ? an : an.parentElement)?.closest?.('[contenteditable]');
+        if (ce) el = ce;
+        else throw new Error('element detached mid-typing and neither focus nor the caret is in a text field — re-snap and retry the remaining text');
+      }
     }
     const o = { bubbles: true, cancelable: true, composed: true, key: ch, code: /[a-z]/i.test(ch) ? 'Key' + ch.toUpperCase() : 'Digit' + ch,
       keyCode: /[a-z]/i.test(ch) ? ch.toUpperCase().charCodeAt(0) : ch.charCodeAt(0) }; // legacy e.which readers (old jQuery)
@@ -2129,12 +2145,22 @@ const typeSrc = (target, text) => `(async () => {
     // text). Cap the total sleep budget at ~15s — a flat 25ms × 1200 chars is
     // 30s of pure sleep before the page's own per-keystroke cost, which is
     // what blew the 70s cap on heavy composers. Long-form text is paste's job.
-    await new Promise((r) => setTimeout(r, Math.min(25, 15000 / text.length)));
+    // HIDDEN tabs need neither the pacing (nobody's watching) nor EITHER
+    // naive yield: chained setTimeout clamps to ~1s/char under background
+    // throttling (a 300-char type runs 5 minutes — the amplifier behind
+    // #29/#32), and a pure-microtask loop starves every other injection for
+    // the whole payload. A MessageChannel hop is an unthrottled macrotask.
+    await (document.visibilityState === 'hidden'
+      ? new Promise((r) => { const mc = new MessageChannel(); mc.port1.onmessage = r; mc.port2.postMessage(0); })
+      : new Promise((r) => setTimeout(r, Math.min(25, 15000 / text.length))));
   }
   el.dispatchEvent(new Event('change', { bubbles: true }));
   const got = el.isContentEditable ? el.innerText : el.value;
   const warn = got !== undefined && !String(got).endsWith(text) ? ' — WARNING readback is ' + JSON.stringify(String(got).slice(0, 40)) + ' (framework rewrote the value; consider fill)' : '';
   return 'typed ' + text.length + ' chars into ' + sel + warn;
+  } finally {
+    window.__bridgeTyping = false;
+  }
 })()`;
 
 // Real-paste semantics: editors that own their content model (Quill,
