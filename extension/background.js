@@ -3824,9 +3824,17 @@ async function handle(msg) {
     // dialog-rescue nav is a deliberate reload — the warning is accurate
     // there too.)
     try {
-      if (new URL(tab.url).href === new URL(msg.url).href)
+      const from = new URL(tab.url), to = new URL(msg.url);
+      if (from.href === to.href)
         msg._warn =
           '⚠ the tab was already at this URL — nav just reloaded it (state, scroll, form inputs reset). Skip nav to drive the existing page; when you want a refresh, this is it';
+      // Hash-only: same document, no reload — the app is SUPPOSED to route on
+      // hashchange, but some update location.hash without re-rendering
+      // (Gmail search views, #26). loaded:true must not read as "the view
+      // you asked for is on screen".
+      else if (from.href.split('#')[0] === to.href.split('#')[0])
+        msg._warn =
+          '⚠ hash-only navigation — the document did not reload; the app routes on hashchange and may not re-render. If the view did not change, drive the app\'s own UI (its search box, in-app links), not the URL bar';
     } catch {} // empty/unparseable url (still-pending tab) — no opinion
     // Listener before update: a fast page can hit 'complete' before
     // tabs.update resolves, and a missed event would mean a wasted 8s wait.

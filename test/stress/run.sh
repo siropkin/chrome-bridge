@@ -434,6 +434,10 @@ s_misc() {
   "${CLI[@]}" open "$FX/static.html?x=dup" --profile "$P1" >/dev/null
   "${CLI[@]}" nav "static.html?x=dup" "$FX/static.html?x=dup" --profile "$P1" >"$OUT/08-navsame.log" 2>&1
   assert_grep "same-URL nav warns it is a reload" "$OUT/08-navsame.log" 'already at this URL'
+  # #26: hash-only nav must not read as "the view you asked for is on screen"
+  "${CLI[@]}" nav "static.html?x=dup" "$FX/static.html?x=dup#hashonly" --profile "$P1" >"$OUT/08-navhash.log" 2>&1
+  assert_grep "hash-only nav warns the view was not re-validated" "$OUT/08-navhash.log" 'hash-only navigation'
+  "${CLI[@]}" nav "static.html?x=dup#hashonly" "$FX/static.html?x=dup" --profile "$P1" >/dev/null 2>&1
   "${CLI[@]}" open "$FX/static.html?x=dup" --profile "$P1" >"$OUT/08-dup.log" 2>&1
   assert_grep "duplicate open warns (drive the existing tab, keep its state)" "$OUT/08-dup.log" 'already shows this exact URL'
   # Identical-URL pair: no single-match command can address either tab — --all drains both.

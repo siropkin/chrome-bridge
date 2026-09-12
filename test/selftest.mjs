@@ -783,6 +783,7 @@ try {
     assert(bg.includes('no observable page effect') && bg.includes('MutationObserver'), 'ext: click watches for an observable effect and names --trusted when the app ignored it (#23)');
     assert(bg.includes('cssVisualViewport.clientWidth') && bg.includes('#24'), 'ext: shot --full clips to at least the viewport size (no narrow-strip full shots, #24)');
     assert(bg.includes('settleFrames') && bg.split('await settleFrames(').length === 3, 'ext: captures wait two rAFs before reading the compositor (mid-redirect tiled-shot race, #25)');
+    assert(bg.includes('hash-only navigation') && bg.includes("split('#')[0]"), 'ext: nav to a same-document #hash URL warns the view was not re-validated (#26)');
     // Shadow-piercing target resolution: document.querySelector can't reach
     // open shadow roots (Reddit's faceplate-*, LinkedIn's nested roots) —
     // every action script resolves via deepQuery (@refs/document CSS first,
