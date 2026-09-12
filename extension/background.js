@@ -2433,6 +2433,14 @@ const maxOf = (msg) => {
 
 // Whole-viewport capture shared by shot's viewport path and the pixel-diff
 // machinery. Caller owns the debugger session (withCdp + attachDbg).
+// A capture fired right after a navigation/redirect can read a
+// half-composited surface (#25: a 2x2-tiled duplicate of the page). Two rAFs
+// hand the compositor a full frame before we read it; the 300ms race covers
+// background/occluded tabs where rAF never fires (CDP captures those fine).
+// The eval can fail on non-HTML tabs (chrome://) — capture anyway.
+const settleFrames = (tabId) =>
+  runEval(tabId, 'new Promise((r) => { const t = setTimeout(r, 300); requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(t); r(); })); })').catch(() => {});
+
 async function captureViewport(tabId, msg, reuseClip, forceClip) {
   const params = { format: msg.format === 'jpeg' ? 'jpeg' : 'png' };
   if (params.format === 'jpeg') params.quality = msg.quality ?? 80;
@@ -2475,6 +2483,7 @@ async function captureViewport(tabId, msg, reuseClip, forceClip) {
   // false-fire --diff. Enforcement at the capture is the only timing-proof
   // invariant (found live by the flow review; waitPixel used to do this at
   // every poll — now every capture does).
+  await settleFrames(tabId);
   await removeBannerForCapture(tabId);
   const res = await chrome.debugger.sendCommand({ tabId }, 'Page.captureScreenshot', params);
   return { b64: res.data, format: params.format, v, dpr, s: clip.scale, clip };
@@ -3540,7 +3549,12 @@ async function cmdShot(tab, msg) {
           const c = m.cssContentSize;
           dpr = dprOf(m);
           params.captureBeyondViewport = true;
-          const w = Math.ceil(c.width), h = Math.min(Math.ceil(c.height), 16384);
+          // Floor at the viewport: a transient/mid-load metrics read can report
+          // content narrower than the visible page (#24 captured a 127px-wide
+          // strip of a 1280px page) — a full-page shot is never smaller than
+          // what the user sees.
+          const w = Math.max(Math.ceil(c.width), Math.ceil(m.cssVisualViewport.clientWidth));
+          const h = Math.min(Math.max(Math.ceil(c.height), Math.ceil(m.cssVisualViewport.clientHeight)), 16384);
           params.clip = { x: 0, y: 0, width: w, height: h, scale: cap(w, h) };
         } else if (msg.crop) {
           // --crop x,y are viewport-relative (measure output); clip is page-absolute.
@@ -3618,6 +3632,7 @@ async function cmdShot(tab, msg) {
         }
         // Raw path (full/crop): captureViewport re-removes at its own capture;
         // this sendCommand doesn't go through it — same timing-proof removal.
+        await settleFrames(tab.id);
         await removeBannerForCapture(tab.id);
         const res = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.captureScreenshot', params);
         return `data:image/${format};base64,${res.data}`;

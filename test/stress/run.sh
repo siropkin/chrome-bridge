@@ -257,6 +257,14 @@ s_pixel() {
   for f in s1.png c2.png; do
     [ -f "$OUT/$f" ] && ok "shot $f saved (pill check via image read)" || bad "shot $f missing"
   done
+  # (h) #24: --full is never narrower than the viewport (a transient metrics
+  # read once clipped a 1280px page to a 127px strip)
+  "${CLI[@]}" open "$FX/narrow.html?x=pix" --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" shot "narrow.html?x=pix" "$OUT/full.png" --full >"$OUT/04h.log" 2>&1
+  local fw
+  fw=$(node -e "console.log(require('fs').readFileSync('$OUT/full.png').readUInt32BE(16))" 2>/dev/null)
+  [ "${fw:-0}" -ge 1000 ] && ok "full-page shot width ${fw}px ≥ viewport" || bad "full-page shot came back ${fw}px wide (#24 strip)"
+  "${CLI[@]}" close "narrow.html?x=pix" --profile "$P1" >/dev/null 2>&1
 }
 
 # ---------------------------------------------------------------- section 5
