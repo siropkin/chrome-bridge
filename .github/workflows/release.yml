@@ -14,6 +14,16 @@
 #   CHROME_CLIENT_SECRET — OAuth client secret
 #   CHROME_REFRESH_TOKEN — refresh token from the Web Store API quickstart
 # First listing upload must be manual via the dashboard (one-time $5 dev fee).
+#
+# A PENDING REVIEW locks the item: draft uploads then fail with
+# ITEM_NOT_UPDATABLE (the store accepts one submission at a time). The
+# 'Unblock' step below cancels a pending submission before uploading (the tag
+# being released is always newer than whatever is under review). It needs a
+# fifth secret, CHROME_PUBLISHER_ID (the id in the developer-dashboard URL) —
+# without it the step is a no-op and the old warn-and-continue behavior holds.
+# Submitting for review stays a MANUAL click: auto-submitting would restart
+# the review clock on every tag, so during a release burst nothing would ever
+# finish review.
 
 name: Release
 
@@ -67,6 +77,30 @@ jobs:
           append_body: true
           files: ${{ env.ZIP_NAME }}
 
+      - name: Unblock the CWS item (cancel a pending review)
+        if: ${{ vars.CHROME_PUBLISH == 'true' }}
+        continue-on-error: true
+        env:
+          CHROME_CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
+          CHROME_CLIENT_SECRET: ${{ secrets.CHROME_CLIENT_SECRET }}
+          CHROME_REFRESH_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
+          CHROME_EXTENSION_ID: ${{ secrets.CHROME_EXTENSION_ID }}
+          CHROME_PUBLISHER_ID: ${{ secrets.CHROME_PUBLISHER_ID }}
+        run: |
+          if [ -z "$CHROME_PUBLISHER_ID" ]; then echo "no CHROME_PUBLISHER_ID secret — skipping unblock (a pending review would fail the upload with ITEM_NOT_UPDATABLE)"; exit 0; fi
+          TOKEN=$(curl -fsS -X POST https://oauth2.googleapis.com/token \
+            -d "client_id=$CHROME_CLIENT_ID" -d "client_secret=$CHROME_CLIENT_SECRET" \
+            -d "refresh_token=$CHROME_REFRESH_TOKEN" -d "grant_type=refresh_token" \
+            | node -pe 'JSON.parse(require("fs").readFileSync(0)).access_token')
+          code=$(curl -sS -o /tmp/cws-cancel.json -w '%{http_code}' -X POST \
+            "https://chromewebstore.googleapis.com/v2/publishers/$CHROME_PUBLISHER_ID/items/$CHROME_EXTENSION_ID:cancelSubmission" \
+            -H "Authorization: Bearer $TOKEN" -H 'content-length: 0')
+          if [ "$code" = 200 ]; then
+            echo "cancelled a pending submission — the item is unlocked for upload"
+          else
+            echo "no pending submission to cancel (HTTP $code): $(head -c 300 /tmp/cws-cancel.json)"
+          fi
+
       - name: Upload to Chrome Web Store (draft)
         if: ${{ vars.CHROME_PUBLISH == 'true' }}
         uses: mnao305/chrome-extension-upload@v6.0.0
@@ -79,7 +113,8 @@ jobs:
           refresh-token: ${{ secrets.CHROME_REFRESH_TOKEN }}
           # `publish: false` uploads as a draft — review in the CWS dashboard,
           # then click Publish. Flip to `true` once you trust the pipeline.
-          # ITEM_NOT_UPDATABLE = a previous version is still pending review —
-          # the store accepts one draft at a time; publish (or cancel) the
-          # pending one, then re-run this job (`gh run rerun <id>`).
+          # ITEM_NOT_UPDATABLE means a previous version is pending review: the
+          # Unblock step above cancels those when CHROME_PUBLISHER_ID is set —
+          # if you still see it, the cancel failed (check its step log) or the
+          # secret is missing; cancel by hand in the dashboard and re-run.
           publish: false
