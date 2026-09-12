@@ -519,10 +519,21 @@ const humanizeErr = (err) => {
 // name what happened and the recovery move, in the house style of findTab's
 // 'run tabs to re-find it'. 'Cannot access contents of' is a different beast:
 // the restricted-page rejection (chrome://, Web Store, PDF), not a gone tab.
+// chrome.debugger protocol errors surface with the JSON envelope AS the
+// message ('Error: {"code":-32602,"message":"No dialog is showing"}') — the
+// agent read the envelope instead of the cause (log-mining find).
+const errText = (e) => {
+  const s = String(e?.message || e);
+  const m = /^(?:Error: )?\{"code":-\d+,"message":"((?:[^"\\]|\\.)*)"/.exec(s.trim());
+  return m ? m[1].replace(/\\"/g, '"') : s;
+};
 const wrapErr = (err) => {
-  const s = String(err);
+  const s = errText(err);
   if (/No tab with id|The frame was removed/i.test(s)) return 'the tab was closed (or navigated) mid-command — run tabs to re-find it';
   if (/Cannot access contents of/i.test(s)) return 'that page is off-limits to extensions (chrome://, Web Store, PDF) — pick another tab';
+  // runEval already names the wedge case (http tab with a dead debugger);
+  // what lands here is a tab genuinely ON another extension's page.
+  if (/Cannot access a chrome-extension:\/\/ URL/.test(s)) return "that tab shows another extension's page — Chrome blocks cross-extension scripting; pick another tab";
   return s;
 };
 // tabId -> interval re-labeling the pill with elapsed seconds while a command
@@ -3480,7 +3491,7 @@ async function cmdDialog(tab, msg) {
         ...(msg.text ? { promptText: msg.text } : {}),
       });
     } catch (e) {
-      if (!/No dialog is showing/.test(String(e))) throw e;
+      if (!/No dialog is showing/.test(errText(e))) throw e;
       // "No dialog is showing" + a BLOCKED renderer = a native dialog CDP
       // can't touch. Distinguish it from the honest no-dialog case with a
       // short probe: a blocked renderer can't run any script.
@@ -3493,7 +3504,7 @@ async function cmdDialog(tab, msg) {
           'a dialog IS showing but cannot be answered over CDP on this Chrome (the debugger must have attached before the dialog opened). ' +
             'Dismiss it by navigating — nav <match> <any url> drops the dialog and revives the tab — or: close <match>'
         );
-      throw e; // renderer alive → genuinely no dialog
+      throw new Error(errText(e)); // renderer alive → genuinely no dialog — the cause, not the protocol JSON envelope
     } finally {
       await detachDbg(tab.id);
     }

@@ -762,6 +762,8 @@ try {
     // flag) and the server must hold it past the 70s command cap.
     assert(bg.includes('waitHuman') && bg.includes('e.isTrusted'), 'ext: wait --human completes only on trusted input');
     assert(serverSrc.includes("msg.type === 'type') return await ask(seat, msg, Math.min(285_000, CMD_TIMEOUT_MS + (msg.value?.length || 0) * 100)"), 'server: type reply budget scales with payload length, capped at the undici wall (#29)');
+    assert(serverSrc.includes("EADDRINUSE") && serverSrc.includes("server.on('error'"), 'server: a taken port exits with one clean line, not an unhandled-error stack dump');
+    assert(bg.includes('const errText') && bg.includes('errText(e)') && bg.includes("Cannot access a chrome-extension"), 'ext: CDP protocol-error envelopes unwrap to their message; cross-extension tabs get a named error');
     assert(bg.includes("world: 'ISOLATED'") && bg.includes('__bridgeHumanActed'), 'ext: the human-acted flag lives in the ISOLATED world (page JS cannot flip it)');
     assert(serverSrc.includes("msg.type === 'wait' && msg.human"), 'server: wait --human rides the long-wait path past the 70s cap');
     // The click coverage check must treat a shadow HOST containing the target

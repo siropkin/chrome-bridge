@@ -774,6 +774,18 @@ server.on('upgrade', (req, socket) => {
   socket.on('error', onGone);
 });
 
+// A second server on the same port used to die as an unhandled 'error' event
+// — a multi-line crash dump at the top of server.log. One clean line instead
+// (cli start health-checks first, so this only fires on a race or a manual
+// node server.mjs while one is running).
+server.on('error', (e) => {
+  if (e?.code === 'EADDRINUSE') {
+    console.error(`[bridge] 127.0.0.1:${PORT} is already taken — another bridge server owns it (use the running one, or: node cli.mjs stop)`);
+    process.exit(1);
+  }
+  throw e;
+});
+
 server.listen(PORT, '127.0.0.1', () => console.log(`[bridge] ws + control on 127.0.0.1:${PORT}`));
 
 // Heartbeat: app-level ping every 20s per seat. A socket can be open at TCP
