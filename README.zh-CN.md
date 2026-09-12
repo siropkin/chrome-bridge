@@ -182,7 +182,7 @@ HTTP API 只有一个命令端点:`POST /cmd`,Body 如 `{"type": "snap", "urlMat
 | `dialog <match> accept\|dismiss [--text s]` | 通过 CDP 应答 JS 对话框——仅当对话框在调试器会话期间(net/shot/…)打开时可达;若在未挂载的标签页上卡死则无法应答:用 `nav <match> <url>` 恢复(导航会丢弃对话框)。`--text` 必须带应答内容 |
 | `fill <match> <@ref\|css> <value> [--diff]` | 设置输入框的值——React 安全(原生 setter + input/change 事件);原生 `<select>` 按选项值或标签匹配 |
 | `type <match> <@ref\|css> <text> [--diff] [--trusted]` · `press <match> <key> [@ref] [--diff] [--trusted]` · `hover <match> <@ref\|css> [--diff] [--trusted]` | 逐字符输入(自动补全 UI)、按键(`Control+k` 组合键可用)、悬停;`--trusted` 走 CDP 输入(isTrusted——Enter 能触发表单提交等浏览器默认行为) |
-| `paste <match> [@ref\|css] [--diff] [-- <text>]` | 以真实粘贴的语义写入聚焦(或指定)的字段——会回退 `fill` 的富文本编辑器(Quill、Reddit/LinkedIn 编辑器)接受粘贴;不给 `-- <text>` 时读取系统剪贴板 |
+| `paste <match> [@ref\|css] [--diff] [--html] [-- <text>]` | 以真实粘贴的语义写入聚焦(或指定)的字段——会回退 `fill` 的富文本编辑器(Quill、Reddit/LinkedIn 编辑器)接受粘贴;不给 `-- <text>` 时读取系统剪贴板。`--html` 发送标记文本(text/html + 剥离标签的纯文本回退)——块编辑器一次粘贴即可解析为原生块 |
 | `scroll <match> <up\|down\|top\|bottom\|@ref\|css> [--diff]` | 滚动——自动找到真正的滚动容器(Linear、Gmail 这类应用外壳滚动的是内部面板,不是窗口) |
 | `upload <match> <@ref\|css> <file...> [--diff]` | 通过 CDP 设置文件输入框的文件——隐藏输入框也可用;目标是输入框或包裹它的元素。只有 `--diff` 选项;未知的 `--flag` 会失败,不会被当作文件 |
 | `ask <match> <question>` | *(实验性)* 本地 Gemini Nano 根据页面文本回答——无云端 token,质量仅供预筛 |
