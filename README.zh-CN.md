@@ -39,7 +39,9 @@ table "1. Playa Phone (playaphone.com) 122 points by cutoff 1 hour…" @e14
 
 需要 macOS/Linux(或 Windows 上的 Git Bash)、Chrome ≥ 117(ask / `snap --find` / `console --ask` 另需 Chrome ≥ 138 的内置 Nano 模型)和 Node ≥ 18。
 
-**一次粘贴,一次点击。** 把下面这段粘贴进你的 AI 智能体(Claude Code、Cursor、Qwen、GLM……)——它会克隆仓库、启动桥接服务、装好自己的接入端(Claude Code 的 skill,或写入其他智能体指令文件里的一行话),并在恰当时刻请你完成 Chrome 不允许脚本代劳的那一次点击:
+**Chrome 应用商店(最简单)。** 安装 [Chrome Bridge](https://chromewebstore.google.com/detail/chrome-bridge/kmhjlnokjigmnimgjjmiahlinjbcebkg),点击工具栏上的扩展按钮,再点 **Copy setup prompt for your AI agent**——把这段文字粘贴给你的智能体(Claude Code、Cursor……),剩下的事它自己会做完:下载桥接器、启动服务、验证连接、做一次不留痕迹的试运行,然后向你汇报。弹窗上的圆点会告诉你桥接器何时就绪(● bridge ready)。
+
+**从源码安装(一次粘贴,一次点击)。** 把下面这段粘贴进你的 AI 智能体(Claude Code、Cursor、Qwen、GLM……)——它会克隆仓库、启动桥接服务、装好自己的接入端(Claude Code 的 skill,或写入其他智能体指令文件里的一行话),并在恰当时刻请你完成 Chrome 不允许脚本代劳的那一次点击:
 
 ````text
 Set up chrome-bridge — the bridge that lets you drive my real, logged-in Chrome — and install your end of it. Do every step yourself and tell me the result of each. The only thing I do is the one-time extension load in Chrome (step 3).

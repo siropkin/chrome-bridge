@@ -1,5 +1,5 @@
-// Port 9333 is hardcoded in THREE places: here, cli.mjs, server.mjs. The extension
-// can't read BRIDGE_PORT — change all three together (README 'Install detail').
+// Port 9333 is hardcoded in FOUR places: here, cli.mjs, server.mjs, popup.js. The extension
+// can't read BRIDGE_PORT — change all four together (README 'Install detail').
 const WS_URL = 'ws://127.0.0.1:9333/ws';
 
 // Section map (each '// ---' banner, in order):
@@ -31,6 +31,17 @@ const idReady = chrome.storage.local
     // Stable pick from the id — same id always gets the same word, across SW
     // restarts, without a second storage key.
     PROFILE_NAME = NAME_WORDS[[...PROFILE_ID].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7) % NAME_WORDS.length];
+  })
+  .catch(() => {});
+
+// Store install or unpacked? getSelf is the one chrome.management method that
+// needs no permission. Rides the WS handshake so health/extreload can stop
+// telling store users to reload from disk (that only works for unpacked).
+let INSTALL_TYPE = '';
+const installReady = chrome.management
+  .getSelf()
+  .then((i) => {
+    INSTALL_TYPE = i.installType === 'development' ? 'dev' : 'store';
   })
   .catch(() => {});
 
@@ -92,7 +103,12 @@ function connect() {
     // ?v= lets `cli health` catch a stale extension after git pull; ?id= names
     // which profile holds the seat in the server log and /health.
     s = ws = new WebSocket(
-      WS_URL + '?v=' + chrome.runtime.getManifest().version + (PROFILE_ID ? '&id=' + PROFILE_ID : '') + (PROFILE_NAME ? '&name=' + PROFILE_NAME : '')
+      WS_URL +
+        '?v=' +
+        chrome.runtime.getManifest().version +
+        (PROFILE_ID ? '&id=' + PROFILE_ID : '') +
+        (PROFILE_NAME ? '&name=' + PROFILE_NAME : '') +
+        (INSTALL_TYPE ? '&install=' + INSTALL_TYPE : '')
     );
   } catch {
     return;
@@ -239,7 +255,7 @@ let wasOffline = false;
 // Wait for the profile id before the first dial — otherwise this connect
 // races the storage read and the seat is held with extId=null until the next
 // SW cycle (days, on a healthy server). Reconnects run after idReady settled.
-idReady.then(connect);
+Promise.all([idReady, installReady]).then(connect);
 
 // Keep the service worker (and its WebSocket) alive; reconnect if dropped.
 // Chrome floors sub-30s alarm periods to 30s (and warns) — ask for 0.5 outright.

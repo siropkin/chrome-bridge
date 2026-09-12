@@ -5,8 +5,8 @@ import fs from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-// Port 9333 is hardcoded in THREE places: extension/background.js (WS_URL —
-// the extension can't read BRIDGE_PORT), server.mjs, here. Change all three.
+// Port 9333 is hardcoded in FOUR places: extension/background.js (WS_URL —
+// the extension can't read BRIDGE_PORT), server.mjs, extension/popup.js, here. Change all four.
 const PORT = process.env.BRIDGE_PORT || 9333;
 const BASE = `http://127.0.0.1:${PORT}`;
 
@@ -356,6 +356,14 @@ async function run(cmdName, args) {
             if (mine && p.v && p.v !== mine) {
               // Bare extreload is refused when several profiles are connected
               // (route() can't pick one) — name the stale profile in the fix.
+              // A store install can't reload from disk: its update comes
+              // through the Web Store — say so instead of offering extreload.
+              if (p.install === 'store') {
+                console.error(
+                  `⚠ extension ${p.v} is loaded (profile ${p.name || p.id.slice(0, 4)}), the bridge download has ${mine} — store installs update via the Chrome Web Store; nothing to reload`
+                );
+                continue;
+              }
               const fix =
                 h.profiles.length > 1 ? `cli extreload --profile ${JSON.stringify(p.name || p.id.slice(0, 4))}` : 'cli extreload';
               console.error(`⚠ extension ${p.v} is loaded (profile ${p.name || p.id.slice(0, 4)}), the repo has ${mine} — run \`${fix}\` (or reload at chrome://extensions)`);

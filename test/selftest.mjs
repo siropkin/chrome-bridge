@@ -33,7 +33,7 @@ function assert(cond, name, detail) {
 }
 
 // --- tiny WS client (client frames must be masked) ---------------------------
-function wsClient(port, id = 'alpha-test', name) {
+function wsClient(port, id = 'alpha-test', name, install, vOverride) {
   return new Promise((resolve, reject) => {
     const key = crypto.randomBytes(16).toString('base64');
     const socket = net.connect(port, '127.0.0.1');
@@ -65,7 +65,7 @@ function wsClient(port, id = 'alpha-test', name) {
       // ?v=/?id= mirror the real extension's handshake (cli health compares
       // versions against the repo manifest; --profile prefix-matches the id).
       socket.write(
-        `GET /ws?v=${MANIFEST_V}&id=${id}${name ? `&name=${name}` : ''} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`
+        `GET /ws?v=${vOverride || MANIFEST_V}&id=${id}${name ? `&name=${name}` : ''}${install ? `&install=${install}` : ''} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`
       );
     });
     socket.on('data', (chunk) => {
@@ -861,6 +861,16 @@ try {
       'popup: manifest action points at existing popup files'
     );
     assert(spawnSync('node', ['--check', `${ROOT}extension/popup.js`]).status === 0, 'ext: popup.js parses (node --check)');
+    // The onboarding prompt the popup copies: self-contained (a store user has
+    // no repo), gated on health, ends by proving no residue via doctor.
+    const setupPrompt = fs.existsSync(`${ROOT}extension/setup-prompt.txt`) ? fs.readFileSync(`${ROOT}extension/setup-prompt.txt`, 'utf8') : '';
+    assert(
+      setupPrompt.includes('cli.mjs health') && setupPrompt.includes('AGENTS.md') && setupPrompt.includes('cli.mjs doctor') && setupPrompt.includes('archive/refs/heads/master.tar.gz'),
+      'onboarding: setup-prompt.txt covers download, health gate, manual, doctor'
+    );
+    const popupSrc = fs.readFileSync(`${ROOT}extension/popup.js`, 'utf8');
+    assert(popupSrc.includes('setup-prompt.txt') && popupSrc.includes('/health'), 'popup: copies the setup prompt + polls /health for the status dot');
+    assert(bg.includes('chrome.management') && bg.includes('&install='), 'ext: install type rides the WS handshake (getSelf, no permission)');
     // The id:<tabId> match form the popup copies — one predicate shared by
     // findTab / probe / close --all. Pin it so the branch can't silently die.
     assert(
@@ -1162,6 +1172,25 @@ try {
     const stale = await cli('snap', 'dupe.example');
     assert(stale.status !== 0 && stale.stderr.includes("can't be probed") && stale.stderr.includes('reload it at chrome://extensions'), 'multi-seat: unprobeable extension fails routing loudly', stale.stdout + stale.stderr);
     ext3.socket.destroy();
+  }
+
+  // install=store on the handshake: health reports it, the stale-version
+  // advice stops pointing at extreload, and extreload itself refuses a store
+  // build (runtime.reload would re-fetch the same store code).
+  {
+    const extS = await wsClient(PORT, 'delta-store', undefined, 'store', '0.0.0-test');
+    extS.onMessage((msg) => {
+      if (msg.type === 'ping') return extS.send({ id: msg.id, ok: true, result: 'pong' });
+      return extS.send({ id: msg.id, ok: true, result: null });
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    const hh = await cli('health');
+    assert(JSON.parse(hh.stdout).profiles.find((p) => p.id === 'delta-store')?.install === 'store', 'health reports install=store from the handshake', hh.stdout);
+    assert(hh.stderr.includes('store installs update via the Chrome Web Store') && !hh.stderr.includes('extreload'), 'health: store seats get store advice, not extreload', hh.stderr);
+    const xr = await cli('extreload', '--profile', 'delta-store');
+    assert(xr.status !== 0 && xr.stderr.includes('updates via the store'), 'extreload refuses a store-installed extension', xr.stdout + xr.stderr);
+    extS.socket.destroy();
+    await new Promise((r) => setTimeout(r, 100)); // let the seat drop before later sections probe
   }
 
   // watch runs for real against the live server — until now it was the only

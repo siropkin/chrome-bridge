@@ -41,7 +41,9 @@ A real run, verified live against GitHub: [recipes/github.com.md](recipes/github
 
 Requires macOS/Linux (or Git Bash on Windows), Chrome ≥ 117 (ask / `snap --find` / `console --ask` additionally need ≥ 138 for the built-in Nano model), and Node ≥ 18.
 
-**One paste, one click.** Paste this into your AI agent (Claude Code, Cursor, Qwen, GLM, …) — it clones the repo, starts the bridge, installs its own integration (the Claude Code skill, or a one-liner in its instructions file), and asks you for the one Chrome click scripts can't do:
+**Chrome Web Store (easiest).** Install [Chrome Bridge](https://chromewebstore.google.com/detail/chrome-bridge/kmhjlnokjigmnimgjjmiahlinjbcebkg), click its toolbar button, and hit **Copy setup prompt for your AI agent** — paste that text to your agent (Claude Code, Cursor, …) and it does the rest itself: downloads the bridge, starts the server, verifies the connection, runs a no-trace dry run, and reports back. The popup's dot tells you when the bridge is ready (● bridge ready).
+
+**From source (one paste, one click).** Paste this into your AI agent (Claude Code, Cursor, Qwen, GLM, …) — it clones the repo, starts the bridge, installs its own integration (the Claude Code skill, or a one-liner in its instructions file), and asks you for the one Chrome click scripts can't do:
 
 ````text
 Set up chrome-bridge — the bridge that lets you drive my real, logged-in Chrome — and install your end of it. Do every step yourself and tell me the result of each. The only thing I do is the one-time extension load in Chrome (step 3).

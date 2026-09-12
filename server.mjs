@@ -9,8 +9,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-// Port 9333 is hardcoded in THREE places: extension/background.js (WS_URL —
-// the extension can't read BRIDGE_PORT), cli.mjs, here. Change all three.
+// Port 9333 is hardcoded in FOUR places: extension/background.js (WS_URL —
+// the extension can't read BRIDGE_PORT), cli.mjs, popup.js, here. Change all four.
 const PORT = Number(process.env.BRIDGE_PORT || 9333);
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 // Kept overridable only for the hermetic timeout regression. Production
@@ -269,6 +269,10 @@ async function route(msg) {
   // old single-seat line shape.
   const explicit = !!msg.profile;
   if (seats.size > 1 || explicit) msg.profile = seat.pid;
+  // A store-installed extension can't reload from disk — runtime.reload would
+  // just re-fetch the same Web Store build. Say so instead of pretending.
+  if (msg.type === 'extreload' && seat.install === 'store')
+    throw new Error('this profile runs the Chrome Web Store build — it updates via the store; extreload only works on an unpacked (load-from-disk) install');
   // `wait --human` blocks for minutes (CAPTCHA/2FA handoff) — the 70s command
   // cap would kill it mid-handoff. 285s, just under the CLI HTTP client's
   // 5-min wall, which is the real ceiling (undici aborts the fetch at 300s).
@@ -552,7 +556,7 @@ const server = http.createServer((req, res) => {
       JSON.stringify({
         ok: true,
         extension: !![...seats.values()].find((s) => s.socket && !s.socket.destroyed),
-        profiles: [...seats.entries()].map(([pid, s]) => ({ id: pid, v: s.v, ...(s.name ? { name: s.name } : {}) })),
+        profiles: [...seats.entries()].map(([pid, s]) => ({ id: pid, v: s.v, ...(s.name ? { name: s.name } : {}), ...(s.install ? { install: s.install } : {}) })),
       })
     );
     return;
@@ -663,6 +667,10 @@ server.on('upgrade', (req, socket) => {
   // Human-readable profile word (see seatTag) — display only; the id stays
   // the identity everywhere.
   const name = u.searchParams.get('name');
+  // 'dev' (unpacked) or 'store' (CWS) — drives version-mismatch advice:
+  // extreload fixes a stale unpacked extension; a store install updates
+  // through the Web Store and must not be told to reload from disk.
+  const install = u.searchParams.get('install') === 'store' ? 'store' : u.searchParams.get('install') === 'dev' ? 'dev' : null;
   // All id-less clients (old extensions, raw test sockets) share one 'anon'
   // seat: a second id-less connection is the same legacy browser reconnecting
   // (SW race) — it gets the seat-taken bounce, not a second seat posing as a
@@ -689,6 +697,7 @@ server.on('upgrade', (req, socket) => {
     pid: id,
     v,
     name,
+    install,
     socket,
     nextId: 1,
     pending: new Map(),
