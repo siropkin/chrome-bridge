@@ -511,6 +511,10 @@ s_refs() {
   ref=$(echo "$tree" | grep -m1 'Josh Wiggs' | grep -o '@e[0-9]*' | tr -d '@')
   "${CLI[@]}" click "x=refs" "@$ref" >"$OUT/refs-fresh.log" 2>&1
   assert_grep "re-snap re-mints: fresh ref clicks" "$OUT/refs-fresh.log" 'clicked @e'
+  # #23: a synthetic click the page ignores must not read as a plain success —
+  # the <p> has no handler and takes no focus, so nothing observable moves.
+  "${CLI[@]}" click "x=refs" 'p' >"$OUT/refs-noop.log" 2>&1
+  assert_grep "ignored click says so and names --trusted" "$OUT/refs-noop.log" 'no observable page effect.*--trusted'
   "${CLI[@]}" close "x=refs" >/dev/null 2>&1
 }
 

@@ -2012,7 +2012,7 @@ const COVERAGE_SRC = `
   }
 `;
 
-const clickSrc = (target, dbl) => `(() => {
+const clickSrc = (target, dbl) => `(async () => {
   ${DEEPQ}
   ${FRAME_SRC}
   const sel = ${JSON.stringify(target)};
@@ -2026,6 +2026,22 @@ const clickSrc = (target, dbl) => `(() => {
   // the cursor overlay lives in the TOP document — a frame child's center
   // must be translated or the ping shows in the wrong place
   showCursor(...toTop(el, cx, cy), true);
+  // Effect observation (#23): a synthetic click an app ignores is
+  // indistinguishable from success AT DISPATCH (LinkedIn rows take --trusted
+  // only) — but a real click almost always moves SOMETHING: a mutation near
+  // the target (or a body-level portal), focus, value/checked, the URL.
+  // Watch briefly and say when nothing did, naming the --trusted remedy.
+  // Bridge UI traffic (cursor ripple teardown, pill ticker) is excluded.
+  const f0 = document.activeElement, u0 = location.href, c0 = el.checked, v0 = el.value;
+  let mutated = false, navigating = false;
+  const mo = new MutationObserver((ms) => {
+    for (const m of ms) {
+      if ([...m.addedNodes, ...m.removedNodes].some((n) => n.nodeType === 1 && /^(bridge-banner|bridge-cursor|bridge-grid)$/.test(n.id || ''))) continue;
+      const t = m.target;
+      if (el.contains(t) || t === document.body || t === document.documentElement || t.contains?.(el)) { mutated = true; break; }
+    }
+  });
+  mo.observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true });
   const o = { bubbles: true, cancelable: true, composed: true, clientX: cx, clientY: cy, button: 0 };
   const pair = (detail) => {
     el.dispatchEvent(new PointerEvent('pointerover', o));
@@ -2039,7 +2055,16 @@ const clickSrc = (target, dbl) => `(() => {
   pair(1);
   ${dbl ? `pair(2);
   el.dispatchEvent(new MouseEvent('dblclick', { ...o, detail: 2 }));` : ''}
-  return 'clicked ' + sel${dbl ? ' (double)' : ''};
+  // A navigating click tears this context down mid-wait — answer first.
+  await new Promise((r) => {
+    const gone = () => { navigating = true; r(); };
+    addEventListener('pagehide', gone, { once: true });
+    setTimeout(() => { removeEventListener('pagehide', gone); r(); }, 350);
+  });
+  mo.disconnect();
+  if (navigating) return 'clicked ' + sel${dbl ? ' (double)' : ''} + ' — page navigating';
+  const effect = mutated || document.activeElement !== f0 || location.href !== u0 || el.checked !== c0 || el.value !== v0;
+  return 'clicked ' + sel${dbl ? ' (double)' : ''} + (effect ? '' : ' — no observable page effect: the app may ignore synthetic clicks — retry with --trusted');
 })()`;
 
 const fillSrc = (target, value) => `(() => {

@@ -780,6 +780,7 @@ try {
     assert(bg.includes('BRIDGE_SEL') && bg.includes('inBridge'), 'ext: settle ignores the bridge-injected DOM (pill ticker, cursor, grid)');
     assert(bg.includes("el.id === 'bridge-banner'") && bg.includes("el.id === 'bridge-cursor'"), 'ext: snap excludes the bridge UI (the pill is not page content)');
     assert(bg.includes('Math.min(25, 15000 / text.length)'), 'ext: type caps its total inter-char sleep budget (~15s) for long text');
+    assert(bg.includes('no observable page effect') && bg.includes('MutationObserver'), 'ext: click watches for an observable effect and names --trusted when the app ignored it (#23)');
     // Shadow-piercing target resolution: document.querySelector can't reach
     // open shadow roots (Reddit's faceplate-*, LinkedIn's nested roots) —
     // every action script resolves via deepQuery (@refs/document CSS first,
