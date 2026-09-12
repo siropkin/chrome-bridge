@@ -790,6 +790,13 @@ try {
       `resolution sites: ${bg.split('mustQuery(sel').length + bg.split('deepQuery(sel').length}`
     );
     assert(bg.includes('deepAll(') && bg.includes("deepAll(${JSON.stringify(sel)}, document)"), 'ext: measure matches inside open shadow roots too');
+    // Stale-ref guard (#22): a ref's identity is its snap-time role+name —
+    // a re-sorted virtualized list reusing the node must fail loudly. ONE
+    // REFKEY_SRC feeds snap's minting AND deepQuery's click-time recheck.
+    assert(
+      bg.includes('const REFKEY_SRC') && bg.includes('${REFKEY_SRC}') && bg.includes('at snap time, now resolves to'),
+      'ext: @ref resolution recomputes role+name against the snap-time key (stale refs fail loudly toward re-snap)',
+    );
     // net: the initiator (already arriving on requestWillBeSent) rides the
     // line — the request→issuing-script jump, nearly free with the debugger
     // already attached.

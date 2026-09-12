@@ -492,6 +492,28 @@ s_ids() {
   "${CLI[@]}" tabs "x=ids" | grep -q '"id"' && bad "close by id: left the tab" || ok "close by id: reference"
 }
 
+s_refs() {
+  SECTION=refs
+  # Stale-ref identity guard (#22): a ref is its snap-time role+name, not the
+  # node — a re-sorted/virtualized list reuses the node for a different row,
+  # and acting on the old ref must fail loudly, never click the stranger.
+  "${CLI[@]}" open "$FX/static.html?x=refs" --profile "$P1" >/dev/null 2>&1
+  local tree ref
+  tree=$("${CLI[@]}" snap "x=refs" 2>/dev/null)
+  ref=$(echo "$tree" | grep -m1 'Static button one' | grep -o '@e[0-9]*' | tr -d '@')
+  [ -n "$ref" ] && ok "snap minted a ref for button one" || { bad "no ref for button one"; "${CLI[@]}" close "x=refs" >/dev/null 2>&1; return; }
+  # Simulate the re-sort: the same <button> node now carries a different row.
+  "${CLI[@]}" eval "x=refs" "(()=>{const b=[...document.querySelectorAll('button')].find(x=>x.textContent.includes('Static button one')); b.textContent='Josh Wiggs re-sorted row'; return b.textContent})()" >/dev/null 2>&1
+  "${CLI[@]}" click "x=refs" "@$ref" >"$OUT/refs-stale.log" 2>&1 && bad "stale ref click must fail" || true
+  assert_grep "stale ref names both identities + the remedy" "$OUT/refs-stale.log" 'was "button Static button one" at snap time, now resolves to "button Josh Wiggs'
+  # A re-snap re-mints the renamed node under a fresh ref that works.
+  tree=$("${CLI[@]}" snap "x=refs" 2>/dev/null)
+  ref=$(echo "$tree" | grep -m1 'Josh Wiggs' | grep -o '@e[0-9]*' | tr -d '@')
+  "${CLI[@]}" click "x=refs" "@$ref" >"$OUT/refs-fresh.log" 2>&1
+  assert_grep "re-snap re-mints: fresh ref clicks" "$OUT/refs-fresh.log" 'clicked @e'
+  "${CLI[@]}" close "x=refs" >/dev/null 2>&1
+}
+
 # ---------------------------------------------------------------- section 12
 s_doctor() {
   SECTION=doctor
@@ -539,7 +561,7 @@ cleanup() {
 }
 
 # ---------------------------------------------------------------- main
-ALL="profiles churn interact dialog pixel waits net marks misc edges ids doctor cleanup"
+ALL="profiles churn interact dialog pixel waits net marks misc edges ids refs doctor cleanup"
 SECTIONS=${*:-$ALL}
 cd "$REPO"
 detect_profiles || { echo "FAIL: no connected profile (cli profiles)"; exit 1; }
@@ -552,7 +574,7 @@ for sec in $SECTIONS; do
   case $sec in
     profiles) s_profiles ;; churn) s_churn ;; interact) s_interact ;; dialog) s_dialog ;;
     pixel) s_pixel ;; waits) s_waits ;; net) s_net ;; marks) s_marks ;; misc) s_misc ;;
-    edges) s_edges ;; ids) s_ids ;; doctor) s_doctor ;; cleanup) cleanup ;;
+    edges) s_edges ;; ids) s_ids ;; refs) s_refs ;; doctor) s_doctor ;; cleanup) cleanup ;;
     *) echo "unknown section: $sec" ;;
   esac
 done

@@ -44,7 +44,7 @@ The bridge is for pages a plain HTTP request can't handle — interaction (click
      … 3 more · link "past" → @e7 @e8 @e9
    ```
 
-4. `click <match> @e3` / `fill <match> @e2 "value"` — refs **survive re-snaps** (an element keeps its @eN while its role+name are unchanged) but expire on navigation; re-snap after `nav`.
+4. `click <match> @e3` / `fill <match> @e2 "value"` — refs **survive re-snaps** (an element keeps its @eN while its role+name are unchanged) but expire on navigation; re-snap after `nav`. A ref is identity-bound to its snap-time role+name: if the DOM re-sorted or rewrote under it (virtualized lists — chat/conversation views), acting on it **fails loudly** (`@eN was "…" at snap time, now resolves to "…" — re-snap`) instead of clicking the stranger.
 5. **Act + observe in one call: `click <match> @e3 --diff`** — the action settles (waits for the DOM to go quiet, 3s cap), then the diff of exactly the action's effects rides along in the same result, prefixed with a **verdict**: `succeeded` (observable change / navigation), `needs_human` (bot wall named — hand off with `wait <match> --human`), `blocked` (rate limit), `uncertain` (dispatched, nothing observable changed — verify with console/net/shot; never read it as ok). No separate `wait` + `snap --diff` round trips.
 6. `wait <match> --text "Saved"` only when you need something specific without acting. Chain other dependent steps in one `batch` — stdin, one command per line — one process and one shell call instead of several.
 

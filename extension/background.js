@@ -1568,6 +1568,46 @@ const BODY_CAP = 512_000;
 // Refs from snap live in `window.__bridgeRefs` of the world snap ran in;
 // click/fill run through the same pipeline so they resolve in the same world.
 
+// roleOf/nameOf, shared by TWO consumers that must never drift apart: SNAP_SRC
+// mints a ref's identity key from them, and DEEPQ's @ref resolution recomputes
+// them to catch a stale ref — a virtualized list (LinkedIn messaging) reuses
+// the NODE for a different row after a re-sort, and a ref resolved by node
+// alone then silently acts on the wrong element and reports success.
+const REFKEY_SRC = `
+  const ROLE_BY_TAG = { A:'link', BUTTON:'button', SELECT:'combobox', TEXTAREA:'textbox', SUMMARY:'button',
+    H1:'heading', H2:'heading', H3:'heading', H4:'heading', H5:'heading', H6:'heading',
+    IMG:'img', NAV:'navigation', MAIN:'main', HEADER:'banner', FOOTER:'contentinfo', ASIDE:'complementary',
+    FORM:'form', DIALOG:'dialog', TABLE:'table', UL:'list', OL:'list', LI:'listitem', LABEL:'label',
+    IFRAME:'frame' };
+  const INPUT_ROLE = { checkbox:'checkbox', radio:'radio', range:'slider', button:'button', submit:'button', reset:'button', search:'searchbox', file:'file' };
+  function roleOf(el) {
+    const explicit = el.getAttribute('role');
+    if (explicit) return ['presentation', 'none'].includes(explicit) ? null : explicit;
+    if (el.tagName === 'INPUT') return INPUT_ROLE[el.type] || 'textbox';
+    // editing HOSTS (the attr marks the host; inheritors read 'inherit') —
+    // fill/paste drive contenteditable editors, but the tree never showed
+    // them (stress: rich fixture's #ce invisible between its headings)
+    const ce = el.getAttribute('contenteditable');
+    if (ce === 'true' || ce === 'plaintext-only') return 'textbox';
+    return ROLE_BY_TAG[el.tagName] || null;
+  }
+  function nameOf(el, role) {
+    const al = el.getAttribute('aria-label');
+    if (al && al.trim()) return al.trim().slice(0, 60);
+    const lb = el.getAttribute('aria-labelledby');
+    if (lb) {
+      const t = lb.split(/\\s+/).map((id) => document.getElementById(id)?.textContent).filter(Boolean).join(' ').trim();
+      if (t) return t.slice(0, 60);
+    }
+    if (role === 'img') return el.alt || '';
+    if (el.tagName === 'IFRAME') return (el.getAttribute('src') || '').slice(0, 60); // a cross-origin frame is otherwise a black hole in the tree
+    if (el.tagName === 'INPUT') return el.placeholder || el.name || '';
+    const text = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+    if (text) return text.slice(0, 60);
+    return (el.getAttribute('title') || '').trim().slice(0, 60);
+  }
+`;
+
 const SNAP_SRC = (scope, diff, href, skel) => `(() => {
   const MAX = 300;
   // --skeleton: depth-limited map — past the cut, count instead of emit.
@@ -1594,12 +1634,10 @@ const SNAP_SRC = (scope, diff, href, skel) => `(() => {
   let truncated = false;
   let skipped = 0;
   const lines = [];
-  const ROLE_BY_TAG = { A:'link', BUTTON:'button', SELECT:'combobox', TEXTAREA:'textbox', SUMMARY:'button',
-    H1:'heading', H2:'heading', H3:'heading', H4:'heading', H5:'heading', H6:'heading',
-    IMG:'img', NAV:'navigation', MAIN:'main', HEADER:'banner', FOOTER:'contentinfo', ASIDE:'complementary',
-    FORM:'form', DIALOG:'dialog', TABLE:'table', UL:'list', OL:'list', LI:'listitem', LABEL:'label',
-    IFRAME:'frame' };
-  const INPUT_ROLE = { checkbox:'checkbox', radio:'radio', range:'slider', button:'button', submit:'button', reset:'button', search:'searchbox', file:'file' };
+  // roleOf/nameOf/ROLE_BY_TAG/INPUT_ROLE arrive via the DEEPQ embed below
+  // (REFKEY_SRC) — declared once there so snap's minting and DEEPQ's @ref
+  // staleness recheck can never drift apart. (Never write a dollar-brace
+  // interpolation inside a template's comment — it still interpolates.)
   const hidden = (el) => { const s = getComputedStyle(el); return s.display === 'none' || s.visibility === 'hidden'; };
   const hasBox = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
   function roleOf(el) {
@@ -1866,6 +1904,7 @@ const FILE_INPUT_GUARD = `if (el.tagName === 'INPUT' && el.type === 'file') thro
 // main road. The fallback runs only on a document miss (it walks every
 // element to find shadow hosts), and closed roots stay invisible to it.
 const DEEPQ = `
+  ${REFKEY_SRC}
   const deepAll = (sel, root) => {
     let out = [...root.querySelectorAll(sel)];
     for (const el of root.querySelectorAll('*')) {
@@ -1880,7 +1919,21 @@ const DEEPQ = `
     return out;
   };
   const deepQuery = (sel) => {
-    if (sel.startsWith('@')) return window.__bridgeRefs?.[sel.slice(1)] || null;
+    if (sel.startsWith('@')) {
+      const refEl = window.__bridgeRefs?.[sel.slice(1)] || null;
+      // A ref's identity is its snap-time role+name, not the node: a re-sorted
+      // virtualized list (LinkedIn messaging) keeps the NODE alive but puts a
+      // different row's content in it — acting on it reports success at the
+      // WRONG element (a message to the wrong conversation). Recompute the
+      // key and fail loudly toward a re-snap instead.
+      if (refEl?.__bridgeRefKey) {
+        const r = roleOf(refEl);
+        const key = (r || 'container') + ' ' + nameOf(refEl, r);
+        if (key !== refEl.__bridgeRefKey)
+          throw new Error(sel + ' was "' + refEl.__bridgeRefKey + '" at snap time, now resolves to "' + key + '" — the DOM re-sorted or rewrote under the ref; re-snap and use fresh refs');
+      }
+      return refEl;
+    }
     return document.querySelector(sel) || deepAll(sel, document)[0] || null;
   };
   // deepQuery + the canonical miss error in one place — every action script
