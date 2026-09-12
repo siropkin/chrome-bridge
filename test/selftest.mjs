@@ -842,6 +842,23 @@ try {
     assert(spawnSync('node', ['--check', `${ROOT}extension/background.js`]).status === 0, 'ext: background.js parses (node --check)');
     assert(spawnSync('bash', ['-n', `${ROOT}install.sh`]).status === 0, 'install.sh parses (bash -n)');
 
+    // The toolbar popup (copy tab reference): the manifest must point at real
+    // files, and popup.js is never executed by this suite (the fake extension
+    // plays the SW; nothing loads the popup) — a syntax error would ship green.
+    assert(
+      fs.existsSync(`${ROOT}extension/popup.html`) &&
+        fs.existsSync(`${ROOT}extension/popup.js`) &&
+        JSON.parse(fs.readFileSync(`${ROOT}extension/manifest.json`, 'utf8')).action?.default_popup === 'popup.html',
+      'popup: manifest action points at existing popup files'
+    );
+    assert(spawnSync('node', ['--check', `${ROOT}extension/popup.js`]).status === 0, 'ext: popup.js parses (node --check)');
+    // The id:<tabId> match form the popup copies — one predicate shared by
+    // findTab / probe / close --all. Pin it so the branch can't silently die.
+    assert(
+      bg.includes('const tabMatches') && bg.includes('/^id:(\\d+)$/') && (bg.match(/tabMatches\(t, msg\.urlMatch\)/g) || []).length === 3,
+      'ext: tabMatches predicate with the id: branch feeds all 3 match sites'
+    );
+
     // The per-domain recipe convention (#19): AGENTS.md points agents at
     // recipes/<domain>.md before acting — a missing dir/file 404s the
     // convention for every agent that reads the manual.

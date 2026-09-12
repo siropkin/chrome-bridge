@@ -3113,6 +3113,15 @@ async function waitPixel(tab, msg) {
 // needs special routing) · background.js handle() · ACT_VERBS (pill narration) · MUTATING.
 const MUTATING = new Set(['click', 'fill', 'paste', 'type', 'press', 'upload', 'eval', 'hover', 'scroll', 'grid', 'emulate', 'resize', 'drag', 'dialog', 'fetch']);
 
+// <match> is a URL/title substring — or id:<tabId>, the exact reference the
+// toolbar popup copies (also shown in tabs/open output). ONE predicate for
+// findTab / probe / close --all — the three copies this replaced had to be
+// kept in sync by comment.
+const tabMatches = (t, m) => {
+  const id = /^id:(\d+)$/.exec(m || '');
+  return id ? t.id === Number(id[1]) : (t.url || '').includes(m) || (t.title || '').includes(m);
+};
+
 // Takes the whole msg: records _tabId so the onmessage finally can flip a
 // driven tab's favicon to ✅, and marks a driven tab busy (⏳) for the command
 // about to run. `open` sets msg._tabId itself — it creates rather than finds.
@@ -3121,10 +3130,13 @@ async function findTab(msg) {
   // 'no tab matching "--max"'. One guard here covers every command.
   if (msg.urlMatch?.startsWith('--')) throw new Error(`"${msg.urlMatch}" is a flag, not a tab match — <match> goes first (check the command's usage)`);
   const tabs = await chrome.tabs.query({});
-  // URL or title substring — the same predicate `cli tabs <match>` filters
-  // with, so the list the agent picked from and the resolver never disagree.
-  const matches = tabs.filter((t) => (t.url || '').includes(msg.urlMatch) || (t.title || '').includes(msg.urlMatch));
+  // URL or title substring (or an exact id:<tabId> reference) — the same
+  // predicate `cli tabs <match>` filters with, so the list the agent picked
+  // from and the resolver never disagree.
+  const matches = tabs.filter((t) => tabMatches(t, msg.urlMatch));
   if (!matches.length) {
+    if (/^id:\d+$/.test(msg.urlMatch || ''))
+      throw new Error(`no tab with ${msg.urlMatch} — tab ids die on browser restart and change on prerender; re-copy it from the toolbar popup`);
     throw new Error(`no tab matching "${msg.urlMatch}" — the tab may have navigated (the match is a URL/title substring); run tabs to re-find it`);
   }
   // Never choose one tab from an ambiguous substring match. The old
@@ -3547,7 +3559,7 @@ async function handle(msg) {
   if (msg.type === 'probe') {
     const tabs = await chrome.tabs.query({});
     return tabs
-      .filter((t) => (t.url || '').includes(msg.urlMatch) || (t.title || '').includes(msg.urlMatch)) // same predicate as findTab
+      .filter((t) => tabMatches(t, msg.urlMatch))
       .map((t) => ({ id: t.id, url: (t.url || '').slice(0, 80), lastAccessed: t.lastAccessed || 0 }));
   }
 
@@ -3635,7 +3647,7 @@ async function handle(msg) {
     // marking/recording: the tabs are about to not exist.
     if (msg.all) {
       const ts = await chrome.tabs.query({});
-      const matches = ts.filter((t) => (t.url || '').includes(msg.urlMatch) || (t.title || '').includes(msg.urlMatch)); // same predicate as findTab
+      const matches = ts.filter((t) => tabMatches(t, msg.urlMatch));
       if (!matches.length) throw new Error(`no tab matching "${msg.urlMatch}" — already closed? (the match is a URL/title substring)`);
       await chrome.tabs.remove(matches.map((t) => t.id));
       return { closed: matches.length };

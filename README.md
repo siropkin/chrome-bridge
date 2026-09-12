@@ -124,7 +124,7 @@ MCP bridges (mcp-chrome, BrowserMCP) need an MCP-capable client and a configured
 
 `install.sh` checks Node ≥ 18, starts the server in the background (logs to `server.log`), opens `chrome://extensions` (macOS; on Linux open it yourself), waits for the extension to connect (up to ~90s), and prints the agent one-liner with your real path filled in. If the server dies or the machine reboots, the agent's health check fails and it can restart it itself with `node cli.mjs start` (`node cli.mjs stop` shuts it down).
 
-After loading the extension you won't see anything until the bridge server is running and your AI tool sends its first command — from then on, any tab the agent touches wears the purple 🟣 pill. Silence before that is normal, not a broken install.
+After loading the extension you won't see anything until the bridge server is running and your AI tool sends its first command — from then on, any tab the agent touches wears the purple 🟣 pill. Silence before that is normal, not a broken install. The one piece that's yours from the start is the toolbar button: its popup copies an `id:<tabId>` reference for the active tab — paste it to your agent ("work on tab id:…") and any command's `<match>` targets exactly that tab, no URL-guessing (ids die on browser restart — re-copy).
 
 **Upgrades**: after `git pull`, restart the server — it runs the code from when it was started, and its health check still passes, so nothing else reminds you. Also reload the extension with `node cli.mjs extreload` (the service worker is old code too — `node cli.mjs health` prints a warning when the loaded extension's version differs from the repo):
 

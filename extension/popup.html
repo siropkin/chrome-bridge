@@ -1,0 +1,18 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>chrome-bridge</title>
+<style>
+  body { width: 260px; margin: 0; padding: 12px; font: 13px system-ui, sans-serif; color: #1f1333; background: #fff; }
+  #title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 8px; }
+  #ref { font: 12px ui-monospace, monospace; background: #f3e8ff; color: #6b21a8; border-radius: 6px; padding: 6px 8px; margin-bottom: 8px; }
+  #copy { width: 100%; padding: 7px 0; border: 0; border-radius: 8px; background: #9333ea; color: #fff; font: 600 13px system-ui, sans-serif; cursor: pointer; }
+  #copy:disabled { opacity: 0.5; cursor: default; }
+  #status { min-height: 15px; margin-top: 6px; color: #6b21a8; font-size: 12px; }
+  .hint { margin-top: 6px; color: #8a7ca8; font-size: 11px; }
+</style>
+<div id="title">…</div>
+<div id="ref"></div>
+<button id="copy">Copy tab reference</button>
+<div id="status" role="status"></div>
+<div class="hint">Paste it to your agent: "work on tab id:…"</div>
+<script src="popup.js"></script>

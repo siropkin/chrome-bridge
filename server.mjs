@@ -215,7 +215,11 @@ async function route(msg) {
       );
     if (!live.length) throw new Error('no profile answered — extensions disconnected?');
     if (!matching.length)
-      throw new Error(`no tab matching "${msg.urlMatch}" in any connected profile — run tabs to find it`);
+      throw new Error(
+        /^id:\d+$/.test(msg.urlMatch || '')
+          ? `no tab with ${msg.urlMatch} in any connected profile — tab ids die on browser restart and change on prerender; re-copy it from the toolbar popup`
+          : `no tab matching "${msg.urlMatch}" in any connected profile — run tabs to find it`
+      );
     if (matching.length > 1)
       throw new Error(
         `⚠ "${msg.urlMatch}" matches tabs in ${matching.length} profiles (${matching.map((p) => seatTag(p.pid)).join(', ')}) — name one: --profile <name or id> (see: cli profiles)`

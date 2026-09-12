@@ -178,7 +178,10 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
   batch                             read commands from stdin, one per line ('#' = comment,
                                     quotes honored) — one process for N commands; stops on first error
   tabs [match]                      list tabs (compact JSON); [match] filters by URL/title substring;
-                                    with multiple Chrome profiles connected, merged with a profile tag
+                                    with multiple Chrome profiles connected, merged with a profile tag.
+                                    Rows carry the tab id: a <match> of id:<tabId> — from the toolbar
+                                    popup's Copy button — targets exactly that tab, no ambiguity
+                                    (ids die on browser restart and change on prerender — re-copy)
   profiles                          list connected Chrome profiles — id and name (for --profile) + version
   open <url>                        open + mark a new tab (waits for load, 8s cap; the reply's
                                     loaded:false means the cap fired on a still-loading page —

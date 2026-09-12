@@ -445,6 +445,24 @@ s_edges() {
   "${CLI[@]}" close iframe.html --profile "$P1" >/dev/null 2>&1
 }
 
+# ---------------------------------------------------------------- section 11
+s_ids() {
+  SECTION=ids
+  # id:<tabId> as <match> — the form the toolbar popup copies. open's reply
+  # carries the new tab's id; no product change needed to learn it here.
+  "${CLI[@]}" open "$FX/static.html?x=ids" --profile "$P1" >"$OUT/ids-open.log" 2>&1
+  local id
+  id=$(grep -o '"id":[0-9]*' "$OUT/ids-open.log" | head -1 | cut -d: -f2)
+  [ -n "$id" ] && ok "open reply carries the tab id" || { bad "open reply has no id ($(cat "$OUT/ids-open.log"))"; return; }
+  "${CLI[@]}" snap "id:$id" >"$OUT/ids-snap.log" 2>&1
+  assert_grep "snap by id: reference hits the right tab" "$OUT/ids-snap.log" 'Static page'
+  "${CLI[@]}" snap "id:99999999" >"$OUT/ids-gone.log" 2>&1
+  assert_grep "dead id names the re-copy remedy" "$OUT/ids-gone.log" 're-copy it from the toolbar popup'
+  "${CLI[@]}" tabs "x=ids" | grep -q '"id":'"$id" && ok "tabs lists the id: reference target" || bad "tabs row missing the id"
+  "${CLI[@]}" close "id:$id" >/dev/null 2>&1
+  "${CLI[@]}" tabs "x=ids" | grep -q '"id"' && bad "close by id: left the tab" || ok "close by id: reference"
+}
+
 # ---------------------------------------------------------------- cleanup
 cleanup() {
   SECTION=cleanup
@@ -470,7 +488,7 @@ cleanup() {
 }
 
 # ---------------------------------------------------------------- main
-ALL="profiles churn interact dialog pixel waits net marks misc edges cleanup"
+ALL="profiles churn interact dialog pixel waits net marks misc edges ids cleanup"
 SECTIONS=${*:-$ALL}
 cd "$REPO"
 detect_profiles || { echo "FAIL: no connected profile (cli profiles)"; exit 1; }
@@ -483,7 +501,7 @@ for sec in $SECTIONS; do
   case $sec in
     profiles) s_profiles ;; churn) s_churn ;; interact) s_interact ;; dialog) s_dialog ;;
     pixel) s_pixel ;; waits) s_waits ;; net) s_net ;; marks) s_marks ;; misc) s_misc ;;
-    edges) s_edges ;; cleanup) cleanup ;;
+    edges) s_edges ;; ids) s_ids ;; cleanup) cleanup ;;
     *) echo "unknown section: $sec" ;;
   esac
 done

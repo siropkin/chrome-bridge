@@ -5,7 +5,8 @@
   "minimum_chrome_version": "117",
   "description": "Let an AI agent drive this browser via a local server on this computer only. A 🟣 pill narrates what the agent does.",
   "icons": { "128": "icons/icon128.png", "48": "icons/icon48.png", "32": "icons/icon32.png", "16": "icons/icon16.png" },
-  "permissions": ["tabs", "tabGroups", "scripting", "alarms", "debugger", "storage"],
+  "permissions": ["tabs", "tabGroups", "scripting", "alarms", "debugger", "storage", "clipboardWrite"],
   "host_permissions": ["<all_urls>"],
-  "background": { "service_worker": "background.js" }
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html", "default_title": "chrome-bridge" }
 }
