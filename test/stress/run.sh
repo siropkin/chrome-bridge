@@ -470,6 +470,13 @@ s_edges() {
   assert_grep "eval on strict-CSP page (world fallback)" "$OUT/09.log" '^5$'
   "${CLI[@]}" click csp.html '#csp-btn' --diff >>"$OUT/09.log" 2>&1
   assert_grep "click + diff on CSP page" "$OUT/09.log" 'csp: clicked'
+  # #27: errors from the CDP fallback lead with the message, once — the old
+  # shape duplicated it (ex.text + description) and could read as a bare
+  # stack tail.
+  "${CLI[@]}" eval csp.html "document.body.insertAdjacentHTML('beforeend','<div style=\'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.4)\'>cover</div>'); 'ok'" --profile "$P1" >>"$OUT/09.log" 2>&1
+  "${CLI[@]}" click csp.html '#csp-btn' --profile "$P1" >>"$OUT/09.log" 2>&1 || true
+  assert_grep "covered click on CSP page leads with the message" "$OUT/09.log" 'ERROR: cdp: Uncaught.*click covered by'
+  assert_ngrep "CDP error no longer duplicates its own message" "$OUT/09.log" 'element first Error: click covered'
   "${CLI[@]}" close csp.html --profile "$P1" >/dev/null 2>&1
   # same-origin iframe: in-tree, drivable in place
   "${CLI[@]}" open "$HTTP/iframe.html" --profile "$P1" >/dev/null

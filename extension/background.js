@@ -3001,7 +3001,15 @@ async function runEval(tabId, code, world = 'auto') {
     });
     if (res.exceptionDetails) {
       const ex = res.exceptionDetails;
-      throw new Error(`cdp: ${ex.text} ${ex.exception?.description || ''}`.trim());
+      // ex.text already carries the message for uncaught errors ('Uncaught
+      // (in promise) Error: <msg>') and description repeats it before the
+      // stack — append only the stack tail in that case, not the message
+      // twice. CRs normalized: a bare \r overwrites earlier lines in a
+      // terminal and the error reads as its own last stack frame (#27).
+      const desc = (ex.exception?.description || '').replace(/\r\n?/g, '\n');
+      const head = desc.split('\n')[0];
+      const tail = desc && ex.text.endsWith(head) ? desc.slice(head.length) : desc ? ' ' + desc : '';
+      throw new Error(`cdp: ${ex.text}${tail}`.trim());
     }
     return res.result.value === undefined ? null : res.result.value;
   } finally {
