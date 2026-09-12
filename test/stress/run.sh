@@ -323,6 +323,35 @@ s_marks() {
   "${CLI[@]}" click "static.html?x=marks" "#bridge-disconnect" --trusted >/dev/null 2>&1
   sleep 1
   "${CLI[@]}" tabs "static.html?x=marks" | grep -q '"driven":true' && bad "trusted ⏏ click did not release" || ok "trusted ⏏ click releases the tab"
+
+  # Status favicon on release. A plain post-release eval can't see the truth
+  # (the eval itself re-marks and re-stamps first) — an observer installed
+  # before the release records the DOM across it instead.
+  # Case 1, no site icon link (static.html): the stamp is a bridge-MADE link —
+  # release must remove it (link count 1 → 0 → 1, the last 1 is the read's own
+  # re-stamp).
+  "${CLI[@]}" open "$FX/static.html?x=favicon" --profile "$P1" >/dev/null
+  "${CLI[@]}" eval "static.html?x=favicon" 'window.__favL=[document.querySelectorAll("link[rel]").length];new MutationObserver(()=>window.__favL.push(document.querySelectorAll("link[rel]").length)).observe(document.documentElement,{subtree:true,childList:true});"links at install: "+window.__favL[0]' >"$OUT/07b.log" 2>&1
+  assert_grep "stamp creates the only icon link on a link-less page" "$OUT/07b.log" 'links at install: 1'
+  "${CLI[@]}" release "static.html?x=favicon" >/dev/null 2>&1
+  sleep 2 # let a restore retry land too (the retry fires at 1.5s)
+  "${CLI[@]}" eval "static.html?x=favicon" 'window.__favL.join(",")' >"$OUT/07c.log" 2>&1
+  assert_grep "release removes the bridge-made favicon link" "$OUT/07c.log" '1,0(,|$)'
+  "${CLI[@]}" release "static.html?x=favicon" >/dev/null 2>&1 # the read re-marked it
+  "${CLI[@]}" close "static.html?x=favicon" >/dev/null 2>&1
+  # Case 2, GitHub-shaped head (favicons.html: 'alternate icon' before 'icon'):
+  # the stamp must hit the exact rel="icon" link and release must restore ITS
+  # original href — not touch the fallback. Same observer trick: the post-
+  # release read re-stamps, so the restore is read from the mutation log.
+  "${CLI[@]}" open "$FX/favicons.html?x=favicon" --profile "$P1" >/dev/null
+  "${CLI[@]}" eval "favicons.html?x=favicon" 'const q=r=>[...document.querySelectorAll("link[rel]")].find(l=>l.rel===r);const enc=s=>s.includes("ALT")?"ALT":s.includes("MAIN")?"MAIN":"EMOJI";window.__favH=[enc(q("icon").href)];new MutationObserver(()=>window.__favH.push(enc(q("icon").href))).observe(document.documentElement,{subtree:true,attributes:true,attributeFilter:["href"]});"alt="+enc(q("alternate icon").href)+" main="+window.__favH[0]' >"$OUT/07d.log" 2>&1
+  assert_grep "stamp targets the exact rel=icon link" "$OUT/07d.log" 'alt=ALT main=EMOJI'
+  "${CLI[@]}" release "favicons.html?x=favicon" >/dev/null 2>&1
+  sleep 2
+  "${CLI[@]}" eval "favicons.html?x=favicon" 'window.__favH.join(",")' >"$OUT/07e.log" 2>&1
+  assert_grep "release restores the icon link's own href" "$OUT/07e.log" 'EMOJI,MAIN'
+  "${CLI[@]}" release "favicons.html?x=favicon" >/dev/null 2>&1 # the read re-marked it
+  "${CLI[@]}" close "favicons.html?x=favicon" >/dev/null 2>&1
 }
 
 # ---------------------------------------------------------------- section 8

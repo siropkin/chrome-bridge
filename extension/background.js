@@ -685,27 +685,39 @@ async function groupTabNow(tabId) {
 const tabStatus = new Map(); // tabId -> emoji
 
 // Runs in the page; must be self-contained. `emoji === null` restores the
-// site's own favicon. rel must be exactly `icon` (one of its tokens) so we
-// don't grab apple-touch-icon, which never controls the tab strip.
+// site's own favicon. rel must CONTAIN `icon` as a token so we don't grab
+// apple-touch-icon, which never controls the tab strip — but among several
+// icon links (GitHub ships 'alternate icon' + 'icon') prefer the exact
+// rel="icon": that's the one the tab strip actually shows, and stamping the
+// fallback made the emoji invisible there.
 function faviconInject(emoji) {
   const svg = (e) =>
     'data:image/svg+xml,' +
     encodeURIComponent(
       '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">' + e + '</text></svg>'
     );
-  let link = [...document.querySelectorAll('link[rel]')].find((l) =>
-    l.rel.split(/\s+/).includes('icon')
-  );
+  const links = [...document.querySelectorAll('link[rel]')].filter((l) => l.rel.split(/\s+/).includes('icon'));
+  if (emoji === null) {
+    // Restore ONLY a link we stamped (ours is found by its markers, however
+    // the page reordered its head since) — never create a link to remove it.
+    const stamped = links.find((l) => l.dataset.bridgeMade || l.dataset.bridgeOrig !== undefined);
+    if (!stamped) return;
+    if (stamped.dataset.bridgeMade) stamped.remove();
+    else {
+      stamped.href = stamped.dataset.bridgeOrig;
+      delete stamped.dataset.bridgeOrig; // restore is final — the next stamp re-captures the site's CURRENT icon
+    }
+    return;
+  }
+  let link =
+    links.find((l) => l.dataset.bridgeMade || l.dataset.bridgeOrig !== undefined) || // keep stamping the link we already own
+    links.find((l) => l.rel === 'icon') ||
+    links[0];
   if (!link) {
     link = document.createElement('link');
     link.rel = 'icon';
     link.dataset.bridgeMade = '1';
     (document.head || document.documentElement).appendChild(link);
-  }
-  if (emoji === null) {
-    if (link.dataset.bridgeMade) link.remove();
-    else if (link.dataset.bridgeOrig !== undefined) link.href = link.dataset.bridgeOrig;
-    return;
   }
   if (link.dataset.bridgeOrig === undefined) {
     link.dataset.bridgeOrig = link.getAttribute('href') || '';
@@ -723,7 +735,18 @@ async function setFavicon(tabId, emoji) {
       func: faviconInject,
       args: [emoji],
     });
-  } catch {} // best-effort — onUpdated re-applies once the page loads
+  } catch {
+    // Best-effort — onUpdated re-applies once the page loads. A failed RESTORE
+    // has no such net (the tab is no longer driven) and a stuck emoji otherwise
+    // lives until the next navigation: one bounded retry, guarded so a tab
+    // re-marked inside the window keeps its new session's icon. A permanently
+    // undrivable tab (discarded/crashed) still self-heals on its next load.
+    if (emoji === null)
+      setTimeout(() => {
+        if (!drivenTabs.has(tabId))
+          chrome.scripting.executeScript({ target: { tabId }, func: faviconInject, args: [null] }).catch(() => {});
+      }, 1500);
+  }
 }
 
 // In-flight marks, per tab. Handlers whose correctness needs the banner to
