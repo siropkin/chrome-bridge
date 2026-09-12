@@ -161,6 +161,15 @@ try {
     if (msg.type === 'strip-test') return respond(Object.keys(msg).filter((k) => k.startsWith('_')).join(',') || 'clean');
     if (msg.type === 'tabs')
       return respond([{ id: 1, url: 'https://example.com/', title: 'Example', active: true, driven: false }]);
+    // doctor: one residue row (grouped, not driven) + one stale memory id —
+    // the cli's --fix then releases the row through the normal release path.
+    if (msg.type === 'doctor')
+      return respond({
+        rows: [{ id: 7, url: 'https://residue.example/', title: 'Residue', grouped: true, driven: false, status: '✅', emulated: false, debugger: false }],
+        stale: [999],
+      });
+    // no release reply: the generic echo fallback answers it (ok:true) — the
+    // cli's --fix only checks for an error
     if (msg.type === 'probe')
       return respond(
         [{ id: 1, url: 'https://example.com/', lastAccessed: 1 }, { id: 2, url: 'https://dupe.example/a', lastAccessed: 2 }].filter((t) =>
@@ -715,7 +724,7 @@ try {
     // ping/swlogs/tabs/probe never reach findTab (no pill; probe is a
     // server-internal routing query); note is special-cased in activityPhrases;
     // extreload restarts the worker — no tab, no pill.
-    const NO_VERBS = ['ping', 'swlogs', 'tabs', 'note', 'probe', 'extreload'];
+    const NO_VERBS = ['ping', 'swlogs', 'tabs', 'note', 'probe', 'extreload', 'doctor'];
     assert(
       [...handleTypes].filter((t) => !NO_VERBS.includes(t)).sort().join() === [...verbKeys].sort().join(),
       'drift: ACT_VERBS keys vs handle() types',
@@ -858,6 +867,11 @@ try {
       bg.includes('const tabMatches') && bg.includes('/^id:(\\d+)$/') && (bg.match(/tabMatches\(t, msg\.urlMatch\)/g) || []).length === 3,
       'ext: tabMatches predicate with the id: branch feeds all 3 match sites'
     );
+    // The hygiene trio: lifecycle journal helper + doctor handler + boot-time
+    // reap of dead-session group residue (re-deriving driven state from the
+    // group stays removed — 5655484).
+    assert(bg.includes("function journal(") && bg.includes("msg.type === 'doctor'"), 'ext: journal helper + doctor handler');
+    assert(bg.includes("journal('reap'") && bg.includes("journal('boot'") && bg.includes("journal('mark'") && bg.includes("journal('release'"), 'ext: journal call sites (reap/boot/mark/release)');
 
     // The per-domain recipe convention (#19): AGENTS.md points agents at
     // recipes/<domain>.md before acting — a missing dir/file 404s the
@@ -905,6 +919,33 @@ try {
   );
   const logDelta = (await fetch(`http://127.0.0.1:${PORT}/log?since=${logAll[logAll.length - 1].seq - 1}`).then((r) => r.json())).lines;
   assert(logDelta.length === 1, 'server /log since= delta filtering', JSON.stringify(logDelta));
+
+  // --- lifecycle journal + doctor ------------------------------------------
+  // Extension→server lifecycle events land in the journal ring (and as
+  // durable [tab] lines in server.log); doctor annotates residue rows with
+  // the tab's last transitions — the "why is this tab still marked" answer.
+  ext.send({ type: 'event', kind: 'mark', tabId: 7, detail: 'selftest' });
+  ext.send({ type: 'event', kind: 'release', tabId: 7, detail: '' });
+  await new Promise((r) => setTimeout(r, 200)); // the two frames must arrive before doctor reads the ring
+  const doc1 = await cli('doctor');
+  assert(doc1.status === 0, 'doctor runs', doc1.stderr);
+  const rows1 = JSON.parse(doc1.stdout);
+  const residue = rows1.find((r) => r.id === 7);
+  assert(residue && residue.grouped === true && residue.driven === false, 'doctor: residue row merged from the seat', doc1.stdout);
+  assert(
+    residue.last?.some((l) => l.includes('mark')) && residue.last.some((l) => l.includes('release')),
+    'doctor: residue row annotated with its last journal events',
+    JSON.stringify(residue)
+  );
+  assert(rows1.find((r) => r.staleMemory)?.pruned === false, 'doctor: stale memory reported, unpruned without --fix', doc1.stdout);
+  const doc2 = await cli('doctor', '--fix');
+  const rows2 = JSON.parse(doc2.stdout);
+  assert(rows2.find((r) => r.id === 7)?.fixed === 'released', 'doctor --fix releases residue tabs via the release path', doc2.stdout);
+  assert(rows2.find((r) => r.staleMemory)?.pruned === true, 'doctor --fix prunes stale memory', doc2.stdout);
+  // The journal must NOT leak into the command feed — watch/history stay
+  // command-focused (the ring above is the only in-memory surface).
+  const feedLines = (await fetch(`http://127.0.0.1:${PORT}/log`).then((r) => r.json())).lines;
+  assert(!feedLines.some((l) => l.line.includes('selftest') && l.line.includes('mark tab')), 'journal stays out of the activity ring');
 
   // unknown command surfaces the extension's error
   const bad = await (await fetch(`http://127.0.0.1:${PORT}/cmd`, {

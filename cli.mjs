@@ -183,6 +183,10 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     popup's Copy button — targets exactly that tab, no ambiguity
                                     (ids die on browser restart and change on prerender — re-copy)
   profiles                          list connected Chrome profiles — id and name (for --profile) + version
+  doctor [--fix]                    browser-hygiene sweep: tabs wearing bridge markers the bridge
+                                    doesn't track (🟣 group, status favicon, emulation, debugger),
+                                    each with its last lifecycle events; --fix releases every residue
+                                    tab and prunes dead-id memory (driven tabs are never touched)
   open <url>                        open + mark a new tab (waits for load, 8s cap; the reply's
                                     loaded:false means the cap fired on a still-loading page —
                                     snap/eval/wait --text work on what's there)
@@ -523,6 +527,26 @@ async function run(cmdName, args) {
       } else {
         print(lines.map((a) => a.line).join('\n') || '(no history — the ring holds the last 300 commands, and it is empty)');
       }
+      break;
+    }
+
+    case 'doctor': {
+      const rest = takeFlags(args, ['--fix'], 0, 'doctor [--fix]');
+      if (rest.length) fail('usage: doctor [--fix]');
+      const fix = args.includes('--fix');
+      const rows = await cmd({ type: 'doctor', fix });
+      if (fix) {
+        // Clean Chrome-side residue through the normal, tested release path —
+        // one release per residue row, never a driven tab, never a row that
+        // only reports memory (the extension already pruned those).
+        for (const row of rows) {
+          if (row.driven || row.error || row.staleMemory) continue;
+          if (!(row.grouped || row.status || row.emulated || row.debugger)) continue;
+          const r = await cmd({ type: 'release', urlMatch: 'id:' + row.id, profile: row.profile }, true);
+          row.fixed = r?.error ? 'release failed: ' + r.error : 'released';
+        }
+      }
+      print(rows);
       break;
     }
 

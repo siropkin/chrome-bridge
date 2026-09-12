@@ -50,6 +50,7 @@ node <repo>/cli.mjs <command> …
 - `emulate <match> <w> <h> [mobile]` / `emulate <match> focus` / `unemulate <match>` — device view without resizing the window; `mobile` and `focus` are the only modes.
 - `note <match> <text>` — narrate to the human watching the driven tab (pill + history): before a risky/long sequence or to explain a surprising step. Sparing — the pill already shows every command; notes add intent.
 - `watch` — live feed of every bridge command in the user's terminal. Not for you (you see the results) — suggest it when the user wants to follow along.
+- `doctor [--fix]` — browser-hygiene sweep: tabs with leftover bridge markers (🟣 group, favicon, emulation, debugger) the bridge no longer tracks, each row with the tab's last lifecycle events; `--fix` releases them (driven tabs untouched). Marker transitions live as `[tab]` lines in `server.log` — grep a tab id when the user asks "why is this tab still marked?".
 - `history [match] [-n N]` — what the bridge already ran on this machine (server ring, last 300 commands); `--batch out` exports it as a replayable batch script. Typed/pasted text, dialog answers, clipboard pastes, and upload paths are redacted and commented out, so those steps do not replay. Post-mortems and session handoffs.
 - `swlogs` — service-worker console tail (errors/warnings).
 

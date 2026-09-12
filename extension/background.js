@@ -63,6 +63,21 @@ for (const lvl of ['error', 'warn']) {
 // can't answer otherwise (behavior can't distinguish loaded from stale).
 logLine('background v' + chrome.runtime.getManifest().version + ' loaded ' + new Date().toISOString());
 
+// Lifecycle journal — one WS event per marker-affecting transition (mark,
+// release, reap, boot, …) so server.log can answer "why is this tab still
+// marked?" after the fact. Fire-and-forget like self-release, except events
+// fired while the socket is down (boot, extreload) queue briefly and flush
+// on the next connect — losing boot events would defeat the point.
+const pendingJournal = [];
+function journal(kind, tabId, detail) {
+  const line = JSON.stringify({ type: 'event', kind, tabId: tabId ?? null, detail: String(detail || '').slice(0, 120) });
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(line);
+  else {
+    pendingJournal.push(line);
+    if (pendingJournal.length > 50) pendingJournal.shift();
+  }
+}
+
 function connect() {
   // Two connects in flight (reconnect timer + keepalive alarm) means two
   // sockets; the server seats the first and rejects the second. Reply on the
@@ -83,6 +98,7 @@ function connect() {
     return;
   }
   s.onopen = () => {
+    for (const l of pendingJournal.splice(0)) s.send(l);
     // Back online after a server outage: every driven tab's pill said
     // "offline" — put them back to the honest current state.
     if (wasOffline) {
@@ -744,7 +760,9 @@ async function setFavicon(tabId, emoji) {
     if (emoji === null)
       setTimeout(() => {
         if (!drivenTabs.has(tabId))
-          chrome.scripting.executeScript({ target: { tabId }, func: faviconInject, args: [null] }).catch(() => {});
+          chrome.scripting
+            .executeScript({ target: { tabId }, func: faviconInject, args: [null] })
+            .catch(() => journal('favicon-stuck', tabId, 'restore failed twice — heals on next navigation'));
       }, 1500);
   }
 }
@@ -758,6 +776,7 @@ async function setFavicon(tabId, emoji) {
 const markInflight = new Map(); // tabId -> in-flight markTab promise
 function markTab(tabId) {
   drivenTabs.add(tabId);
+  journal('mark', tabId);
   persist();
   const p = (async () => {
     await groupTab(tabId);
@@ -839,6 +858,7 @@ async function releaseTab(tabId, opts = {}) {
     tail.then(() => groupChain.get(windowId) === tail && groupChain.delete(windowId)); // same self-pruning as groupTab
     await run;
   } catch {}
+  journal('release', tabId, opts.flash ? 'pill ⏏' : '');
 }
 
 // Re-banner a driven tab after every load (navigations wipe the DOM marker),
@@ -880,6 +900,7 @@ chrome.tabs.onUpdated.addListener((tabId, info) => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
+  if (drivenTabs.has(tabId)) journal('tab-closed', tabId, 'driven tab closed');
   drivenTabs.delete(tabId);
   tabStatus.delete(tabId);
   tabActivity.delete(tabId);
@@ -1038,7 +1059,10 @@ const DBG_GONE =
   'the "debugging this browser" infobar was dismissed, DevTools opened on this tab, or the page itself killed the session (debugger-hostile, e.g. console.cloud.google.com); ' +
   'retry the command — if every command on the tab then fails (even snap), the tab wedged: heal it with nav <match> <its url>';
 chrome.debugger.onDetach.addListener((src) => {
-  if (cdpRefs.delete(src.tabId) || emulatedTabs.has(src.tabId)) logLine('dbg DETACHED EXTERNALLY ' + src.tabId);
+  if (cdpRefs.delete(src.tabId) || emulatedTabs.has(src.tabId)) {
+    logLine('dbg DETACHED EXTERNALLY ' + src.tabId);
+    journal('dbg-external-detach', src.tabId);
+  }
   emulatedTabs.delete(src.tabId);
   // Fired during the hydration window (often the very event that woke the
   // SW): the delete hit the still-empty map, and hydration then resurrects
@@ -1212,6 +1236,25 @@ const ready = (async () => {
     if (tabStatus.get(id)) setFavicon(id, tabStatus.get(id));
   }
   persist(); // the ⏳ resets above became durable only now
+
+  // Boot reconciliation — the REAP direction only (re-deriving driven state
+  // FROM group membership was removed on purpose: the group is not a source
+  // of truth, 5655484). A tab in a 🟣 Bridge group that hydration did NOT
+  // restore as driven belongs to a dead session (extension reload / browser
+  // restart wipe storage.session; Chrome keeps the group): nothing will ever
+  // release it, so its markers are residue. Full release path + a journal
+  // line. A tab the user dragged into the group by hand gets swept too —
+  // accepted: the bridge owns the 🟣 Bridge group.
+  try {
+    for (const g of await chrome.tabGroups.query({ title: '🟣 Bridge' })) {
+      for (const t of await chrome.tabs.query({ groupId: g.id })) {
+        if (drivenTabs.has(t.id)) continue;
+        journal('reap', t.id, 'in 🟣 Bridge group with no driven state — dead-session residue');
+        await releaseTab(t.id).catch(() => {});
+      }
+    }
+  } catch {}
+  journal('boot', null, `v${chrome.runtime.getManifest().version} driven=${drivenTabs.size}`);
 })();
 
 
@@ -3559,6 +3602,7 @@ async function handle(msg) {
     // forgets they're driven (the group is not a source of truth — the merge
     // was removed on purpose). Chrome clears emulation on debugger detach.
     setTimeout(() => chrome.runtime.reload(), 250);
+    journal('extreload', null, 'v' + chrome.runtime.getManifest().version);
     return 'reloading from disk — the extension reconnects in a few seconds. NOT surviving: driven-tab memory (marks, pill history — re-mark tabs you were driving; they keep the 🟣 group but the bridge forgets them), emulation, in-flight debugger commands';
   }
 
@@ -3573,6 +3617,43 @@ async function handle(msg) {
       ...(t.active ? { active: true } : {}),
       ...(drivenTabs.has(t.id) ? { driven: true } : {}),
     }));
+  }
+
+  if (msg.type === 'doctor') {
+    // Read-only residue report for THIS profile: tabs wearing bridge markers
+    // (🟣 group / status favicon / emulation / debugger) and whether the
+    // bridge still tracks them, plus tracked ids whose tab is gone. Residue =
+    // markers without driven state. fix prunes the dead-id memory here;
+    // Chrome-side markers are the cli's job (it releases each residue tab
+    // through the normal path). Read-only, no findTab, no marking.
+    const tabs = await chrome.tabs.query({});
+    const live = new Set(tabs.map((t) => t.id));
+    const gTitles = new Map((await chrome.tabGroups.query({})).map((g) => [g.id, g.title]));
+    const rows = [];
+    for (const t of tabs) {
+      const grouped = t.groupId !== -1 && gTitles.get(t.groupId) === '🟣 Bridge';
+      const driven = drivenTabs.has(t.id);
+      const status = tabStatus.get(t.id) || null;
+      const emulated = emulatedTabs.has(t.id);
+      const dbg = cdpRefs.has(t.id);
+      if (grouped || driven || status || emulated || dbg)
+        rows.push({ id: t.id, url: (t.url || '').slice(0, 80), title: (t.title || '').slice(0, 60), grouped, driven, status, emulated, debugger: dbg });
+    }
+    const stale = [...new Set([...drivenTabs, ...tabStatus.keys(), ...tabActivity.keys(), ...emulatedTabs.keys(), ...worldCache.keys(), ...shotBaselines.keys(), ...failedSinceOk.keys()])].filter((id) => !live.has(id));
+    if (msg.fix && stale.length) {
+      for (const id of stale) {
+        drivenTabs.delete(id);
+        tabStatus.delete(id);
+        tabActivity.delete(id);
+        emulatedTabs.delete(id);
+        worldCache.delete(id);
+        shotBaselines.delete(id);
+        failedSinceOk.delete(id);
+      }
+      persist();
+      journal('doctor-fix', null, `pruned ${stale.length} stale id(s)`);
+    }
+    return { rows, stale };
   }
 
   // Multi-profile routing: does THIS profile have tabs matching? The server

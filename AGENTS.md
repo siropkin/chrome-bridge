@@ -59,6 +59,10 @@ batch                             read commands from stdin, one per line ('#' = 
 tabs [match]                      list tabs (compact JSON); [match] filters by URL/title substring;
                                   several profiles connected → merged, rows carry a profile tag
 profiles                          list connected Chrome profiles — id and name (for --profile) + version
+doctor [--fix]                    browser-hygiene sweep: tabs wearing bridge markers the bridge
+                                  doesn't track (🟣 group, status favicon, emulation, debugger),
+                                  each with its last lifecycle events; --fix releases every residue
+                                  tab and prunes dead-id memory (driven tabs are never touched)
 open <url>                        open + mark a new tab (waits for load, 8s cap;
                                   the reply's loaded:false means the cap fired on a
                                   still-loading page — snap/eval/wait --text work on
@@ -199,6 +203,14 @@ health                            server + extension status
 start                             start the server (detached) if it's down
 stop                              stop the server
 ```
+
+## Forensics: leftover markers and "why is this tab still marked?"
+
+Marker-affecting transitions (mark, release, reap, boot, extreload, tab-closed, favicon-stuck, dbg-external-detach) ride extension→server events and land as durable `[tab]` lines in `server.log`, one per event with the tab id and profile — grep a numeric id to reconstruct a tab's story. They do NOT appear in `watch`/`history` (those stay command-focused).
+
+`doctor` sweeps every profile for residue: tabs wearing bridge markers the bridge doesn't track (🟣 group, status favicon, live emulation/debugger) plus tracked ids whose tab is gone. Residue rows carry `last` — the tab's last journal events. `doctor --fix` releases each residue tab through the normal release path and prunes dead-id memory; driven tabs are never touched. A clean browser prints `[]`.
+
+The bridge also cleans up after itself at the source: on every service-worker start, tabs found in a 🟣 Bridge group with no surviving driven state (extension reload / browser restart wipe it) are reaped through the release path — so residue from a dead session disappears on its own. It never works the other way: driven state is never re-derived from group membership (a user can drag tabs into a group; the group is not a source of truth).
 
 ## Recipes
 

@@ -492,6 +492,28 @@ s_ids() {
   "${CLI[@]}" tabs "x=ids" | grep -q '"id"' && bad "close by id: left the tab" || ok "close by id: reference"
 }
 
+# ---------------------------------------------------------------- section 12
+s_doctor() {
+  SECTION=doctor
+  # The residue lifecycle, end to end: drive a tab (marked + 🟣-grouped), then
+  # extreload — storage.session dies with the worker, so the group membership
+  # becomes dead-session residue, and the boot reconciliation must reap it
+  # (ungrouped, unmarked) before doctor ever has something to report.
+  "${CLI[@]}" open "$FX/static.html?x=doctor" --profile "$P1" >/dev/null
+  "${CLI[@]}" tabs "x=doctor" | grep -q '"group":"🟣 Bridge"' && ok "tab grouped while driven" || bad "driven tab not grouped"
+  "${CLI[@]}" extreload --profile "$P1" >/dev/null 2>&1
+  need2 && "${CLI[@]}" extreload --profile "$P2" >/dev/null 2>&1 # keep both profiles on this code — a stale seat answers doctor with an error row
+  sleep 5 # reconnect + hydration + the boot reap
+  "${CLI[@]}" tabs "x=doctor" >"$OUT/doctor-1.log" 2>&1
+  assert_ngrep "boot reaps the dead-session group membership" "$OUT/doctor-1.log" '🟣 Bridge'
+  assert_ngrep "boot reap clears driven state" "$OUT/doctor-1.log" '"driven":true'
+  "${CLI[@]}" doctor >"$OUT/doctor-2.log" 2>&1
+  assert_ngrep "doctor: no residue rows after the reap" "$OUT/doctor-2.log" 'static.html'
+  "${CLI[@]}" doctor --fix >"$OUT/doctor-3.log" 2>&1
+  assert_ngrep "doctor --fix on a clean browser releases nothing" "$OUT/doctor-3.log" '"fixed":"released"'
+  "${CLI[@]}" close "static.html?x=doctor" --profile "$P1" >/dev/null 2>&1
+}
+
 # ---------------------------------------------------------------- cleanup
 cleanup() {
   SECTION=cleanup
@@ -517,7 +539,7 @@ cleanup() {
 }
 
 # ---------------------------------------------------------------- main
-ALL="profiles churn interact dialog pixel waits net marks misc edges ids cleanup"
+ALL="profiles churn interact dialog pixel waits net marks misc edges ids doctor cleanup"
 SECTIONS=${*:-$ALL}
 cd "$REPO"
 detect_profiles || { echo "FAIL: no connected profile (cli profiles)"; exit 1; }
@@ -530,7 +552,7 @@ for sec in $SECTIONS; do
   case $sec in
     profiles) s_profiles ;; churn) s_churn ;; interact) s_interact ;; dialog) s_dialog ;;
     pixel) s_pixel ;; waits) s_waits ;; net) s_net ;; marks) s_marks ;; misc) s_misc ;;
-    edges) s_edges ;; ids) s_ids ;; cleanup) cleanup ;;
+    edges) s_edges ;; ids) s_ids ;; doctor) s_doctor ;; cleanup) cleanup ;;
     *) echo "unknown section: $sec" ;;
   esac
 done

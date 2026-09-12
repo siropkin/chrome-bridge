@@ -172,6 +172,43 @@ async function route(msg) {
     return { ok: true, result: rows };
   }
 
+  if (msg.type === 'doctor') {
+    // Residue report, merged across profiles like tabs — then every residue
+    // row is annotated with the tab's last lifecycle-journal events (the
+    // "why"). fix prunes dead-id memory extension-side; Chrome-side markers
+    // are cleaned by the cli releasing each residue tab through the normal,
+    // tested path — not a second cleaner here.
+    if (!seats.size) throw new Error('extension not connected — load extension/ at chrome://extensions');
+    let entries = [...seats.entries()];
+    if (msg.profile) {
+      const seat = await seatByProfileGrace(String(msg.profile));
+      entries = [[seat.pid, seat]];
+    }
+    const out = [];
+    for (const [pid, seat] of entries) {
+      // Same 5s deaf-seat budget as the tabs merge — a wedged profile must
+      // not hold the whole report for the full command timeout.
+      const reply = await ask(seat, msg, 5_000).catch(() => null);
+      if (!reply?.ok) {
+        out.push({ profile: seatTag(pid), error: reply ? String(reply.error) : 'unresponsive' });
+        continue;
+      }
+      for (const row of reply.result?.rows || []) {
+        if (!row.driven) {
+          const last = journal
+            .filter((j) => j.tabId === row.id && j.profile === pid)
+            .slice(-3)
+            .map((j) => `${new Date(j.ts).toTimeString().slice(0, 8)} ${j.kind}${j.detail ? ' — ' + j.detail : ''}`);
+          if (last.length) row.last = last;
+        }
+        out.push({ ...row, profile: seatTag(pid) });
+      }
+      const stale = reply.result?.stale;
+      if (stale?.length) out.push({ profile: seatTag(pid), staleMemory: stale, pruned: !!msg.fix });
+    }
+    return { ok: true, result: out };
+  }
+
   let seat;
   if (msg.profile) {
     seat = await seatByProfileGrace(String(msg.profile));
@@ -244,6 +281,15 @@ async function route(msg) {
 const activity = [];
 let actSeq = 0;
 
+// --- lifecycle journal (extension → server events) ---------------------------
+// The extension's marker-affecting transitions (mark, release, reap, boot,
+// extreload, tab-closed, favicon-stuck, dbg-external-detach), one durable
+// `[tab]` line each in server.log — the forensic record for "why is this tab
+// still marked?". A small memory ring lets `doctor` annotate residue rows
+// with the tab's last transitions. NOT in the activity ring: watch/history
+// stay command-focused.
+const journal = []; // { ts, tabId, kind, detail, profile } — cap 500
+
 // Replayable CLI line for the ring, rebuilt from the command at relay time —
 // `history --batch` turns the ring into a script. shellq matches cli batch's
 // tokenizer ("double"/'single' quotes, glued to bare words): a token is bare
@@ -275,6 +321,7 @@ const CLI_LINES = {
   release: (m) => `release ${shellq(m.urlMatch)}`,
   unemulate: (m) => `unemulate ${shellq(m.urlMatch)}`,
   tabs: (m) => `tabs${m.urlMatch ? ' ' + shellq(m.urlMatch) : ''}`,
+  doctor: (m) => `doctor${m.fix ? ' --fix' : ''}`,
   swlogs: () => 'swlogs',
   extreload: () => 'extreload',
   snap: (m) =>
@@ -663,6 +710,20 @@ server.on('upgrade', (req, socket) => {
         activity.push({ seq: ++actSeq, line, cmd: null });
         if (activity.length > 300) activity.shift();
         console.log('[act] ' + line);
+        return;
+      }
+      // Lifecycle journal (every other event kind): durable [tab] line in
+      // server.log + the ring doctor reads. Unknown future kinds land here
+      // too — an old server still records a new extension's transitions.
+      if (msg?.type === 'event' && typeof msg.kind === 'string') {
+        const detail = String(msg.detail || '').slice(0, 120);
+        const line = (
+          new Date().toTimeString().slice(0, 8) +
+          ` ${String(msg.kind).slice(0, 24)} tab ${msg.tabId ?? '-'}${detail ? ' — ' + detail : ''} @${seatTag(this.pid)}`
+        ).replace(/[\x00-\x1f\x7f\x9b]/g, ' '); // same strip — detail/kind are page-influenced
+        console.log('[tab] ' + line);
+        journal.push({ ts: Date.now(), tabId: typeof msg.tabId === 'number' ? msg.tabId : null, kind: String(msg.kind).slice(0, 24), detail, profile: this.pid });
+        if (journal.length > 500) journal.shift();
         return;
       }
       const resolve = this.pending.get(msg.id);
