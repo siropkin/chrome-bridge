@@ -133,6 +133,19 @@ s_interact() {
   for pair in '"name":"Ivan Test"' '"sel":"b"' '"auto":"apple valley"' 'POINTER-DROPPED' '"ce":"pasted via bridge' ; do
     assert_grep "page state $pair" "$OUT/03-state.json" "$pair"
   done
+  # #31 rich paste: markup into an owning-model editor arrives as text/html
+  # with a stripped plain fallback; into a plain field it lands stripped.
+  "${CLI[@]}" paste rich.html '#ce2' --html -- '<h3>Rich title</h3><p>para <b>bold</b></p>' >>"$OUT/03-rich.log" 2>&1
+  "${CLI[@]}" eval rich.html "JSON.stringify({flavors: document.getElementById('ce2').dataset.flavors, html: document.getElementById('ce2').innerHTML})" >>"$OUT/03-rich.log" 2>&1
+  assert_grep "rich paste delivered the html flavor + plain fallback" "$OUT/03-rich.log" 'text/html.*text/plain'
+  assert_grep "editor converted the markup to native blocks" "$OUT/03-rich.log" '<h3>Rich title</h3>'
+  "${CLI[@]}" paste rich.html '#name' --html -- '<b>bold</b> text' >>"$OUT/03-rich.log" 2>&1
+  "${CLI[@]}" eval rich.html "document.getElementById('name').value.includes('bold text')" >>"$OUT/03-rich.log" 2>&1
+  assert_grep "--html into a plain field inserts the stripped text" "$OUT/03-rich.log" '^true$'
+  # no owning handler → the fallback inserts real markup, not literal tags
+  "${CLI[@]}" paste rich.html '#ce' --html -- '<em>EM</em>phatic' >>"$OUT/03-rich.log" 2>&1
+  "${CLI[@]}" eval rich.html "document.getElementById('ce').innerHTML.includes('<em>EM</em>')" >>"$OUT/03-rich.log" 2>&1
+  assert_grep "--html fallback inserts markup as elements" "$OUT/03-rich.log" '^true$'
   # canvas: untrusted recorded + not drawn; trusted records isTrusted AND draws
   "${CLI[@]}" click rich.html '#pad' --diff >/dev/null 2>&1
   "${CLI[@]}" eval rich.html "document.getElementById('pad-status').textContent" >>"$OUT/03-rich.log"

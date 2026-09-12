@@ -774,6 +774,7 @@ try {
     // (Quill, ProseMirror) read the payload; no handler claiming it must
     // still land the text (caret insertion / execCommand).
     assert(bg.includes('ev.clipboardData =') && bg.includes('insertFromPaste'), 'ext: paste duck-types clipboardData (constructor drops it) and falls back to native insertion');
+    assert(bg.includes("['text/html', 'text/plain']") && bg.includes("insertHTML") && cliSrc.includes('--html'), 'ext+cli: paste --html carries text/html with a tag-stripped text/plain fallback (#31)');
     // The bridge's own UI must not defeat the bridge's own observation: the
     // pill ticker mutates every 5s on a driven tab (settle could never go
     // quiet — every --diff ate its full 3s cap) and the pill is a role=button

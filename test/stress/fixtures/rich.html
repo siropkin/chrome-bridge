@@ -25,6 +25,7 @@
 
   <h2>Contenteditable</h2>
   <div id="ce" contenteditable="true" style="border:1px solid #888; min-height:40px; padding:8px;">editable text</div>
+  <div id="ce2" contenteditable="true" style="border:1px solid #888; min-height:40px; padding:8px;"></div>
 
   <h2>Autocomplete</h2>
   <label>City <input id="auto" autocomplete="off" role="combobox" aria-label="City combobox"></label>
@@ -177,6 +178,17 @@
 
     // paste target readiness
     document.getElementById('ce').addEventListener('paste', () => status('paste landed in ce'));
+
+    // #31 rich paste: an editor that owns its model — reads clipboardData's
+    // flavors and converts; records the flavors it saw for the stress suite.
+    document.getElementById('ce2').addEventListener('paste', (e) => {
+      e.preventDefault();
+      const ed = document.getElementById('ce2');
+      ed.dataset.flavors = (e.clipboardData?.types || []).join(',');
+      const html = e.clipboardData?.getData('text/html');
+      if (html) ed.innerHTML = html;
+      else ed.textContent = e.clipboardData?.getData('text/plain') || '';
+    });
   </script>
 </body>
 </html>

@@ -115,11 +115,14 @@ type <match> <@ref|css> <text> [--diff] [--trusted]
                                   '--' separator for '--'-leading text, same as fill;
                                   long-form text (>2000 chars) is paste's job;
                                   --trusted = CDP keys
-paste <match> [@ref|css] [--diff] [-- <text>]
+paste <match> [@ref|css] [--diff] [--html] [-- <text>]
                                   real-paste semantics into the focused (or given) field —
                                   editors that own their model (Quill, Reddit/LinkedIn rich
                                   composers) revert fill but take a paste; without -- <text>
-                                  it reads the OS clipboard (pbpaste/xclip/Get-Clipboard)
+                                  it reads the OS clipboard (pbpaste/xclip/Get-Clipboard);
+                                  --html sends the -- text as markup (text/html + a stripped
+                                  text/plain fallback) — block editors parse it into native
+                                  blocks: a whole article in one paste
 upload <match> <@ref|css> <file...> [--diff]   set a file input's files (CDP; hidden inputs work;
                                   --diff is the only option — an unknown --flag fails,
                                   rather than being treated as a file)

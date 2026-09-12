@@ -237,11 +237,14 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     combos like Control+k / Shift+Enter / Meta+k set the modifier flags;
                                     --trusted = CDP keys (isTrusted — Enter triggers browser defaults)
   hover <match> <@ref|css> [--diff] [--trusted]  hover an element (opens hover menus); --trusted = CDP Input
-  paste <match> [@ref|css] [--diff] [-- <text>]
+  paste <match> [@ref|css] [--diff] [--html] [-- <text>]
                                     real-paste semantics into the focused (or given) field:
                                     editors that own their model (Quill, Reddit/LinkedIn
                                     composers) revert fill but take a paste; without -- <text>
-                                    it reads the OS clipboard (pbpaste/xclip/Get-Clipboard)
+                                    it reads the OS clipboard (pbpaste/xclip/Get-Clipboard).
+                                    --html: the -- text is markup — the paste event carries
+                                    text/html + a tag-stripped text/plain fallback, and
+                                    block editors parse it into native blocks in one shot
   scroll <match> <up|down|top|bottom|@ref|css> [--diff]
                                     scroll the page (or an element into view); --diff
                                     shows what lazy-loaded in
@@ -714,9 +717,9 @@ async function run(cmdName, args) {
       // Without it, the OS clipboard is the source — the agent usually HAS
       // the text, but "paste what I just copied" needs the real clipboard.
       const { sep, flagged, valuePart } = splitDashDash(args);
-      const rest = flagged.filter((a) => a !== '--diff');
+      const rest = flagged.filter((a) => a !== '--diff' && a !== '--html');
       if (!rest[0] || rest[2] !== undefined || (sep >= 0 && !valuePart.length))
-        fail('usage: paste <match> [@ref|css] [--diff] [-- <text>] — without -- <text> it reads the OS clipboard');
+        fail('usage: paste <match> [@ref|css] [--diff] [--html] [-- <text>] — without -- <text> it reads the OS clipboard');
       const value = valuePart.join(' ');
       let clip = false;
       let text = value;
@@ -726,7 +729,10 @@ async function run(cmdName, args) {
         if (!text) fail('clipboard is empty — copy something, or pass the text: paste <match> <ref> -- <text>');
         clip = true;
       }
-      print(await cmd({ type: 'paste', urlMatch: rest[0], target: rest[1] || null, value: text, clip, ...(flagged.includes('--diff') ? { diff: true } : {}) }));
+      // The clipboard read is the plain flavor only — markup must be given.
+      if (flagged.includes('--html') && clip)
+        fail('paste --html needs the markup after -- (the OS clipboard read is plain text only)');
+      print(await cmd({ type: 'paste', urlMatch: rest[0], target: rest[1] || null, value: text, clip, ...(flagged.includes('--html') ? { html: true } : {}), ...(flagged.includes('--diff') ? { diff: true } : {}) }));
       break;
     }
 

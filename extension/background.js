@@ -2171,9 +2171,10 @@ const typeSrc = (target, text) => `(async () => {
 // duck-typed clipboardData. No handler claiming it (no preventDefault) → land
 // the text the way a native paste would: caret insertion for fields,
 // execCommand for contentEditable.
-const pasteSrc = (target, value) => `(async () => {
+const pasteSrc = (target, value, html) => `(async () => {
   ${DEEPQ}
   const sel = ${JSON.stringify(target || '')}, text = ${JSON.stringify(value)};
+  const asHtml = ${html ? 'true' : 'false'};
   let el = document.activeElement;
   if (sel) {
     el = mustQuery(sel);
@@ -2184,20 +2185,26 @@ const pasteSrc = (target, value) => `(async () => {
     throw new Error('no text field focused — pass an @ref|css target or click the field first');
   if (el.tagName === 'INPUT' && ['checkbox', 'radio', 'file'].includes(el.type))
     throw new Error('not a text field: <input type=' + el.type + '>');
+  // --html (#31): real web copy-paste carries BOTH flavors and block editors
+  // (Notion/vc.ru-style, Quill, ProseMirror) parse text/html into native
+  // blocks — a whole article in one event instead of type-per-paragraph.
+  // Plain fallback for handlers that read only text/plain: tag-stripped via
+  // a scratch div (detached — scripts in the payload never run).
+  const plain = asHtml ? (() => { const d = document.createElement('div'); d.innerHTML = text; return d.innerText; })() : text;
   const ev = new Event('paste', { bubbles: true, cancelable: true });
-  ev.clipboardData = { types: ['text/plain'], getData: (t) => (t === 'text/html' ? null : text) };
+  ev.clipboardData = { types: asHtml ? ['text/html', 'text/plain'] : ['text/plain'], getData: (t) => (t === 'text/html' ? (asHtml ? text : null) : plain) };
   const handled = !el.dispatchEvent(ev);
   if (!handled) {
     if (el.isContentEditable) {
-      document.execCommand('insertText', false, text); // deprecated, still the only CE path that fires beforeinput correctly
+      document.execCommand(asHtml ? 'insertHTML' : 'insertText', false, text); // deprecated, still the only CE path that fires beforeinput correctly
     } else {
       const start = el.selectionStart ?? el.value.length, end = el.selectionEnd ?? start;
-      nativeSet(el, el.value.slice(0, start) + text + el.value.slice(end));
-      el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste', data: text }));
+      nativeSet(el, el.value.slice(0, start) + plain + el.value.slice(end));
+      el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste', data: plain }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
     }
   }
-  return 'pasted ' + text.length + ' chars into ' + (sel || '<' + el.tagName.toLowerCase() + '>') + (handled ? ' (editor paste handler)' : '');
+  return 'pasted ' + text.length + ' chars' + (asHtml ? ' (html)' : '') + ' into ' + (sel || '<' + el.tagName.toLowerCase() + '>') + (handled ? ' (editor paste handler)' : '');
 })()`;
 
 // snap --find: Nano-picked shortlist.
@@ -4000,7 +4007,7 @@ async function handle(msg) {
 
   if (msg.type === 'paste') {
     const tab = await findTab(msg);
-    return await actAndVerify(tab.id, msg, () => runEval(tab.id, pasteSrc(msg.target, msg.value)));
+    return await actAndVerify(tab.id, msg, () => runEval(tab.id, pasteSrc(msg.target, msg.value, msg.html)));
   }
 
   if (msg.type === 'drag') {
