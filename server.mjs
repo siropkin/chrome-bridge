@@ -368,13 +368,19 @@ const CLI_LINES = {
       m.human ? ' --human' : ''
     }${m.pixel ? ' --pixel-change' : ''}${m.timeout != null && m.timeout !== 10000 && !m.human ? ' --timeout ' + m.timeout : ''}`,
   // Multiline code can't be one batch line — null drops it to a comment.
+  // A missing/non-string code (a raw /cmd caller sent eval without it) drops
+  // to a comment too — the formatter must be total: its throw costs the ring
+  // the whole entry ('logging failed for eval' in server.log, found live).
   eval: (m) =>
-    m.code.includes('\n')
+    typeof m.code !== 'string' || m.code.includes('\n')
       ? null
       : `eval ${shellq(m.urlMatch)} ${shellq(m.code)}${m.world && m.world !== 'auto' ? ' --world ' + m.world.toLowerCase() : ''}`,
   // The output path is CLI-side and never rides the msg — placeholder name.
+  // crop is only replayed when it's the cli's 4-number array; a raw /cmd
+  // caller's {"crop":"z"} used to throw here and lose the ring entry (the
+  // try/catch around pushAct saves the server, not the line).
   shot: (m) =>
-    `shot ${shellq(m.urlMatch)} shot-replay.png${m.full ? ' --full' : ''}${m.crop ? ' --crop ' + m.crop.join(',') : ''}` +
+    `shot ${shellq(m.urlMatch)} shot-replay.png${m.full ? ' --full' : ''}${Array.isArray(m.crop) ? ' --crop ' + m.crop.join(',') : ''}` +
     `${m.max != null ? ' --max ' + m.max : ''}${m.scale != null ? ' --scale ' + m.scale : ''}` +
     `${m.format ? ' --format ' + m.format : ''}${m.quality != null ? ' --quality ' + m.quality : ''}${m.diff ? ' --diff' : ''}`,
   net: (m) =>
