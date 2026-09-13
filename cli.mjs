@@ -284,9 +284,12 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     containing s (≤8, 1500 chars each; implies --filter s);
                                     --har out.har saves the capture as HAR 1.2 (DevTools/Burp
                                     open it; text/JSON bodies land in the file, not the lines)
-  fetch <match> <url> [--out file]  in-page fetch riding the logged-in session — login-walled
+  fetch <match> <url> [--out file] [--keep]
+                                    in-page fetch riding the logged-in session — login-walled
                                     JSON/feeds answer it; binary responses need --out, text
-                                    prints capped at 50K chars (--out gets the full body)
+                                    prints capped at 50K chars (--out gets the full body);
+                                    no matching tab → a scratch tab on the target origin is
+                                    opened, fetched, closed (--keep leaves it for follow-ups)
   measure <match> <css>             rect + computed styles as JSON
   console <match> [--clear] [--ask [question]]
                                     page console + errors (hook installs on first call);
@@ -929,20 +932,31 @@ async function run(cmdName, args) {
       // the agent hand-rolling eval fetch plumbing. The response is untrusted
       // page content like everything else the bridge returns.
       const [match, url, ...rest] = args;
-      let outFile = null;
+      let outFile = null, keep = false;
       for (let i = 0; i < rest.length; i++) {
         if (rest[i] === '--out') {
           outFile = rest[++i];
-          if (outFile === undefined) fail('usage: fetch <match> <url> [--out file]');
-        } else fail(`unknown flag ${rest[i]} (flags: --out file)`);
+          if (outFile === undefined) fail('usage: fetch <match> <url> [--out file] [--keep]');
+        } else if (rest[i] === '--keep') keep = true;
+        else fail(`unknown flag ${rest[i]} (flags: --out file, --keep)`);
       }
-      if (!match || !url) fail('usage: fetch <match> <url> [--out file]');
+      if (!match || !url) fail('usage: fetch <match> <url> [--out file] [--keep]');
       let u;
       try {
         u = new URL(url);
       } catch {}
       if (!u || !/^https?:$/.test(u.protocol)) fail('fetch needs a full http(s) URL');
-      const res = await cmd({ type: 'fetch', urlMatch: match, url });
+      let res = await cmd({ type: 'fetch', urlMatch: match, url }, true);
+      // #35: no matching tab → ride a throwaway tab on the TARGET'S origin
+      // (fetching from an unrelated tab is cross-origin and dies on CORS).
+      // open → retry by id → close; --keep leaves it for follow-up fetches.
+      if (res && res.error && res.error.includes('no tab matching')) {
+        console.error(`no tab matching "${match}" — opening a scratch tab on ${u.host} for this fetch${keep ? ' (kept open)' : ''}`);
+        const opened = await cmd({ type: 'open', url });
+        res = await cmd({ type: 'fetch', urlMatch: `id:${opened.id}`, url }, true);
+        if (!keep) await cmd({ type: 'close', urlMatch: `id:${opened.id}` }, true);
+      }
+      if (res && res.error) fail(res.error);
       if (res.binary && !outFile) fail(`binary response (${res.ct || 'unknown type'}) — save it: fetch <match> <url> --out <file>`);
       if (outFile) {
         fs.writeFileSync(outFile, res.binary ? Buffer.from(res.body, 'base64') : res.body);

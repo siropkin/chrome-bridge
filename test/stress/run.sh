@@ -322,6 +322,18 @@ s_net() {
   "${CLI[@]}" fetch net.html http://localhost:9334/api/data --out "$OUT/fetched.json" >"$OUT/06-fetch.log" 2>&1
   assert_grep "fetch via fallback (or in-page)" "$OUT/06-fetch.log" 'status.{0,4}200|saved'
   grep -q '"ok":true' "$OUT/fetched.json" 2>/dev/null && ok "fetch --out body written" || bad "fetch --out body"
+  # #35: no matching tab → scratch tab on the target's origin, fetched, closed
+  "${CLI[@]}" fetch scratch-nomatch-9334 http://localhost:9334/api/data --out "$OUT/fetched-scratch.json" --profile "$P1" >"$OUT/06-scratch.log" 2>&1
+  assert_grep "scratch-tab fetch announces itself" "$OUT/06-scratch.log" 'scratch tab'
+  grep -q '"ok":true' "$OUT/fetched-scratch.json" 2>/dev/null && ok "scratch fetch body written" || bad "scratch fetch body"
+  "${CLI[@]}" tabs "9334/api" --profile "$P1" 2>/dev/null | grep -q '"id"' && bad "scratch tab left behind" || ok "scratch tab closed after the fetch"
+  # --keep leaves the tab; the follow-up fetch rides it (no new scratch tab)
+  "${CLI[@]}" fetch scratch-nomatch-9334 http://localhost:9334/api/data --keep --profile "$P1" >>"$OUT/06-scratch.log" 2>&1
+  "${CLI[@]}" tabs "9334/api" --profile "$P1" 2>/dev/null | grep -q '"id"' && ok "--keep leaves the scratch tab" || bad "--keep left no tab"
+  "${CLI[@]}" fetch "9334/api" http://localhost:9334/api/data --profile "$P1" >"$OUT/06-scratch2.log" 2>&1
+  assert_grep "follow-up fetch rides the kept tab" "$OUT/06-scratch2.log" '^200|status.{0,4}200'
+  assert_ngrep "no second scratch tab opened" "$OUT/06-scratch2.log" 'scratch tab'
+  "${CLI[@]}" close "9334/api" --all --profile "$P1" >/dev/null 2>&1
 }
 
 # ---------------------------------------------------------------- section 7
