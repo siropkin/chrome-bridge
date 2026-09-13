@@ -33,7 +33,9 @@ Local browser storage only, on your machine:
 
 All of it lives in session storage and is cleared when the browser closes. No browsing history, credentials, or page content is persisted beyond the browser session.
 
-The local server also keeps a `server.log` at the repo root: one line per command (timestamp, command, URL fragment, selector) — typed `fill`/`type`/`paste` values and dialog answers are excluded by design, though page text can appear inside error lines. It is truncated to 5MB on server start, readable only by your user account, and deletable anytime. `history --batch` also comments out pasted/typed text, dialog answers, clipboard pastes, and upload paths rather than retaining them for replay.
+The local server also keeps a `server.log` at the repo root: one line per command (timestamp, command, URL fragment, selector) — typed `fill`/`type`/`paste` values and dialog answers are excluded by design, though page text can appear inside error lines. It is truncated to 5MB on server start, readable only by your user account, and deletable anytime. `history --batch` also comments out pasted/typed text, dialog answers, clipboard pastes, and upload paths rather than retaining them for replay (single-line `eval` code is kept verbatim — don't embed secrets in it).
+
+Files you explicitly ask for land where you point them: screenshots (`shot`), page bodies (`fetch --out`), and HAR captures (`net --har`). A HAR from a logged-in tab contains full request/response headers — including cookies and tokens — plus bodies: the CLI writes it readable only by your user account (0600) and warns on every save. Treat such files as secrets.
 
 ## What is transmitted
 
@@ -43,4 +45,4 @@ Page content from the tabs you drive goes to the local server and to the AI agen
 
 Questions: [GitHub issues](https://github.com/siropkin/chrome-bridge/issues).
 
-Last updated: 2026-09-09.
+Last updated: 2026-09-12.

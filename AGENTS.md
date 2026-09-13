@@ -14,17 +14,19 @@ node <repo>/cli.mjs <command> …
 
 - `bridge server not running` → run `node <repo>/cli.mjs start` (spawns it detached and waits briefly for a loaded extension to reconnect)
 - `extension not connected` → tell the user to load/reload `<repo>/extension/` at `chrome://extensions` (Developer mode → Load unpacked). You cannot click that button yourself.
-- a stderr warning like `⚠ extension 1.18.12 is loaded, the repo has 1.18.13` → the loaded extension is old code (after `git pull`, health still passes) → run `cli extreload` (reloads the extension from disk); if the warning persists, tell the user to reload the extension at `chrome://extensions`.
+- a stderr warning like `⚠ extension 1.18.12 is loaded, the repo has 1.18.13` → the loaded extension is old code (after `git pull`, health still passes) → run `cli.mjs extreload` (reloads the extension from disk); if the warning persists, tell the user to reload the extension at `chrome://extensions`.
 
 ## Multiple Chrome profiles
 
 Several Chrome profiles can have the extension loaded at once — each keeps its own connection, and `tabs` merges them (rows carry a `profile` tag). One command always routes to exactly ONE profile:
 
 - a `<match>` that exists in only one connected profile routes there automatically;
-- a `<match>` present in SEVERAL profiles is **refused** — the error names the profiles; re-run with `--profile <id or name>` (an id prefix or the exact profile name works; `cli profiles` lists both);
+- a `<match>` present in SEVERAL profiles is **refused** — the error names the profiles; re-run with `--profile <id or name>` (an id prefix or the exact profile name works; `cli.mjs profiles` lists both);
 - commands without a `<match>` (`open`, `swlogs`, `extreload`) need `--profile` when several profiles are connected.
 
 Parallel work across profiles is fine: two agent sessions can drive two profiles at the same time. Route explicitly when it matters — a wrong-profile action (clicking in the personal browser when you meant the work one) is the failure the refusal rule exists to prevent. A profile running an extension older than multi-profile support makes auto-routing refuse ("can't be probed") — pass `--profile` or have the user reload that extension.
+
+TWO BRIDGE BUILDS IN ONE CHROME (e.g. the Web Store build + an unpacked repo build in the same profile) are not two profiles: each mints its own profile id, so both seats see and can drive THE SAME tabs — and the human's ⏏/reclaim gate covers only the install whose pill was clicked. `tabs` flags it (a warning row when two seats report the same tab id+url) and routing refuses with the cause — the fix is unloading one build at `chrome://extensions`, not `--profile`.
 
 ## When not to use this
 
@@ -32,8 +34,8 @@ The bridge is for pages a plain HTTP request can't handle — interaction (click
 
 ## Core loop
 
-1. `tabs [match]` — find the tab (the optional match filters the list itself — a full browser's tab list is ~2KB). `<match>` is a URL/title substring and must identify exactly one tab in the selected profile. If several tabs match, the command is refused before it marks or acts on anything — the refusal lists each match as `id:<tabId> <host> "<title>"`; re-run with a longer match, or target one exactly with `id:`. Two tabs with identical URLs can't be told apart this way — `close --all <match>` closes both, or close one by hand in Chrome. **Exact form: `id:<tabId>`** — a `<match>` like `id:1234567890` targets exactly that tab (no ambiguity refusal, works with every tab command). The user gets it from the extension's toolbar popup (Copy tab reference); `tabs` and `open` output also show ids. When the user says "work on tab id:…", use the reference verbatim as `<match>`. Ids die on browser restart and change on prerender — a `no tab with id:…` error means re-copy, not retry.
-2. **Reuse beats fresh.** If step 1 found a tab already showing what you need, drive IT — don't open a copy. A fresh tab has no state (login is the profile's, but scroll, SPA position, and half-filled forms are the TAB's), and `nav` to the URL a tab already shows IS a reload. `open` only when no tab fits or you genuinely need clean state; both `open` (exact-URL dupe) and `nav` (same-URL reload) warn on the result when you skip this check. `open <url>` / `nav <match> <url>` auto-marks the tab (🟣 corner tag + tab group). Every command that targets a tab marks it — reads (`snap`/`measure`/`console`/`net`/`shot`) included: the pill shows on any tab you are *looking at*, not just the ones you change.
+1. `tabs [match]` — find the tab (the optional match filters the list itself — a full browser's tab list is ~2KB). `<match>` is a URL/title substring and must identify exactly one tab in the selected profile. If several tabs match, the command is refused before it marks or acts on anything — the refusal lists up to 4 matches as `id:<tabId> <host> "<title>"` (`+N more` past that); re-run with a longer match, or target one exactly with `id:`. Two tabs with identical URLs can't be told apart this way — `close --all <match>` closes both, or close one by hand in Chrome. **Exact form: `id:<tabId>`** — a `<match>` like `id:1234567890` targets exactly that tab (no ambiguity refusal, works with every tab command, `tabs id:…` included). The user gets it from the extension's toolbar popup (Copy tab reference); `tabs` and `open` output also show ids. When the user says "work on tab id:…", use the reference verbatim as `<match>`. Ids die on browser restart and change on prerender — a `no tab with id:…` error means re-copy, not retry.
+2. **Reuse beats fresh.** If step 1 found a tab already showing what you need, drive IT — don't open a copy. A fresh tab has no state (login is the profile's, but scroll, SPA position, and half-filled forms are the TAB's), and `nav` to the URL a tab already shows IS a reload. `open` only when no tab fits or you genuinely need clean state; both `open` (exact-URL dupe) and `nav` (same-URL reload) warn on the result when you skip this check. `open <url>` / `nav <match> <url>` auto-marks the tab (🟣 corner tag + tab group). Every command that resolves a tab marks it — reads (`snap`/`measure`/`console`/`net`/`shot`) included; only `release`/`mark`/`unemulate`/`activate` are exempt: the pill shows on any tab you are *looking at*, not just the ones you change. A command whose fresh mark hits a page Chrome forbids scripting (chrome://, Web Store, PDF, another extension's page) releases that mark again itself — the error says so, and no pill-less 🟣-group residue is left for the human to wonder about.
 3. **`snap <match>` — always snap before shooting.** The a11y tree with `@eN` refs is ~10× cheaper than a screenshot and usually answers the question. Only interactive/landmark elements appear — static text (`<p>`, `<div>`, `<pre>`) is not in the tree, so `--diff` can't see text changes; verify those with `wait --text` or `eval`, and canvas/pixel changes with `shot <match> out.png --diff` (changed region only) or `wait --pixel-change`. Trees truncate at 300 nodes: on a big page, `grep`/`--find` over a full snap can silently miss what's past the cut — take a `--skeleton` map first (cut subtrees read `… N inside`), or scope it: `snap <match> "[role=dialog]"` / `snap <match> @e12`. Re-checking after an action? `snap <match> --diff` prints only what changed. Looking for one thing? `snap <match> | grep -i save` — or, when you don't know what it's called, `snap <match> --find "the cancel button"` (local Nano picks matching lines, ~2s warm / ~20s first call while it loads; verify the shortlist). Link URLs are omitted except on nameless links (they were most of the bytes — you click refs, not URLs); add `--href` only if you truly need them.
    A snap reads like this — indented = nested, `@eN` is the ref you pass to click/fill/type, `*` = new since the last snap, collapsed lines keep their refs clickable:
 
@@ -49,7 +51,7 @@ The bridge is for pages a plain HTTP request can't handle — interaction (click
 6. `wait <match> --text "Saved"` only when you need something specific without acting. Chain other dependent steps in one `batch` — stdin, one command per line — one process and one shell call instead of several.
 
 7. `shot <match> out.png` only when you need pixels. The long edge is capped at 1280px by default (models downscale bigger images on read anyway) — `--max 0` for native res, `--max 800 --format jpeg` for a cheap glance. Read screenshots in a subagent to keep image tokens out of the main context.
-8. **Always `release <match>` (or `close <match>`) when done. `unemulate` when done emulating (`release` clears any live emulation too, but don't lean on that).** Tabs you only *read* (`snap`/`measure`/`console`/`net`) — `release` them; tabs you *opened* (`open`) — `close` them. The human comes back to a browser full of purple pills and mystery tabs otherwise; leaving either is a bug in your session, not their mess to clean. A human can also click the pill's ⏏ to disconnect your claim on a tab — the feed (`watch`/`history`) shows `⏏ human released a tab via the pill` when that happens, and **the reclaim is enforced: every command on that tab except `release` is refused for the next 60s** (an in-flight step may still finish — a long `type` can keep typing). Wait or ask; `mark <match>` re-claims deliberately, for when the human actually hands the tab back. The toolbar popup can also release the active tab or ALL agent tabs. If a tab you're driving keeps coming back unmarked, the human took it back: ask, don't re-mark and plow on.
+8. **Always `release <match>` (or `close <match>`) when done. `unemulate` when done emulating (`release` clears any live emulation too, but don't lean on that).** Tabs you only *read* (`snap`/`measure`/`console`/`net`) — `release` them; tabs you *opened* (`open`) — `close` them. The human comes back to a browser full of purple pills and mystery tabs otherwise; leaving either is a bug in your session, not their mess to clean. A human can also click the pill's ⏏ to disconnect your claim on a tab — the feed (`watch`/`history`) shows `⏏ human released a tab via the pill` when that happens, and **the reclaim is enforced: every command on that tab except `release` is refused until a deliberate `mark <match>`** — there is no timed lapse, so don't wait it out (an in-flight step may still finish — a long `type` can keep typing). Ask the human; `mark` only when they actually hand the tab back. The toolbar popup can also release the active tab or ALL agent tabs. If a tab you're driving keeps coming back unmarked, the human took it back: ask, don't re-mark and plow on.
 
 ## Commands
 
@@ -68,7 +70,10 @@ open <url>                        open + mark a new tab (waits for load, 8s cap;
                                   still-loading page — snap/eval/wait --text work on
                                   what's there; re-nav only if the URL itself failed).
                                   Warns if another tab already shows this exact URL —
-                                  drive the existing one instead (its state survives)
+                                  drive the existing one instead (its state survives).
+                                  chrome://, chrome-extension://, and Web Store targets
+                                  are REFUSED (Chrome blocks scripting there — the tab
+                                  could never be driven); same for nav
 nav <match> <url> [--diff]        navigate matching tab (waits for load, 8s cap;
                                   same loaded:false semantics as open). Nav to the URL
                                   the tab already shows IS a reload (state resets) —
@@ -149,6 +154,9 @@ ask <match> <question>              (experimental) local Gemini Nano answers fro
                                   text — no cloud tokens; pre-filter quality, not truth
 wait <match> <css|--text t|--human|--pixel-change> [--timeout ms]
                                   wait for element or visible text (default 10s, max 60s);
+                                  --text takes every word up to the next flag (unquoted
+                                  multi-word is fine); css/--text are alternatives — pass
+                                  one, not both (same for --human vs --pixel-change);
                                   --human hands the tab to the user — CAPTCHA/2FA/login
                                   walls: the pill tells them it's their turn, the command
                                   blocks until they act (trusted input or navigation;
@@ -156,7 +164,9 @@ wait <match> <css|--text t|--human|--pixel-change> [--timeout ms]
                                   of what they did (fresh snap if they navigated);
                                   --pixel-change polls until pixels move — canvas changes
                                   the tree can't see (attaches CDP for the wait)
-eval <match> <js|-> [--world main|isolated]     '-' reads JS from stdin
+eval <match> <js|-> [--world main|isolated]     '-' reads JS from stdin; output caps at
+                                  50K chars (truncation note names the remedy) — return less
+                                  (select narrower, slice in-page) or fetch --out the data
 shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full] [--diff]
                                   --max caps the long edge (default 1280, 0 = native res);
                                   --diff compares against the previous --diff shot of the tab —
@@ -177,7 +187,9 @@ net <match> [--dur ms] [--filter s] [--body s] [--ws] [--har out.har]
                                   capture) — chat/streaming apps are invisible without them;
                                   --body s appends response bodies for URLs containing s (≤8);
                                   --har out.har also saves the capture as HAR 1.2 (DevTools/
-                                  Burp open it; bodies land in the file, not the lines)
+                                  Burp open it; bodies land in the file, not the lines) — the
+                                  HAR carries full request/response headers incl. cookies and
+                                  tokens: written owner-only (0600), treat it as a secret
 measure <match> <css>             rect + computed styles as JSON
 console <match> [--clear] [--ask [q]]   page console + errors (hook installs on first call);
                                   --ask triages the log with local Nano — only the verdict costs cloud tokens
@@ -197,7 +209,9 @@ history [match] [-n N] [--batch out]
                                   commented out; fill/type/paste values, dialog answers, clipboard
                                   pastes, and upload paths are redacted and their lines commented
                                   as '# secret ·' — secrets never reach the export; shot paths and
-                                  multiline eval don't survive)
+                                  multiline eval don't survive. Single-line eval code is kept
+                                  VERBATIM — a token inside the JS lands in the export, so never
+                                  embed secrets in eval; use fetch/env reads instead)
 swlogs                            service-worker console tail (errors/warnings)
 extreload                         reload the extension from disk — picks up code changes
                                   without the chrome://extensions click (the stale-version
@@ -303,7 +317,7 @@ Before driving a site you'll revisit, check `<repo>/recipes/<domain>.md` — a f
 - Tabs in a **minimized or fully occluded window** have no layout — Chrome suspends rendering for them: `scroll` no-ops ("nothing moved"), `measure` numbers are stale, `shot` fails. `snap`/`eval` still work. The fix is a human one — ask the user to show the window; don't activate it yourself (that steals their view).
 - A **background tab in a visible window** is throttled instead (timers slowed, rAF paused, pages that gate on `document.hasFocus()` stall). `emulate <match> focus` fixes that side — measured: hasFocus-gated counters resume at full cadence and rAF resumes in background tabs. It does NOT render a fully occluded window — that half stays the human fix above.
 - After `unemulate`, a tab that has stayed in the background keeps reading the emulated `innerWidth`/`innerHeight` until its next navigation — the emulation itself is cleared (a `nav` restores it), but Chrome doesn't recompute a hidden tab's viewport layout. Verify with a navigation, not a readback.
-- Driven-tab state (marks, emulation, favicon status, pill history) survives natural service-worker restarts via `chrome.storage.session` (check `swlogs` for the "hydrated" line). Reloading the extension at `chrome://extensions` wipes that storage — tab marks are then re-derived from the 🟣 group, and Chrome itself clears any emulation when it detaches the debugger on reload, so nothing gets stuck.
+- Driven-tab state (marks, emulation, favicon status, pill history) survives natural service-worker restarts via `chrome.storage.session` (check `swlogs` for the "hydrated" line). Reloading the extension at `chrome://extensions` wipes that storage — driven state is then GONE and never re-derived from the 🟣 group (group membership is not a source of truth: the boot sweep RELEASES tabs found in the group with no driven state — dead-session residue cleans itself up, and re-marking is your explicit `mark`). Chrome itself clears any emulation when it detaches the debugger on reload, so nothing gets stuck.
 - Driven tabs show a 🟣 pill in the bottom-right corner (click it for the action history; ✕ hides it until the next navigation) and join a 🟣 tab group; that's the bridge working, not a bug in the page. The pill narrates what you're doing right now (`🟣 taking screenshot…`, `🟣 waiting for .foo…`, elapsed seconds while a command runs, `🟣 AI idle` when nothing's running — with `⚠ N failed since last ok` after failures, `⚠ bridge offline` while the server is unreachable) and its history panel lists the last actions scrolled to the newest; while a command runs, a purple viewport frame lights up, the favicon shows ⏳ (✅ when it lands, ✗ when it fails, kept until the next command), and clicks/hovers flash a purple pointer where the agent acted. `release` restores all of it.
 - `health` proves a WebSocket seat, not the extension — any local process can hold the seat and fabricate results. If results look synthetic or commands silently misbehave while health says `extension:true`, tell the user to reload the extension and re-check.
 - The port is 9333 everywhere. `BRIDGE_PORT` moves the server and CLI but the extension always dials 9333 — if you must change the port, edit `extension/background.js` too.

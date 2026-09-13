@@ -115,14 +115,15 @@ function connect() {
   }
   s.onopen = () => {
     for (const l of pendingJournal.splice(0)) s.send(l);
-    // Back online after a server outage: every driven tab's pill said
-    // "offline" — put them back to the honest current state.
-    if (wasOffline) {
-      wasOffline = false;
+    // Back online after a server outage: pills that painted "offline" go back
+    // to the honest current state (a command still running keeps its label —
+    // local page-side work survives a server blip).
+    wasOffline = false; // disarms the grace timer below
+    if (offlinePainted) {
+      offlinePainted = false;
       for (const tabId of drivenTabs) {
-        chrome.scripting
-          .executeScript({ target: { tabId }, func: pillInject, args: [idleLabel(tabId), tabActivity.get(tabId) || [], null, false] })
-          .catch(() => {});
+        const busy = (inflight.get(tabId) || 0) > 0;
+        pillWrite(tabId, [busy ? pillBusy.get(tabId) || idleLabel(tabId) : idleLabel(tabId), tabActivity.get(tabId) || [], null, busy]);
       }
     }
   };
@@ -153,6 +154,9 @@ function connect() {
       pendingJournal.length = 0;
       s._seatTaken = true;
       ws = null;
+      // The losing side was silent — a cloned profile dir (machine migration)
+      // bounced this worker forever and nothing anywhere said why.
+      logLine('seat taken — another live connection holds this profile id (SW reconnect race, or a cloned Chrome profile dir); standing down, the keepalive re-probes');
       return;
     }
     let failed = false;
@@ -170,7 +174,18 @@ function connect() {
       s.send(JSON.stringify({ id: msg.id, ok: true, result }));
     } catch (err) {
       failed = true;
-      const wrapped = wrapErr(err); // raw Chrome tab-gone noise → named cause + recovery
+      let wrapped = wrapErr(err); // raw Chrome tab-gone noise → named cause + recovery
+      // #37: a command that MARKED the tab (this command, just now) and then
+      // hit Chrome's permanent "nothing here is drivable" wall (chrome://,
+      // Web Store, PDF, another extension's page, an unattachable debugger)
+      // must not leave its fresh mark behind — the tab would sit in the
+      // 🟣 Bridge group with no pill and no owner. Undo THIS command's claim
+      // through the normal release path — never a pre-existing one (a
+      // transient failure on a tab the agent has been driving is not this).
+      if (msg._markedByMe && msg._tabId != null && /off-limits to extensions|another extension's page|Cannot access a chrome|cannot be scripted|extensions gallery|Cannot attach/i.test(errText(err) + ' ' + wrapped)) {
+        releaseTab(msg._tabId).catch(() => {});
+        wrapped += ' — nothing on that page is drivable, so the tab was released again (no markers left)';
+      }
       // Failures belong in the human-visible history too — a red-ink line in
       // the pill log, not just an error back to the agent.
       if (msg._tabId != null && drivenTabs.has(msg._tabId)) {
@@ -178,17 +193,10 @@ function connect() {
         // Same 'Error: Error:' dedup the CLI and the watch feed got (756df17)
         // — the pill history is the third place this line lands.
         const lines = pushActivity(msg._tabId, '✗ ' + done + ' — ' + humanizeErr(wrapped));
-        chrome.scripting
-          .executeScript({
-            target: { tabId: msg._tabId },
-            func: pillInject,
-            args: ['✗ ' + done, lines, msg.target || null, false],
-            // Same world as the success path: refs live in the world snap ran
-            // in, so on CSP/MAIN-world pages this resolves the @ref to a name
-            // instead of narrating agent-speak ('✗ clicked @e4').
-            world: worldCache.get(msg._tabId) || 'MAIN',
-          })
-          .catch(() => {});
+        // Same world as the success path: refs live in the world snap ran
+        // in, so on CSP/MAIN-world pages this resolves the @ref to a name
+        // instead of narrating agent-speak ('✗ clicked @e4').
+        pillWrite(msg._tabId, ['✗ ' + done, lines, msg.target || null, false], worldCache.get(msg._tabId) || 'MAIN');
       }
       s.send(JSON.stringify({ id: msg.id, ok: false, error: wrapped }));
     } finally {
@@ -216,7 +224,10 @@ function connect() {
         if (failed) failedSinceOk.set(tabId, (failedSinceOk.get(tabId) || 0) + 1);
         else if (MUTATING.has(msg.type) && msg.type !== 'eval') failedSinceOk.delete(tabId);
         setFavicon(tabId, failed ? '✗' : '✅');
-        if (!(inflight.get(tabId) > 0)) stopTick(tabId); // a still-running sibling keeps the ticker going
+        if (!(inflight.get(tabId) > 0)) {
+          stopTick(tabId);
+          pillBusy.delete(tabId); // the tab is idle — restoreBanner goes back to idleLabel
+        } // a still-running sibling keeps the ticker (and its label) going
         // Pill back to neutral after a beat — the in-flight label needs
         // ~800ms to be glanceable, and the tooltip ring keeps the history.
         // A note holds ~4s instead: its label IS the message, and the note
@@ -224,20 +235,18 @@ function connect() {
         // too briefly to ever be seen (found live in v1.5.0 testing).
         // The seq guard skips the reset if a newer command already started;
         // the inflight guard skips it if a sibling command is STILL running
-        // (its own reset will fire when it finishes).
+        // (its own reset will fire when it finishes). The pillQ chain (not a
+        // guard) is what orders this reset behind a tick that was injected
+        // just before the command ended — the #41 frozen-label race.
         const seq = pillSeq.get(tabId) || 0;
         setTimeout(() => {
           if (!drivenTabs.has(tabId)) return; // released in the window — never paint over the '✓ released' fade
           if ((pillSeq.get(tabId) || 0) !== seq) return;
           if ((inflight.get(tabId) || 0) > 0) return;
-          const idleArgs = [idleLabel(tabId), tabActivity.get(tabId) || [], null, false];
-          chrome.scripting
-            .executeScript({ target: { tabId }, func: pillInject, args: idleArgs })
-            // A gone pill (page wiped it; a first mark gated by a capture
-            // window) gets rebuilt — this reset can be the last guaranteed
-            // pill touch on the tab.
-            .then((res) => revivePill(tabId, res, idleArgs))
-            .catch(() => {});
+          // A gone pill (page wiped it; a first mark gated by a capture
+          // window) gets rebuilt inside pillWrite's revivePill — this reset
+          // can be the last guaranteed pill touch on the tab.
+          pillWrite(tabId, [idleLabel(tabId), tabActivity.get(tabId) || [], null, false]);
         }, msg.type === 'note' ? 4000 : 800);
       }
     }
@@ -248,14 +257,19 @@ function connect() {
     if (s._seatTaken) return; // lost the seat race — the 30s keepalive alarm re-probes
     // Say so in the pill: 'AI idle' during a bridge outage reads as "done,
     // waiting" — the human can't tell a dead server from a resting agent.
-    // Injected once per outage (wasOffline), restored by s.onopen.
+    // But a sub-second reconnect blip must not flash ⚠ on every driven tab
+    // either: paint only if the bridge is still down after a short grace
+    // (wasOffline arms now so a second onclose can't stack paints; onopen
+    // disarms).
     if (!wasOffline) {
       wasOffline = true;
-      for (const tabId of drivenTabs) {
-        chrome.scripting
-          .executeScript({ target: { tabId }, func: pillInject, args: ['⚠ bridge offline — reconnecting…', tabActivity.get(tabId) || [], null, false] })
-          .catch(() => {});
-      }
+      setTimeout(() => {
+        if (!wasOffline) return; // reconnected inside the grace — stay calm
+        offlinePainted = true;
+        for (const tabId of drivenTabs) {
+          pillWrite(tabId, ['⚠ bridge offline — reconnecting…', tabActivity.get(tabId) || [], null, false]);
+        }
+      }, 2500);
     }
     // Reconnect immediately; the alarm is only a backstop for a killed SW.
     setTimeout(connect, 500);
@@ -263,11 +277,19 @@ function connect() {
 }
 
 // True while the WS is down — onopen clears it and restores the idle label.
+// offlinePainted: the ⚠ paint actually landed (it lags onclose by a 2.5s
+// grace), so onopen only re-paints tabs that showed the warning.
 let wasOffline = false;
+let offlinePainted = false;
 // Wait for the profile id before the first dial — otherwise this connect
 // races the storage read and the seat is held with extId=null until the next
 // SW cycle (days, on a healthy server). Reconnects run after idReady settled.
-Promise.all([idReady, installReady]).then(connect);
+// Watchdog: a WEDGED storage read (profile corruption) must not keep the
+// bridge offline forever — connect idless (the anon seat) and say so.
+Promise.race([
+  Promise.all([idReady, installReady]),
+  new Promise((r) => setTimeout(r, 5000)).then(() => logLine('profile-id storage read wedged (5s) — connecting without a stable id')),
+]).then(connect);
 
 // Keep the service worker (and its WebSocket) alive; reconnect if dropped.
 // Chrome floors sub-30s alarm periods to 30s (and warns) — ask for 0.5 outright.
@@ -288,13 +310,15 @@ const drivenTabs = new Set();
 // next command in the agent's loop re-marks a ⏏-released tab within seconds
 // (findTab auto-marks every match) — the reclaim was visible but not
 // durable, and from the human's seat "nobody noticed". findTab refuses every
-// command on a reclaimed tab for RECLAIM_MS except an explicit `mark` (the
-// deliberate re-claim, which clears the flag) and `release` (cleanup — it
-// keeps the flag, so an agent can't bypass the gate by releasing). Memory-
-// only like inflight: the ⏏ click itself wakes the worker, so the flag is
-// always set on a live SW; an SW death inside the window just ends it early.
+// command on a reclaimed tab except an explicit `mark` (the deliberate
+// re-claim, which clears the flag) and `release` (cleanup — it keeps the
+// flag, so an agent can't bypass the gate by releasing). No time-based lapse:
+// a 60s expiry let a polling agent silently re-drive a tab the human took
+// back — the gate now holds until `mark` says the human handed it back.
+// Memory-only like inflight: the ⏏ click itself wakes the worker, so the
+// flag is always set on a live SW; an SW death just ends the gate early (the
+// server heartbeat keeps the worker warm while the bridge runs).
 const humanReclaimed = new Map();
-const RECLAIM_MS = 60_000;
 
 // Per-tab bridge state lives in chrome.storage.session: it survives the MV3
 // service-worker cycle and dies with the browser — exactly the lifetime these
@@ -440,7 +464,7 @@ function injectBanner(respectHide) {
   const off = document.createElement('span');
   off.id = 'bridge-disconnect';
   off.textContent = '⏏';
-  off.title = 'disconnect the agent from this tab (release it)';
+  off.title = 'disconnect the agent from this tab — it stays released until deliberately re-marked';
   off.setAttribute('role', 'button');
   off.tabIndex = 0;
   off.setAttribute('aria-label', 'disconnect the agent from this tab');
@@ -449,7 +473,13 @@ function injectBanner(respectHide) {
     if (!e.isTrusted) return; // synthetic — page JS can't fake trusted input
     e.preventDefault();
     e.stopPropagation();
-    chrome.runtime.sendMessage({ type: 'self-release' }).catch(() => {});
+    chrome.runtime.sendMessage({ type: 'self-release' }).catch(() => {
+      // The worker is mid-reload (extreload/update) — the release died with
+      // it. A dead click that changes nothing reads as broken; say so in
+      // place. The new worker's boot catch-up re-asserts the pill on the
+      // still-driven tab within seconds, resetting this label.
+      label.textContent = '🟣 ⚠ bridge reloading — click ⏏ again in a moment';
+    });
   };
   off.onclick = selfRelease;
   off.onkeydown = (e) => {
@@ -476,7 +506,10 @@ function flashReleased() {
   if (!pill) return;
   banner.dataset.fading = '1';
   banner.style.borderColor = 'transparent';
-  pill.firstChild.textContent = '🟣 ✓ released — this tab is yours again';
+  // Honest about in-flight work: a synthetic type loop already dispatched
+  // page-side keeps running to its end — the README says so, the pill must
+  // not claim otherwise at the exact moment it matters.
+  pill.firstChild.textContent = '🟣 ✓ released — yours again (a running action may still finish)';
   pill.title = 'released';
   pill.style.pointerEvents = 'none';
   document.getElementById('bridge-log')?.remove();
@@ -495,7 +528,8 @@ const tabActivity = new Map(); // tabId -> last 30 "HH:MM:SS label" lines
 // Runs in the page; must be self-contained. `@e21`-style refs mean nothing to
 // a human, so resolve them to the element's own name right here — refs live in
 // this world's window.__bridgeRefs, no extra round trip needed. `active` also
-// lights the viewport frame for the duration of the command.
+// lights the viewport frame for the duration of the command. (target is
+// vestigial — every @eN in label/lines resolves, not just the command's own.)
 function pillInject(label, lines, target, active) {
   const banner = document.getElementById('bridge-banner');
   // Sentinels let the SW tell a page-deleted pill (rebuild it — a page or SPA
@@ -505,16 +539,18 @@ function pillInject(label, lines, target, active) {
   const pill = banner.querySelector('div');
   if (!pill) return;
   banner.style.borderColor = active ? 'rgba(147,51,234,.75)' : 'transparent';
-  if (target && target.startsWith('@')) {
-    const el = window.__bridgeRefs?.[target.slice(1)];
+  // Every @eN — in the current label AND the 30-line history ring — resolves
+  // to the element's own name: the ring is the human-readable record, and raw
+  // refs are agent-speak. Refs live in this world's window.__bridgeRefs (they
+  // persist across snaps in the same document); a dead ref (navigated away,
+  // nameless element) stays as @eN.
+  const refName = (r) => {
+    const el = window.__bridgeRefs?.[r.slice(1)];
     const name = String(el?.getAttribute('aria-label') || el?.innerText || el?.placeholder || '').replace(/\s+/g, ' ').trim().slice(0, 24);
-    if (name) {
-      // (?!\d): '@e3' must not rewrite the '@e3' inside '@e30'.
-      const re = new RegExp(target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?!\\d)', 'g');
-      label = label.replace(re, '"' + name + '"');
-      lines = lines.map((l) => l.replace(re, '"' + name + '"'));
-    }
-  }
+    return name ? '"' + name + '"' : r;
+  };
+  label = label.replace(/@e\d+/g, refName);
+  lines = lines.map((l) => l.replace(/@e\d+/g, refName));
   pill.firstChild.textContent = '🟣 ' + label;
   const log = lines.join('\n');
   pill.dataset.log = log;
@@ -536,6 +572,32 @@ const pillSeq = new Map();
 // command started" from "a sibling started during this one and is still
 // running" — both bump seq — so the idle-reset also checks this.
 const inflight = new Map();
+// tabId -> the in-flight command's 'ing…' label. restoreBanner and the
+// reconnect restore repaint THIS (not 'AI idle') while a command is still
+// running — a shot's banner window used to blink the pill idle mid-command.
+const pillBusy = new Map();
+// tabId -> chain of pill writes. Pill-bound executeScripts land whenever
+// Chrome runs them: a tick fired just before its command ended used to land
+// AFTER the idle reset, freezing its '… 5s' label on the pill forever (#41).
+// Every narration write rides one per-tab chain so the last write SCHEDULED
+// is the last to LAND. Fire-and-forget like every narration (executeScript
+// can pend forever on an uncommitted navigation — never await this in a
+// command path).
+const pillQ = new Map();
+function pillWrite(tabId, args, world) {
+  const inj = { target: { tabId }, func: pillInject, args };
+  if (world) inj.world = world;
+  const run = (pillQ.get(tabId) || Promise.resolve()).then(() =>
+    chrome.scripting
+      .executeScript(inj)
+      .then((res) => revivePill(tabId, res, args))
+      .catch(() => {})
+  );
+  const tail = run.catch(() => {});
+  pillQ.set(tabId, tail);
+  tail.then(() => pillQ.get(tabId) === tail && pillQ.delete(tabId)); // self-pruning, groupChain-style
+  return run;
+}
 // tabId -> consecutive failures since the last ok (cleared by a success,
 // release, or tab close). Drives the failure-aware idle label.
 const failedSinceOk = new Map();
@@ -588,15 +650,7 @@ function startTick(tabId, msg, t0) {
     setInterval(() => {
       if (!inflight.get(tabId)) return stopTick(tabId);
       const args = [`${ing}… ${Math.round((Date.now() - t0) / 1000)}s`, tabActivity.get(tabId) || [], msg.target || null, true];
-      chrome.scripting
-        .executeScript({
-          target: { tabId },
-          func: pillInject,
-          args,
-          world: worldCache.get(tabId) || 'MAIN',
-        })
-        .then((res) => revivePill(tabId, res, args))
-        .catch(() => {});
+      pillWrite(tabId, args, worldCache.get(tabId) || 'MAIN');
     }, 5000)
   );
 }
@@ -639,19 +693,11 @@ function recordActivity(tabId, msg) {
   pillSeq.set(tabId, (pillSeq.get(tabId) || 0) + 1);
   msg._pill = true; // onmessage's finally decrements inflight only for commands that recorded
   inflight.set(tabId, (inflight.get(tabId) || 0) + 1);
+  pillBusy.set(tabId, ing + '…'); // what restoreBanner/reconnect repaints while a command runs
   startTick(tabId, msg, Date.now());
-  const args = [ing + '…', lines, msg.target || null, true];
-  chrome.scripting
-    .executeScript({
-      target: { tabId },
-      func: pillInject,
-      args,
-      // Refs live in the world snap ran in (worldCache); on CSP pages that's
-      // MAIN — inject there or the pill falls back to raw '@e4' agent-speak.
-      world: worldCache.get(tabId) || 'MAIN',
-    })
-    .then((res) => revivePill(tabId, res, args))
-    .catch(() => {}); // banner absent (user hid it / chrome:// page) — fine
+  // Refs live in the world snap ran in (worldCache); on CSP pages that's
+  // MAIN — inject there or the pill falls back to raw '@e4' agent-speak.
+  pillWrite(tabId, [ing + '…', lines, msg.target || null, true], worldCache.get(tabId) || 'MAIN');
 }
 
 // One-line command summary for the pill, in human words: present-continuous
@@ -701,6 +747,9 @@ function activityPhrases(msg) {
   // --human: the pill label IS the handoff — the human must notice it's their
   // turn; the ticker appends elapsed seconds while they take it.
   if (msg.type === 'wait' && msg.human) return { ing: '🙋 your turn — act in this tab', done: '🙋 you acted — carrying on' };
+  // --pixel-change has no selector/text detail — bare 'waiting for' told the
+  // human nothing about the longest watch the bridge runs.
+  if (msg.type === 'wait' && msg.pixel) return { ing: 'watching for pixel changes', done: 'saw pixels change' };
   if (msg.type === 'emulate' && msg.focus) return { ing: 'emulating focus', done: 'emulated focus' };
   let v = ACT_VERBS[msg.type] || [msg.type, msg.type];
   const detail = msg.target || msg.key || msg.selector || msg.find || msg.text || msg.question || msg.url || '';
@@ -1000,6 +1049,9 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   tabActivity.delete(tabId);
   pillSeq.delete(tabId);
   inflight.delete(tabId);
+  pillBusy.delete(tabId);
+  pillQ.delete(tabId); // the chain self-prunes; this just doesn't wait for it
+  humanWaits.delete(tabId);
   humanReclaimed.delete(tabId);
   navSeq.delete(tabId);
   dbgSince.delete(tabId);
@@ -1069,7 +1121,7 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
       .then(() => releaseTab(sender.tab.id, { flash: true }))
       .then(() => {
         // The reclaim is enforced, not just narrated: findTab refuses every
-        // later command on this tab for RECLAIM_MS (mark = deliberate re-claim).
+        // later command on this tab until a deliberate `mark` re-claim.
         humanReclaimed.set(sender.tab.id, Date.now());
         // Tell the agent's feed (watch/history): the human took the tab back.
         // Without this the next command silently re-marks and nobody noticed.
@@ -1083,7 +1135,10 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
   // tab can't show the pill (chrome://, Web Store, PDF). Popup-originated
   // messages have no sender.tab; extension pages are the trusted context.
   if (msg?.type === 'bridge-state') {
-    return ready.then(() => ({ count: drivenTabs.size, active: msg.tabId != null && drivenTabs.has(msg.tabId) }));
+    // connected: THIS profile's own socket — the popup's "bridge ready" must
+    // not ride /health's any-seat flag (another profile's live seat says
+    // nothing about this one).
+    return ready.then(() => ({ count: drivenTabs.size, active: msg.tabId != null && drivenTabs.has(msg.tabId), connected: !!(ws && ws.readyState === WebSocket.OPEN) }));
   }
   if (msg?.type === 'release-active' && msg.tabId != null) {
     // The popup's ⏏ is the same human reclaim as the pill's — arm the same
@@ -1178,7 +1233,12 @@ async function detachDbg(tabId) {
     await chrome.debugger.detach({ tabId });
   } catch (e) {
     logLine('dbg detach ' + tabId + ' FAILED: ' + String(e).slice(0, 80));
-  } // tab already closed — debugger auto-detaches
+    // A FAILED detach on a live tab leaves the debugger attached and the
+    // infobar up with no state anywhere — doctor couldn't see it (only a tab
+    // close freed it). Re-enter the refcount at 0: entry present = doctor's
+    // debugger row lights and doctor --fix retries the detach; 0 = no owner.
+    if (await chrome.tabs.get(tabId).catch(() => null)) cdpRefs.set(tabId, 0); // a dead tab needs no tracking — Chrome auto-detached
+  }
 }
 
 // External detach (user cancels the "debugging" infobar, DevTools opens on the
@@ -1270,7 +1330,11 @@ function withCdp(tabId, fn) {
         rej(
           new Error(
             started
-              ? 'CDP command stuck (dropped callback?) — queue advanced'
+              ? // The 65s budget starts at ENQUEUE — a command that queued 60s
+                // behind a long wait --pixel-change dies mid-work, and 'stuck
+                // (dropped callback?)' sent the agent down a debugger-wedge
+                // theory when the truth was budget arithmetic. Name both.
+                'CDP command timed out in flight — its 65s budget includes time queued behind a long CDP command on this tab (wait --pixel-change?); a dropped callback is the other cause. The queue advanced; check the tab before retrying'
               : 'queued 65s behind another CDP command on this tab (a long wait --pixel-change?) — cancelled without running; retry after it finishes'
           )
         );
@@ -1325,14 +1389,21 @@ function persist() {
 // bridge-proof state; storage.session is the only source of truth.
 const ready = (async () => {
   try {
-    const s = await chrome.storage.session.get(['drivenTabs', 'emulatedTabs', 'tabStatus', 'tabActivity', 'swLogs']);
-    for (const id of s.drivenTabs || []) drivenTabs.add(id);
-    for (const id of s.emulatedTabs || []) emulatedTabs.add(id);
-    for (const [k, v] of Object.entries(s.tabStatus || {})) tabStatus.set(Number(k), v);
-    for (const [k, v] of Object.entries(s.tabActivity || {})) tabActivity.set(Number(k), v);
+    // Watchdog: a wedged storage.session read (profile corruption) used to
+    // hang EVERY command to the server's 70s cap with a "may have run" lie —
+    // proceed with empty maps (the fresh-profile path) and say so in swlogs.
+    const s = await Promise.race([
+      chrome.storage.session.get(['drivenTabs', 'emulatedTabs', 'tabStatus', 'tabActivity', 'swLogs']),
+      new Promise((r) => setTimeout(() => r(null), 5000)),
+    ]);
+    if (s === null) logLine('storage.session read wedged (5s) — starting with empty state');
+    for (const id of s?.drivenTabs || []) drivenTabs.add(id);
+    for (const id of s?.emulatedTabs || []) emulatedTabs.add(id);
+    for (const [k, v] of Object.entries(s?.tabStatus || {})) tabStatus.set(Number(k), v);
+    for (const [k, v] of Object.entries(s?.tabActivity || {})) tabActivity.set(Number(k), v);
     // The dead worker's log tail rides along — this worker's own lines (the
     // 'background vX loaded' marker) stay newest at the end.
-    swLogs.unshift(...(s.swLogs || []));
+    swLogs.unshift(...(s?.swLogs || []));
     if (swLogs.length > 100) swLogs.length = 100;
     logsHydrated = true;
   } catch {}
@@ -2615,7 +2686,7 @@ const removeBannerForCapture = async (tabId) => {
     return false; // chrome:// page etc. — no banner to worry about
   }
 };
-const restoreBanner = async (tabId, existed) => {
+const restoreBanner = async (tabId, existed, respectHide) => {
   // Re-inject only if the banner existed before the capture window AND the
   // tab is still driven: the ✕ promise ("hidden until the next navigation")
   // must survive a shot, a chrome:// tab never had one, and a release that
@@ -2624,9 +2695,14 @@ const restoreBanner = async (tabId, existed) => {
   // resurrects the pill with no cleanup path left (found by the flow review).
   // The suppression flag ALWAYS clears — a stuck flag would silence the
   // onUpdated re-banner forever after.
+  // respectHide: wait --pixel-change re-restores BETWEEN polls, while the
+  // human can actually see (and ✕) the pill — honor a mid-watch hide.
   if (existed && drivenTabs.has(tabId)) {
-    await chrome.scripting.executeScript({ target: { tabId }, func: injectBanner }).catch(() => {});
-    await chrome.scripting.executeScript({ target: { tabId }, func: pillInject, args: [idleLabel(tabId), tabActivity.get(tabId) || [], null, false] }).catch(() => {});
+    // A sibling command is still running (parallel calls are supported):
+    // repaint its in-flight label, not a lying 'AI idle'.
+    const busy = (inflight.get(tabId) || 0) > 0;
+    await chrome.scripting.executeScript({ target: { tabId }, func: injectBanner, args: [!!respectHide] }).catch(() => {});
+    pillWrite(tabId, [busy ? pillBusy.get(tabId) || idleLabel(tabId) : idleLabel(tabId), tabActivity.get(tabId) || [], null, busy]);
   }
   bannerSuppressed.delete(tabId);
 };
@@ -2860,6 +2936,7 @@ async function trustedInput(tab, msg) {
     // it on a ✕-hidden tab wedges the flag and kills the pill for the tab's
     // lifetime (found by the verify fleet).
     let suppression = null;
+    let typing = false; // this command set the page's __bridgeTyping flag
     try {
       if (msg.type === 'click') {
         const p = await point(msg.target, true, true);
@@ -2882,6 +2959,14 @@ async function trustedInput(tab, msg) {
         await cdpKeyEvent(tab.id, msg.key);
         res = `pressed ${msg.key} on ${what} (trusted)`;
       } else if (msg.type === 'type') {
+        // The synthetic loop's overlap guard (#32) must cover this path too:
+        // a synthetic type whose reply was lost is STILL RUNNING page-side —
+        // feeding CDP keys into it garbles both payloads, and both halves
+        // would report success. Same flag, same world (both go via runEval).
+        if (await runEval(tab.id, '!!window.__bridgeTyping').catch(() => false))
+          throw new Error('another type is still running on this page (its reply was likely lost to a timeout) — readback with eval, wait for it to finish, then type only the remainder');
+        await runEval(tab.id, 'window.__bridgeTyping = true').catch(() => {});
+        typing = true;
         const what = await runEval(tab.id, trustedFocusSrc(msg.target));
         const delay = Math.min(25, 15000 / (msg.value.length || 1));
         const chars = [...msg.value];
@@ -2897,6 +2982,7 @@ async function trustedInput(tab, msg) {
         res = `typed ${msg.value.length} chars into ${what} (trusted)`;
       }
     } finally {
+      if (typing) await runEval(tab.id, 'window.__bridgeTyping = false').catch(() => {});
       if (suppression !== null) await restoreBanner(tab.id, suppression);
       await detachDbg(tab.id);
     }
@@ -3351,7 +3437,17 @@ function waitForLoad(tabId, timeout = 8000, recheck = false) {
 // navigation is exactly one of the things being waited for. Completion is
 // trusted input — e.isTrusted on a listener armed in the ISOLATED world
 // (page JS can forge neither the event nor the flag) — or the tab navigating.
+const humanWaits = new Set(); // tabId — ONE handoff per tab: a second wait --human re-arms the acted flag under the first waiter (it then times out lying "the human did not act" while the second returns the success)
 async function waitHuman(tab, msg) {
+  if (humanWaits.has(tab.id)) throw new Error('another wait --human is already in flight on this tab — one handoff at a time (let it finish or release the tab first)');
+  humanWaits.add(tab.id);
+  try {
+    return await waitHumanRun(tab, msg);
+  } finally {
+    humanWaits.delete(tab.id);
+  }
+}
+async function waitHumanRun(tab, msg) {
   const timeout = msg.timeout || 120_000;
   const t0 = Date.now();
   const url0 = tab.url;
@@ -3448,6 +3544,12 @@ async function waitPixel(tab, msg) {
     let bmp0 = null;
     try {
       const cap0 = await captureViewport(tab.id, pngMsg);
+      // The pill is down only for each capture's own removal window
+      // (captureViewport re-removes at every frame) — NOT for the whole
+      // watch: a minutes-long pixel wait with no visible marking broke the
+      // "any tab the agent is looking at wears the pill" contract at the
+      // most surveillance-like moment. respectHide: a mid-watch ✕ sticks.
+      await restoreBanner(tab.id, bannered, true);
       // Decode the baseline ONCE — re-decoding a multi-MB png every 800ms poll
       // was pure waste (found by review).
       bmp0 = await pngBitmap(cap0.b64);
@@ -3458,9 +3560,9 @@ async function waitPixel(tab, msg) {
         if (Date.now() - t0 >= timeout) throw new Error('timeout after ' + timeout + 'ms — no pixel change detected');
         await new Promise((r) => setTimeout(r, 800));
         // Plain capture: the frame is whatever the viewport is NOW — scroll
-        // and resize follow natively, no pin to maintain. (No manual banner
-        // removal here: captureViewport removes at the capture itself.)
+        // and resize follow natively, no pin to maintain.
         const cap = await captureViewport(tab.id, pngMsg);
+        await restoreBanner(tab.id, bannered, true); // pill back between polls
         const cmp = await diffBmp(bmp0, await pngBitmap(cap.b64));
         if (cmp.error) {
           // Viewport resized mid-wait (window resize / infobar settle where
@@ -3480,6 +3582,7 @@ async function waitPixel(tab, msg) {
           // raster flip is gone by the next capture. One confirmation
           // capture (~200ms) instead of chasing render determinism.
           const cap2 = await captureViewport(tab.id, pngMsg);
+          await restoreBanner(tab.id, bannered, true); // pill back between polls
           const cmp2 = await diffBmp(bmp0, await pngBitmap(cap2.b64));
           if (!cmp2.error && !cmp2.changed) {
             cmp2.bmp.close();
@@ -3497,7 +3600,7 @@ async function waitPixel(tab, msg) {
       }
     } finally {
       bmp0?.close();
-      await restoreBanner(tab.id, bannered);
+      await restoreBanner(tab.id, bannered, true);
       await detachDbg(tab.id);
     }
   });
@@ -3584,9 +3687,9 @@ async function findTab(msg) {
   // stray agent release must not launder the tab back). `tabs`/`probe` never
   // reach findTab — listing and routing stay possible while gated.
   const reclaimed = humanReclaimed.get(matches[0].id);
-  if (reclaimed && !['mark', 'release'].includes(msg.type) && Date.now() - reclaimed < RECLAIM_MS)
+  if (reclaimed && !['mark', 'release'].includes(msg.type))
     throw new Error(
-      `⚠ the human released this tab via ⏏ at ${new Date(reclaimed).toTimeString().slice(0, 8)} — they took it back; ask before driving it again (commands on a ⏏-released tab are refused for ${RECLAIM_MS / 1000}s). Re-claim deliberately with: mark <match>`
+      `⚠ the human released this tab via ⏏ at ${new Date(reclaimed).toTimeString().slice(0, 8)} — they took it back. Every command on it is refused until a deliberate re-claim: ask the human, and only if they hand it back — mark <match>`
     );
   if (msg.type === 'mark') humanReclaimed.delete(matches[0].id);
   // Every command resolving here marks the tab, reads included (owner's
@@ -3601,7 +3704,12 @@ async function findTab(msg) {
   // the banner in (note's probe; shot / wait --pixel-change / trusted
   // input's suppression windows) awaitMark() it, which also sees a SIBLING
   // command's mark that a per-message handle would miss.
-  if (!['release', 'mark', 'unemulate', 'activate'].includes(msg.type) && !drivenTabs.has(matches[0].id)) markTab(matches[0].id).catch(() => {});
+  if (!['release', 'mark', 'unemulate', 'activate'].includes(msg.type) && !drivenTabs.has(matches[0].id)) {
+    // This command created the claim — if it then hits Chrome's permanent
+    // "nothing here is drivable" wall, onmessage undoes THIS mark (#37).
+    msg._markedByMe = true;
+    markTab(matches[0].id).catch(() => {});
+  }
   // Not `release`: it would flash ⏳ on the still-driven tab right before
   // releaseTab restores the site's own favicon. Fire-and-forget for the same
   // uncommitted-nav reason as open() — an awaited executeScript there can
@@ -3895,6 +4003,10 @@ async function cmdShot(tab, msg) {
         await restoreBanner(tab.id, bannered);
       }
     } catch (e) {
+      // The human's own DevTools holding this tab is NOT a fallback case: the
+      // captureVisibleTab path ACTIVATES the tab (stealing their view
+      // mid-debugging) and the real cause never reaches the agent. Fail loud.
+      if (/another debugger holds/.test(errText(e))) throw e;
       // debugger unavailable (chrome:// pages etc.) — fall back to captureVisibleTab
       // (viewport only, native res — crop/max/scale can't be honored there)
       console.warn('[bridge] cdp shot failed, falling back (crop/max/scale ignored):', e);
@@ -3947,6 +4059,13 @@ async function handle(msg) {
     } catch {}
     if (!u || !/^(https?|file|about|chrome|view-source|data):/i.test(u.protocol))
       throw new Error('invalid URL ' + JSON.stringify(String(msg.url).slice(0, 60)) + ' — give a full URL (http(s)://…)');
+    // Pages Chrome hard-blocks from scripting can never be driven — creating
+    // or navigating to one through the bridge only leaves a marked tab no
+    // command can act on (#37's residue at the creation step). Refuse up
+    // front. (PDF tabs and file://-without-permission escape this list by
+    // design; the first failing command's #37 unmark cleans those up.)
+    if (u.protocol === 'chrome:' || u.protocol === 'chrome-extension:' || u.host === 'chromewebstore.google.com' || (u.host === 'chrome.google.com' && u.pathname.startsWith('/webstore')))
+      throw new Error(`"${u.protocol}//${u.host}" can never be driven — Chrome blocks extension scripting on chrome:// pages, other extensions' pages, and the Web Store. Open it by hand for the human instead; the bridge would only leave a marked tab it can't act on`);
   }
 
   if (msg.type === 'ping') {
@@ -4003,7 +4122,7 @@ async function handle(msg) {
       if (grouped || driven || status || emulated || dbg)
         rows.push({ id: t.id, url: (t.url || '').slice(0, 80), title: (t.title || '').slice(0, 60), grouped, driven, status, emulated, debugger: dbg });
     }
-    const stale = [...new Set([...drivenTabs, ...tabStatus.keys(), ...tabActivity.keys(), ...emulatedTabs.keys(), ...worldCache.keys(), ...shotBaselines.keys(), ...failedSinceOk.keys()])].filter((id) => !live.has(id));
+    const stale = [...new Set([...drivenTabs, ...tabStatus.keys(), ...tabActivity.keys(), ...emulatedTabs.keys(), ...worldCache.keys(), ...shotBaselines.keys(), ...failedSinceOk.keys(), ...cdpRefs.keys()])].filter((id) => !live.has(id));
     if (msg.fix && stale.length) {
       for (const id of stale) {
         drivenTabs.delete(id);
@@ -4013,6 +4132,7 @@ async function handle(msg) {
         worldCache.delete(id);
         shotBaselines.delete(id);
         failedSinceOk.delete(id);
+        cdpRefs.delete(id); // a failed detach's residue entry (debugger died with the tab)
       }
       persist();
       journal('doctor-fix', null, `pruned ${stale.length} stale id(s)`);

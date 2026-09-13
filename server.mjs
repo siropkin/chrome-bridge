@@ -125,7 +125,7 @@ function seatByProfile(want) {
   // name ('@poplar'), so that's what a human (or agent) will reach for first.
   const pids = [...seats.keys()].filter((p) => p.startsWith(want) || seats.get(p)?.name === want);
   if (pids.length > 1) throw new Error(`--profile '${want}' matches ${pids.length} profiles — a few more characters disambiguate`);
-  if (!pids.length) throw new Error(`no connected profile matching '${want}' — run: cli profiles`);
+  if (!pids.length) throw new Error(`no connected profile matching '${want}' — run: cli.mjs profiles`);
   return seats.get(pids[0]);
 }
 // Reconnect grace for the pinned path, symmetric with ask()'s 10s no-socket
@@ -164,6 +164,8 @@ async function route(msg) {
     if (!seats.size) throw new Error('extension not connected — load extension/ at chrome://extensions');
     if (seats.size === 1) return ask(seats.values().next().value, msg);
     const rows = [];
+    const seenIds = new Map(); // "id url" -> first seat reporting it
+    let dualInstall = false;
     for (const [pid, seat] of seats) {
       // 5s deaf-seat budget, same as the match probe below — a live seat
       // answers tabs in ms (the heartbeat keeps the SW warm); without the cap
@@ -174,8 +176,24 @@ async function route(msg) {
         rows.push({ profile: seatTag(pid), error: 'unresponsive' });
         continue;
       }
-      for (const t of tabs) rows.push({ ...t, profile: seatTag(pid) });
+      for (const t of tabs) {
+        // Tab ids are unique per Chrome instance, and profiles of one Chrome
+        // never share a tab: the same id AND url from two seats means two
+        // bridge builds loaded in ONE Chrome (store + unpacked) — not two
+        // profiles, not two instances (those differ in url). The human's
+        // ⏏/reclaim gate is per-install, so the other install keeps driving
+        // a released tab: say so loudly.
+        const key = t.id + ' ' + (t.url || '');
+        if (seenIds.has(key)) dualInstall = true;
+        else seenIds.set(key, pid);
+        rows.push({ ...t, profile: seatTag(pid) });
+      }
     }
+    if (dualInstall)
+      rows.push({
+        warning:
+          '⚠ the same tab ids appear under several connected extensions — TWO bridge builds are loaded in one Chrome (store + unpacked?). Unload one at chrome://extensions: until then the pill ⏏ and the reclaim gate cover only one install, and both can drive the same tabs',
+      });
     return { ok: true, result: rows };
   }
 
@@ -227,7 +245,7 @@ async function route(msg) {
   } else {
     // Multi-seat: probe every profile for matching tabs. Commands without a
     // <match> (open, ping, swlogs, extreload) can't be probed — refuse with the hint.
-    if (!msg.urlMatch) throw new Error(`multiple profiles are connected — name one: --profile <name or id> (see: cli profiles)`);
+    if (!msg.urlMatch) throw new Error(`multiple profiles are connected — name one: --profile <name or id> (see: cli.mjs profiles)`);
     const probes = await Promise.all(
       [...seats.entries()].map(async ([pid, s]) => {
         const reply = await ask(s, { type: 'probe', urlMatch: msg.urlMatch }, 5_000).catch(() => null);
@@ -246,7 +264,7 @@ async function route(msg) {
       throw new Error(
         `⚠ ${stale.length} profile(s) can't be probed — an extension without multi-profile support is loaded (${stale
           .map((p) => seatTag(p.pid))
-          .join(', ')}): reload it at chrome://extensions, or name a profile: --profile <name or id> (see: cli profiles)`
+          .join(', ')}): reload it at chrome://extensions, or name a profile: --profile <name or id> (see: cli.mjs profiles)`
       );
     // A probe that timed out is "can't know", NOT "no tabs match": excluding
     // it would auto-route into the other profile on a unique match — silently
@@ -256,7 +274,7 @@ async function route(msg) {
       throw new Error(
         `⚠ ${deaf.length} profile(s) didn't answer the match probe (${deaf
           .map((p) => seatTag(p.pid))
-          .join(', ')}) — usually a service-worker restart; retry the command, or name a profile: --profile <name or id> (see: cli profiles)`
+          .join(', ')}) — usually a service-worker restart; retry the command, or name a profile: --profile <name or id> (see: cli.mjs profiles)`
       );
     if (!live.length) throw new Error('no profile answered — extensions disconnected?');
     if (!matching.length)
@@ -265,10 +283,24 @@ async function route(msg) {
           ? `no tab with ${msg.urlMatch} in any connected profile — tab ids die on browser restart and change on prerender; re-copy it from the toolbar popup`
           : `no tab matching "${msg.urlMatch}" in any connected profile — run tabs to find it`
       );
-    if (matching.length > 1)
+    if (matching.length > 1) {
+      // The SAME tab (id AND url) in several seats is not a multi-profile
+      // ambiguity — it's ONE Chrome seen by two bridge builds (store +
+      // unpacked share no storage, so each minted its own profile id). Name
+      // the real cause: the human's ⏏ and the reclaim gate cover only one of
+      // the installs. (Bare id equality is not enough: two separate Chrome
+      // instances collide on low ids but show different urls.)
+      const shared = matching[0].tabs.filter((t) => matching.every((p) => p.tabs.some((o) => o.id === t.id && o.url === t.url)));
+      if (shared.length)
+        throw new Error(
+          `⚠ "${msg.urlMatch}" is the SAME tab (id:${shared[0].id}) seen through ${matching.length} connected extensions (${matching
+            .map((p) => seatTag(p.pid))
+            .join(', ')}) — two bridge builds are loaded in ONE Chrome. Unload one at chrome://extensions; until then ⏏ covers only one install. Force a seat with --profile <name or id>`
+        );
       throw new Error(
-        `⚠ "${msg.urlMatch}" matches tabs in ${matching.length} profiles (${matching.map((p) => seatTag(p.pid)).join(', ')}) — name one: --profile <name or id> (see: cli profiles)`
+        `⚠ "${msg.urlMatch}" matches tabs in ${matching.length} profiles (${matching.map((p) => seatTag(p.pid)).join(', ')}) — name one: --profile <name or id> (see: cli.mjs profiles)`
       );
+    }
     seat = seats.get(matching[0].pid);
     if (!seat) throw new Error('the matching profile disconnected during routing — retry the command');
   }

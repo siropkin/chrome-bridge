@@ -108,7 +108,7 @@ git clone https://github.com/siropkin/chrome-bridge && cd chrome-bridge && ./ins
 
 ## 人类始终掌控
 
-被桥接驱动的标签页会在右下角显示 🟣 小标签(点击查看完整操作历史;✕ 可隐藏,下次导航前不再显示;⏏ 可断开智能体对该标签页的控制)并加入 🟣 标签页分组,你随时知道哪些页面正在被自动化——只读命令(`snap`、`measure`、`console`)同样会打上标签:智能体**正在查看**的标签页也会戴标签,而不只是它修改过的。小标签实时播报智能体正在做什么(`🟣 taking screenshot…`、`🟣 reading page…`,长命令会显示已耗时秒数),历史面板列出最近的操作并自动滚动到最新一行;空闲时显示 `🟣 AI idle`(连续失败后显示 `⚠ N failed since last ok`,桥接服务器不可达时显示 `⚠ bridge offline`);命令执行期间,紫色边框亮起,标签页 favicon 显示 ⏳(完成 ✅,失败 ✗,✗ 会保留到下一条命令),点击/悬停处会闪现紫色指针标记智能体的操作位置。`release`(或 `close`)即可全部还原。⏏ 是人类的安全出口:一次可信点击即可完全收回桥接对该标签页的控制——标记、分组、设备模拟全部清除,无需 CLI(合成的页面点击无法伪造它),**而且是强制执行的:此后 60 秒内,桥接会拒绝智能体对该标签页的任何后续命令**(智能体会被提示询问用户;正在执行的一步可能仍会完成)。无法显示小标签的标签页(chrome://、应用商店、PDF)会在工具栏按钮上显示紫色圆点。工具栏弹窗还提供一键控制:释放*当前*标签页,或一次性释放*所有*智能体标签页。
+被桥接驱动的标签页会在右下角显示 🟣 小标签(点击查看完整操作历史;✕ 可隐藏,下次导航前不再显示;⏏ 可断开智能体对该标签页的控制)并加入 🟣 标签页分组,你随时知道哪些页面正在被自动化——只读命令(`snap`、`measure`、`console`)同样会打上标签:智能体**正在查看**的标签页也会戴标签,而不只是它修改过的。小标签实时播报智能体正在做什么(`🟣 taking screenshot…`、`🟣 reading page…`,长命令会显示已耗时秒数),历史面板列出最近的操作并自动滚动到最新一行;空闲时显示 `🟣 AI idle`(连续失败后显示 `⚠ N failed since last ok`,桥接服务器不可达时显示 `⚠ bridge offline`);命令执行期间,紫色边框亮起,标签页 favicon 显示 ⏳(完成 ✅,失败 ✗,✗ 会保留到下一条命令),点击/悬停处会闪现紫色指针标记智能体的操作位置。`release`(或 `close`)即可全部还原。⏏ 是人类的安全出口:一次可信点击即可完全收回桥接对该标签页的控制——标记、分组、设备模拟全部清除,无需 CLI(合成的页面点击无法伪造它),**而且是强制执行的:桥接会拒绝智能体对该标签页的任何后续命令,直到智能体用 `mark` 显式重新接管**——没有可以被等待耗过的时限(智能体会被提示先询问你;正在执行的一步可能仍会完成)。无法显示小标签的标签页(chrome://、应用商店、PDF)会在工具栏按钮上显示紫色圆点。工具栏弹窗还提供一键控制:释放*当前*标签页,或一次性释放*所有*智能体标签页。
 
 ![🟣 小标签正在播报被驱动的标签页,操作历史面板已展开](docs/store/screenshot-1-pill.png)
 
@@ -137,7 +137,7 @@ node cli.mjs extreload
 
 **Windows**:`install.sh` 是 bash(macOS/Linux,或 Git Bash)。桥接器本身是纯 Node——任何平台都能在终端里运行 `node server.mjs`,所有 `cli.mjs` 命令都是跨平台的。
 
-**多个 Chrome 配置**:扩展可以同时加载在多个配置中——每个配置保持独立连接,智能体可以并行驱动它们。命令会自动路由到唯一拥有匹配标签页的配置;当多个配置都有匹配时**拒绝执行**,要求智能体用 `--profile <id 或 name>` 指明(`cli profiles` 同时列出两者)——智能体绝不会在你以为操作工作浏览器时悄悄点进个人浏览器。每个配置还有一个稳定的短名字(`birch`、`oak` 等),`--profile` 直接接受该名字,显示在 `watch` 输出和标签里——对正在观看的人类来说,uuid 前缀毫无意义。
+**多个 Chrome 配置**:扩展可以同时加载在多个配置中——每个配置保持独立连接,智能体可以并行驱动它们。命令会自动路由到唯一拥有匹配标签页的配置;当多个配置都有匹配时**拒绝执行**,要求智能体用 `--profile <id 或 name>` 指明(`cli.mjs profiles` 同时列出两者)——智能体绝不会在你以为操作工作浏览器时悄悄点进个人浏览器。每个配置还有一个稳定的短名字(`birch`、`oak` 等),`--profile` 直接接受该名字,显示在 `watch` 输出和标签里——对正在观看的人类来说,uuid 前缀毫无意义。
 
 ## 支持任何 AI 智能体——不限于 Claude
 
@@ -181,6 +181,8 @@ HTTP API 只有一个命令端点:`POST /cmd`,Body 如 `{"type": "snap", "urlMat
 | `drag <match> <@ref\|css> <@ref\|css> [--diff] [--trusted]` | 把一个元素拖到另一个上(合成指针序列;`--trusted` 走 CDP Input——isTrusted,且触发传统 HTML5 dragstart/drop) |
 | `dialog <match> accept\|dismiss [--text s]` | 通过 CDP 应答 JS 对话框——仅当对话框在调试器会话期间(net/shot/…)打开时可达;若在未挂载的标签页上卡死则无法应答:用 `nav <match> <url>` 恢复(导航会丢弃对话框)。`--text` 必须带应答内容 |
 | `fill <match> <@ref\|css> <value> [--diff]` | 设置输入框的值——React 安全(原生 setter + input/change 事件);原生 `<select>` 按选项值或标签匹配 |
+| `clear <match> <@ref\|css> [--diff]` | 清空输入框/textarea/contenteditable——合成全选+退格失效时的路径(Editor.js 这类自持模型的编辑器) |
+| `activate <match>` | 把后台标签页带到前台(可信 CDP 输入需要它——隐藏标签页上事件不会触发) |
 | `type <match> <@ref\|css> <text> [--diff] [--trusted]` · `press <match> <key> [@ref] [--diff] [--trusted]` · `hover <match> <@ref\|css> [--diff] [--trusted]` | 逐字符输入(自动补全 UI)、按键(`Control+k` 组合键可用)、悬停;`--trusted` 走 CDP 输入(isTrusted——Enter 能触发表单提交等浏览器默认行为) |
 | `paste <match> [@ref\|css] [--diff] [--html] [-- <text>]` | 以真实粘贴的语义写入聚焦(或指定)的字段——会回退 `fill` 的富文本编辑器(Quill、Reddit/LinkedIn 编辑器)接受粘贴;不给 `-- <text>` 时读取系统剪贴板。`--html` 发送标记文本(text/html + 剥离标签的纯文本回退)——块编辑器一次粘贴即可解析为原生块 |
 | `scroll <match> <up\|down\|top\|bottom\|@ref\|css> [--diff]` | 滚动——自动找到真正的滚动容器(Linear、Gmail 这类应用外壳滚动的是内部面板,不是窗口) |
@@ -189,8 +191,8 @@ HTTP API 只有一个命令端点:`POST /cmd`,Body 如 `{"type": "snap", "urlMat
 | `wait <match> <css\|--text t\|--human\|--pixel-change> [--timeout ms]` | 等待元素或可见文本出现(MutationObserver 驱动,页面一变即返回;默认 10 秒,上限 60 秒)。`--human` 把标签页交给你——验证码/两步验证/登录墙:小标签提示轮到你了,命令阻塞到你完成操作(默认 2 分钟),然后返回你所做改动的快照 diff。`--pixel-change` 轮询直到像素变化(无障碍树看不到的画布变化) |
 | `eval <match> <js\|-> [--world main\|isolated]` | 在页面中执行 JS;`-` 从 stdin 读取 |
 | `shot <match> <out> [--max px] [--scale N] [--format jpeg] [--quality N] [--crop x,y,w,h] [--full] [--diff]` | CDP 截图。长边默认限制为 `--max` 1280px(`0` = 原始分辨率)——模型读取大图时本来就会缩小,原图只增加文件体积不增加细节。`--full` = 整页高度。`--diff` 与上一次 `--diff` 截图对比(固定基线的尺寸/缩放,跟随当前滚动位置——对比的是智能体当前看到的画面),只保存变化的区域——无障碍树看不到的画布/像素变化 |
-| `net <match> [--dur ms] [--filter s] [--body s] [--ws] [--har out.har]` | CDP 网络抓包(单次 ≤30 秒)——每个请求一行紧凑输出,并标注发起者(`⟵ api-client.js:88`);`--ws` 同时抓取 WebSocket 帧(`→` 发送 / `←` 接收——聊天/流式应用);`--body s` 附加匹配的 JSON/文本响应体;`--har out.har` 把抓包存为可分享的 HAR 1.2(DevTools/Burp 可打开) |
-| `fetch <match> <url> [--out file]` | 在页面内发 fetch,复用登录会话——需要登录的 JSON/信息源直接可取,无需 eval 拼接;二进制响应必须 `--out`,文本打印截断在 5 万字符(`--out` 保存完整内容) |
+| `net <match> [--dur ms] [--filter s] [--body s] [--ws] [--har out.har]` | CDP 网络抓包(单次 ≤30 秒)——每个请求一行紧凑输出,并标注发起者(`⟵ api-client.js:88`);`--ws` 同时抓取 WebSocket 帧(`→` 发送 / `←` 接收——聊天/流式应用);`--body s` 附加匹配的 JSON/文本响应体;`--har out.har` 把抓包存为可分享的 HAR 1.2(DevTools/Burp 可打开)——它携带完整请求/响应头(含 cookies/令牌),以仅所有者可读(0600)写入:请当作机密对待 |
+| `fetch <match> <url> [--out file] [--keep]` | 在页面内发 fetch,复用登录会话——需要登录的 JSON/信息源直接可取,无需 eval 拼接;二进制响应必须 `--out`,文本打印截断在 5 万字符(`--out` 保存完整内容);没有匹配标签页时会在目标源打开一个临时标签页,取完即关(`--keep` 则保留以便续取) |
 | `measure <match> <css>` | 元素位置 + 计算样式,JSON 输出——不看像素也能知道布局真相 |
 | `console <match> [--clear] [--ask [q]]` | 页面 console + 未捕获错误(首次调用时安装钩子);`--ask` 用本地 Gemini Nano 分诊日志——只有结论消耗云端 token |
 | `grid <match>` | 开关 8px 对齐网格覆盖层 |

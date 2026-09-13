@@ -24,12 +24,12 @@ if (typeof fetch !== 'function') fail('Node >= 18 required — you have ' + proc
 
 // --profile: multi-profile routing. Extracted once at argv level (works
 // before or after the command word) and rides on every command; an id prefix
-// or the exact profile name is enough (see: cli profiles).
+// or the exact profile name is enough (see: cli.mjs profiles).
 let PROFILE = null;
 {
   const i = process.argv.indexOf('--profile');
   if (i >= 0) {
-    if (!process.argv[i + 1] || process.argv[i + 1].startsWith('--')) fail('--profile needs an id or name (see: cli profiles)');
+    if (!process.argv[i + 1] || process.argv[i + 1].startsWith('--')) fail('--profile needs an id or name (see: cli.mjs profiles)');
     PROFILE = process.argv[i + 1];
     process.argv.splice(i, 2);
   }
@@ -263,13 +263,17 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     built-in Gemini Nano — local, no cloud tokens
   wait <match> <css|--text t|--human|--pixel-change> [--timeout ms]
                                     wait for element or visible text (timeout default 10s,
-                                    max 60s); --human hands the tab to the user — CAPTCHA/
+                                    max 60s); --text takes every word up to the next flag
+                                    (unquoted multi-word is fine); css/--text are
+                                    alternatives — pass one, not both;
+                                    --human hands the tab to the user — CAPTCHA/
                                     2FA/login walls — the pill asks them to act, the command
                                     blocks until trusted input or navigation (default 120s,
                                     max 280s), then returns the snap-diff of what they did;
                                     --pixel-change polls the viewport until pixels move
                                     (canvas changes the tree can't see; attaches CDP)
-  eval <match> <js|-> [--world main|isolated]     '-' reads JS from stdin
+  eval <match> <js|-> [--world main|isolated]     '-' reads JS from stdin; output
+                                    caps at 50K chars — return less (slice in-page), or fetch --out
   shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full] [--diff]
                                     --max caps the long edge (default 1280, 0 = native res);
                                     --diff compares against the previous --diff shot and, on
@@ -283,7 +287,9 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     --body s also captures JSON/text response bodies for URLs
                                     containing s (≤8, 1500 chars each; implies --filter s);
                                     --har out.har saves the capture as HAR 1.2 (DevTools/Burp
-                                    open it; text/JSON bodies land in the file, not the lines)
+                                    open it; text/JSON bodies land in the file, not the lines) —
+                                    the HAR carries full headers incl. cookies/tokens: owner-only
+                                    0600, treat it as a secret
   fetch <match> <url> [--out file] [--keep]
                                     in-page fetch riding the logged-in session — login-walled
                                     JSON/feeds answer it; binary responses need --out, text
@@ -310,7 +316,9 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     handoffs; --batch out writes the recorded commands as a
                                     replayable batch script (failed ones commented out;
                                     fill/type/paste values redacted as '# secret ·' lines;
-                                    shot output paths and multiline eval code don't survive)
+                                    shot output paths and multiline eval code don't survive —
+                                    but single-line eval code is kept VERBATIM: a secret inside
+                                    the JS lands in the export, so don't embed any)
   swlogs                            service-worker console tail (errors/warnings)
   extreload                         reload the extension from disk — picks up code changes
                                     without the chrome://extensions click (the stale-version
@@ -382,7 +390,7 @@ async function run(cmdName, args) {
                 continue;
               }
               const fix =
-                h.profiles.length > 1 ? `cli extreload --profile ${JSON.stringify(p.name || p.id.slice(0, 4))}` : 'cli extreload';
+                h.profiles.length > 1 ? `cli.mjs extreload --profile ${JSON.stringify(p.name || p.id.slice(0, 4))}` : 'cli.mjs extreload';
               console.error(`⚠ extension ${p.v} is loaded (profile ${p.name || p.id.slice(0, 4)}), the repo has ${mine} — run \`${fix}\` (or reload at chrome://extensions)`);
             }
           }
@@ -413,8 +421,11 @@ async function run(cmdName, args) {
       // squatting on 9333 must not read as "bridge already running" (the
       // spawned child would die on EADDRINUSE and start would lie 'started').
       const bridgeHealth = () => fetch(`${BASE}/health`).then((r) => r.json()).then((h) => (h?.ok === true ? h : null)).catch(() => null);
-      if (await bridgeHealth()) {
-        print('already running');
+      const up = await bridgeHealth();
+      if (up) {
+        // A bare 'already running' reads as fully ready while the extension
+        // is disconnected — the fresh-start path below says it, this one too.
+        print(up.extension ? 'already running — extension connected' : 'already running — extension not connected (if it was already loaded, run health again in a moment; else load extension/ at chrome://extensions)');
         break;
       }
       const logPath = fileURLToPath(new URL('./server.log', import.meta.url));
@@ -462,9 +473,13 @@ async function run(cmdName, args) {
       // Optional substring filter — a real browser's full tab list is ~2KB of
       // titles the agent usually doesn't need; `tabs <match>` returns the rows
       // it's actually looking for.
+      if (args.length > 1 || args[0]?.startsWith('--')) fail('usage: tabs [match] — a URL/title substring, or the exact id:<tabId>');
       const t = await cmd({ type: 'tabs' });
       const m = args[0];
-      print(m ? t.filter((x) => (x.url || '').includes(m) || (x.title || '').includes(m)) : t); // url can be absent (unresponsive-profile row)
+      // id:<tabId> is the exact reference every tab command takes — its own
+      // help text says so, and returning [] for a live tab read as "the tab
+      // is gone, re-copy/re-open" (the extension's tabMatches has the branch).
+      print(m ? (/^id:\d+$/.test(m) ? t.filter((x) => String(x.id) === m.slice(3)) : t.filter((x) => (x.url || '').includes(m) || (x.title || '').includes(m))) : t); // url can be absent (unresponsive-profile row)
       break;
     }
 
@@ -595,7 +610,7 @@ async function run(cmdName, args) {
         // recorded command; without this the token reads as a command name) and
         // holds for the rest of the script, like the original session had it.
         if (tokens[0] === '--profile') {
-          if (!tokens[1] || tokens[1].startsWith('--')) fail('--profile needs an id or name (see: cli profiles)');
+          if (!tokens[1] || tokens[1].startsWith('--')) fail('--profile needs an id or name (see: cli.mjs profiles)');
           PROFILE = tokens[1];
           tokens.splice(0, 2);
         }
@@ -611,7 +626,7 @@ async function run(cmdName, args) {
     }
 
     case 'open':
-      if (!args[0]) fail('usage: open <url>');
+      if (args.length !== 1) fail('usage: open <url>'); // extras fail loud like every other command — 'open a b' silently dropped b
       print(await cmd({ type: 'open', url: args[0] }));
       break;
 
@@ -636,28 +651,37 @@ async function run(cmdName, args) {
     case 'release':
     case 'unemulate':
     case 'activate':
-      if (!args[0]) fail(`usage: ${cmdName} <match>`);
+      if (args.length !== 1) fail(`usage: ${cmdName} <match>`); // one arg, exactly — extras used to vanish silently
       print(await cmd({ type: cmdName, urlMatch: args[0] }));
       break;
 
     case 'snap': {
       if (!args[0]) fail('usage: snap <match> [css|@ref] [--diff] [--href] [--skeleton] [--find "nl query"]');
+      const SNAP_FLAGS = ['--diff', '--href', '--skeleton'];
       const diff = args.includes('--diff');
       const href = args.includes('--href');
       const skeleton = args.includes('--skeleton');
       const fi = args.indexOf('--find');
       let find = null;
       if (fi >= 0) {
-        // Greedy: everything after --find that isn't a flag is the query. A
+        // Greedy: everything after --find that isn't a KNOWN flag is the query
+        // (a query can mention a '--'-word — "the --recursive flag"). A
         // one-token reader turned `--find cancel button` into find='cancel' +
-        // scope='button' — silent wrong data on the most paraphrasable flag.
-        find = args.slice(fi + 1).filter((a) => !a.startsWith('--')).join(' ');
+        // scope='button', and the startsWith('--') filter silently DROPPED
+        // query words that looked flaggy — silent wrong data both ways.
+        find = args.slice(fi + 1).filter((a) => !SNAP_FLAGS.includes(a)).join(' ').trim();
         if (!find) fail('--find needs a query');
       }
       // scope = the first bare positional BEFORE --find (a scope can never
       // follow a --find query — everything there is the query). Takes a CSS
       // selector or an @ref — @ref is the --skeleton drill-down.
-      const scope = args.slice(1, fi < 1 ? args.length : fi).find((a) => !a.startsWith('--')) || null;
+      const before = args.slice(1, fi < 0 ? args.length : fi);
+      const scope = before.find((a) => !a.startsWith('--')) || null;
+      // Same fail-loud contract as the action commands (takeFlags): a typoed
+      // --dfif used to return a FULL snap the agent then read as a diff —
+      // "nothing changed" conclusions off an observation that never ran.
+      const stray = before.find((a) => a.startsWith('--') && !SNAP_FLAGS.includes(a));
+      if (stray) fail(`unknown flag ${stray} (flags: --diff, --href, --skeleton, --find "query")`);
       const out = await cmd({ type: 'snap', urlMatch: args[0], scope, diff, href, ...(skeleton ? { skeleton: true } : {}), ...(find ? { find } : {}) });
       print(out);
       // The truncation line sits at the end of the tree — a `snap | grep foo`
@@ -711,7 +735,7 @@ async function run(cmdName, args) {
     case 'type': {
       const { sep, flagged, valuePart } = splitDashDash(args);
       const rest = flagged.filter((a) => a !== '--diff' && (cmdName !== 'type' || a !== '--trusted'));
-      if (!rest[0] || !rest[1] || (rest[2] === undefined && !valuePart.length)) fail(`usage: ${cmdName} <match> <@ref|css> [--diff] -- <value>`);
+      if (!rest[0] || !rest[1] || (rest[2] === undefined && !valuePart.length)) fail(`usage: ${cmdName} <match> <@ref|css> <value> [--diff] — a value starting with '--' goes after a bare '--' separator: ${cmdName} <match> <ref> -- <value>`);
       // A '--'-prefixed token BEFORE the separator is a fat-fingered flag,
       // not data — without this guard it gets typed into the user's real form.
       const stray = rest.slice(2).find((a) => a.startsWith('--'));
@@ -836,9 +860,13 @@ async function run(cmdName, args) {
         // open it; text/JSON response bodies land in the file (50 max), the
         // printed lines stay exactly as without the flag.
         if (!out?.har) fail('the extension did not return a HAR (older version? reload it at chrome://extensions)');
-        fs.writeFileSync(har, JSON.stringify(out.har, null, 1));
+        // A HAR from a logged-in tab carries full request/response headers —
+        // Cookie, Authorization, Set-Cookie — plus postData and bodies: a
+        // replayable credential bundle. Owner-only perms like server.log, and
+        // the warning says it out loud (DevTools itself warns on HAR export).
+        fs.writeFileSync(har, JSON.stringify(out.har, null, 1), { mode: 0o600 });
         print(out.lines);
-        console.error(`saved ${har} (HAR 1.2, ${out.har.log.entries.length} entries)`);
+        console.error(`saved ${har} (HAR 1.2, ${out.har.log.entries.length} entries — contains cookies/tokens: treat it as a secret; file is owner-only 0600)`);
       } else print(out);
       break;
     }
@@ -850,16 +878,35 @@ async function run(cmdName, args) {
       let human = false;
       let pixel = false;
       const pos = [];
+      const WAIT_FLAGS = ['--text', '--timeout', '--human', '--pixel-change'];
       for (let i = 0; i < rest.length; i++) {
-        if (rest[i] === '--text') text = rest[++i];
-        else if (rest[i] === '--timeout') timeout = Number(rest[++i]);
-        else if (rest[i] === '--human') human = true;
+        if (rest[i] === '--text') {
+          // Multi-word text joins up to the next known flag — single-token
+          // reads turned '--text Saved successfully' into a wait for 'Saved'
+          // plus the leftover words OR'd in as a CSS selector: a false
+          // "page ready" signal from a predicate the agent never wrote.
+          const words = [];
+          while (i + 1 < rest.length && !WAIT_FLAGS.includes(rest[i + 1])) {
+            if (rest[i + 1].startsWith('--')) fail(`unknown flag ${rest[i + 1]} (flags: ${WAIT_FLAGS.join(', ')})`);
+            words.push(rest[++i]);
+          }
+          text = words.join(' ');
+          if (!text) fail('--text needs a value');
+        } else if (rest[i] === '--timeout') {
+          if (rest[i + 1] === undefined) fail('--timeout needs a value (ms)');
+          timeout = Number(rest[++i]);
+        } else if (rest[i] === '--human') human = true;
         else if (rest[i] === '--pixel-change') pixel = true;
-        else if (rest[i].startsWith('--')) fail(`unknown flag ${rest[i]} (flags: --text, --timeout, --human, --pixel-change)`);
+        else if (rest[i].startsWith('--')) fail(`unknown flag ${rest[i]} (flags: ${WAIT_FLAGS.join(', ')})`);
         else pos.push(rest[i]);
       }
       const selector = pos[0] || null;
+      if (pos.length > 1) fail('usage: wait <match> [css|--text t|--human|--pixel-change] [--timeout ms]');
       if (!match || (!selector && !text && !human && !pixel)) fail('usage: wait <match> [css|--text t|--human|--pixel-change] [--timeout ms]');
+      // The usage line shows ALTERNATIVES — the extension ORs a selector+text
+      // pair, resolving early on a predicate the agent didn't intend.
+      if (selector && text) fail('pass a selector OR --text, not both (they would wait on either matching — chain two waits instead)');
+      if (human && pixel) fail('pass --human OR --pixel-change, not both');
       if ((human || pixel) && (selector || text)) fail('usage: wait <match> --human|--pixel-change [--timeout ms] — those wait without a page predicate');
       // Above 60s the server's 70s command cap fires first and the caller gets
       // a misleading 'extension timeout' for a healthy wait — fail here instead.
@@ -891,7 +938,14 @@ async function run(cmdName, args) {
       let code = rest.join(' ');
       if (code === '-') code = await stdin();
       if (!match || !code) fail('usage: eval <match> <js|-> [--world main|isolated]');
-      print(await cmd({ type: 'eval', urlMatch: match, code, world }));
+      const out = await cmd({ type: 'eval', urlMatch: match, code, world });
+      // The last uncapped read: `eval <m> document.body.innerText` on a real
+      // page dumps hundreds of KB into context. Same truncation pattern as
+      // fetch — the bytes are gone, the note names the remedy.
+      let s = typeof out === 'string' ? out : JSON.stringify(out) ?? String(out);
+      if (s.length > 50_000)
+        s = s.slice(0, 50_000) + '\n… eval output truncated at 50000 chars — return less (select narrower, slice in-page) or fetch --out the data instead';
+      print(s);
       break;
     }
 
@@ -989,7 +1043,7 @@ async function run(cmdName, args) {
     }
 
     case 'measure':
-      if (!args[0] || !args[1]) fail('usage: measure <match> <css>');
+      if (args.length !== 2) fail('usage: measure <match> <css>');
       print(await cmd({ type: 'measure', urlMatch: args[0], selector: args[1] }));
       break;
 
@@ -1001,12 +1055,17 @@ async function run(cmdName, args) {
         const q = args.slice(ai + 1).filter((a) => a !== '--clear').join(' ');
         ask = q || true; // bare --ask → extension's default triage question
       }
+      // Fail loud on strays before --ask (the question is freeform after it):
+      // a typoed --clr used to run UNcleared and read as "the clear worked";
+      // an extra positional was silently ignored.
+      const stray = (ai < 0 ? args : args.slice(0, ai)).slice(1).find((a) => a !== '--clear');
+      if (stray) fail(`unknown argument ${stray} (flags: --clear, --ask [question])`);
       print(await cmd({ type: 'console', urlMatch: args[0], clear: args.includes('--clear'), ...(ask ? { ask } : {}) }));
       break;
     }
 
     case 'grid':
-      if (!args[0]) fail('usage: grid <match>');
+      if (args.length !== 1) fail('usage: grid <match>');
       print(await cmd({ type: 'grid', urlMatch: args[0] }));
       break;
 

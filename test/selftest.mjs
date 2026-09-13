@@ -176,7 +176,12 @@ try {
           t.url.includes(msg.urlMatch)
         )
       );
-    if (msg.type === 'eval') return respond({ echo: msg.code.length, world: msg.world, match: msg.urlMatch, label: msg.label || null });
+    if (msg.type === 'eval') {
+      // BIGEVAL: a >50K string result — the cli must cap the printout (the
+      // last uncapped read was a context bomb: eval document.body.innerText).
+      if (msg.code.includes('BIGEVAL')) return respond('y'.repeat(60_000));
+      return respond({ echo: msg.code.length, world: msg.world, match: msg.urlMatch, label: msg.label || null });
+    }
     if (msg.type === 'big') return respond('x'.repeat(3 * 1024 * 1024)); // 3 MB — exercises 64-bit frames
     if (msg.type === 'shot') {
       lastShot = msg;
@@ -372,6 +377,14 @@ try {
     'cli net --har writes the HAR file and prints the lines',
     netHar.stdout + netHar.stderr
   );
+  // A HAR from a logged-in tab is a credential bundle (Cookie/Authorization/
+  // Set-Cookie + bodies): owner-only perms like server.log, and the warning
+  // says so (DevTools itself warns on HAR export).
+  assert(
+    (fs.statSync(harPath).mode & 0o777) === 0o600 && netHar.stderr.includes('cookies/tokens'),
+    'cli net --har writes owner-only 0600 and warns about cookies/tokens',
+    netHar.stderr + ' mode=' + (fs.statSync(harPath).mode & 0o777).toString(8)
+  );
   fs.unlinkSync(harPath);
   // --ws: WebSocket frame capture flag rides the wire
   const netWs = await cli('net', 'example.com', '--ws', '--dur', '500');
@@ -425,6 +438,58 @@ try {
   assert(conAskBare.status === 0 && conAskBare.stdout.includes('"ask":true'), 'cli console bare --ask sends true', conAskBare.stdout + conAskBare.stderr);
   const conPlain = await cli('console', 'example.com');
   assert(conPlain.status === 0 && !conPlain.stdout.includes('"ask"'), 'cli console plain sends no ask', conPlain.stdout + conPlain.stderr);
+  const conTypo = await cli('console', 'example.com', '--clr');
+  assert(conTypo.status !== 0 && conTypo.stderr.includes('unknown argument --clr'), 'cli console rejects a typoed flag instead of running uncleared', conTypo.stdout + conTypo.stderr);
+  const conExtra = await cli('console', 'example.com', 'extra');
+  assert(conExtra.status !== 0 && conExtra.stderr.includes('unknown argument extra'), 'cli console rejects a stray positional', conExtra.stdout + conExtra.stderr);
+
+  // snap's stray-flag scan: a typoed --dfif used to return a FULL snap the
+  // agent then read as a diff — the unsafe-success class takeFlags exists for.
+  const snapTypo = await cli('snap', 'example.com', '--dfif');
+  assert(snapTypo.status !== 0 && snapTypo.stderr.includes('unknown flag --dfif'), 'cli snap rejects an unknown flag (no silent full-snap-as-diff)', snapTypo.stdout + snapTypo.stderr);
+  const snapFindDash = await cli('snap', 'example.com', '--find', 'the', '--recursive', 'flag');
+  assert(snapFindDash.status === 0 && snapFindDash.stdout.includes('"find":"the --recursive flag"'), 'cli snap --find keeps flag-like query words (no silent drop)', snapFindDash.stdout + snapFindDash.stderr);
+  const snapFindDiff = await cli('snap', 'example.com', '--find', 'cancel', '--diff');
+  assert(snapFindDiff.status === 0 && snapFindDiff.stdout.includes('"find":"cancel"') && snapFindDiff.stdout.includes('"diff":true'), 'cli snap --find + --diff: known flags after the query still apply', snapFindDiff.stdout + snapFindDiff.stderr);
+
+  // wait: --text takes every word up to the next flag (the single-token read
+  // OR'd leftovers in as a selector — a false "page ready" signal); selector
+  // and --text are alternatives, and --human/--pixel-change don't combine.
+  const waitText = await cli('wait', 'example.com', '--text', 'Saved', 'successfully');
+  assert(waitText.status === 0 && waitText.stdout.includes('"text":"Saved successfully"') && !waitText.stdout.includes('"selector":".'), 'cli wait --text joins multi-word text', waitText.stdout + waitText.stderr);
+  const waitBoth = await cli('wait', 'example.com', '.foo', '--text', 'Saved');
+  assert(waitBoth.status !== 0 && waitBoth.stderr.includes('selector OR --text'), 'cli wait refuses selector + --text together', waitBoth.stdout + waitBoth.stderr);
+  const waitHuPix = await cli('wait', 'example.com', '--human', '--pixel-change');
+  assert(waitHuPix.status !== 0 && waitHuPix.stderr.includes('--human OR --pixel-change'), 'cli wait refuses --human + --pixel-change', waitHuPix.stdout + waitHuPix.stderr);
+  const waitNoText = await cli('wait', 'example.com', '.foo', '--text');
+  assert(waitNoText.status !== 0 && waitNoText.stderr.includes('--text needs a value'), 'cli wait --text without a value fails loud', waitNoText.stdout + waitNoText.stderr);
+  const waitTextTimeout = await cli('wait', 'example.com', '--text', 'a', 'b', '--timeout', '500');
+  assert(waitTextTimeout.status === 0 && waitTextTimeout.stdout.includes('"text":"a b"') && waitTextTimeout.stdout.includes('"timeout":500'), 'cli wait --text joins up to the next known flag', waitTextTimeout.stdout + waitTextTimeout.stderr);
+
+  // tabs id:<tabId>: the exact reference every command takes must filter the
+  // list too — [] for a live tab read as "gone, re-open it".
+  const tabsId = await cli('tabs', 'id:1');
+  assert(tabsId.status === 0 && tabsId.stdout.includes('example.com'), 'cli tabs id:<tabId> finds the live tab', tabsId.stdout + tabsId.stderr);
+  const tabsIdGone = await cli('tabs', 'id:424242');
+  assert(tabsIdGone.status === 0 && tabsIdGone.stdout.trim() === '[]', 'cli tabs id: for a dead id prints [] (truthful, not a substring miss)', tabsIdGone.stdout);
+  const tabsExtra = await cli('tabs', 'a', 'b');
+  assert(tabsExtra.status !== 0 && tabsExtra.stderr.includes('usage: tabs'), 'cli tabs rejects extra positionals (silent wrong-filter class)', tabsExtra.stdout + tabsExtra.stderr);
+
+  // Positional-only commands fail loud on extras, same as flag commands.
+  const openExtra = await cli('open', 'https://example.com', 'extra');
+  assert(openExtra.status !== 0 && openExtra.stderr.includes('usage: open'), 'cli open rejects extra args', openExtra.stdout + openExtra.stderr);
+  const markExtra = await cli('mark', 'example.com', 'extra');
+  assert(markExtra.status !== 0 && markExtra.stderr.includes('usage: mark'), 'cli mark rejects extra args', markExtra.stdout + markExtra.stderr);
+
+  // eval output cap: 60K in, 50K + a named-remedy note out.
+  const evBig = await cli('eval', 'example.com', 'BIGEVAL');
+  assert(evBig.status === 0 && evBig.stdout.length < 51000 && evBig.stdout.includes('truncated at 50000 chars'), 'cli eval caps huge output with a truncation note', `len=${evBig.stdout.length}`);
+  const evSmall = await cli('eval', 'example.com', 'document.title');
+  assert(evSmall.status === 0 && !evSmall.stdout.includes('truncated'), 'cli eval small output passes through uncapped', evSmall.stdout + evSmall.stderr);
+
+  // start on a running bridge names the extension state, like the fresh path.
+  const startUp = await cli('start');
+  assert(startUp.status === 0 && startUp.stdout.includes('already running — extension connected'), 'cli start already-running reports extension state', startUp.stdout + startUp.stderr);
 
   const evWorld = await cli('eval', '--world', 'main', 'example.com', 'document.title');
   assert(evWorld.status === 0 && evWorld.stdout.includes('"world":"MAIN"') && evWorld.stdout.includes('"match":"example.com"'), 'cli eval --world before match parses', evWorld.stdout + evWorld.stderr);
@@ -696,10 +761,61 @@ try {
     assert(bg.includes('⚠ bridge offline — reconnecting…'), 'pill: bridge outage shows as offline, not AI idle');
     // The ⏏ reclaim is ENFORCED, not advisory: without the findTab gate the
     // next command in the agent's loop re-marked a ⏏-released tab within
-    // seconds — visible, but not durable.
+    // seconds — visible, but not durable. And the gate is STICKY (v1.24): a
+    // 60s lapse let a polling agent silently re-drive a tab the human took
+    // back — only an explicit `mark` re-claims now.
     assert(
-      bg.includes('humanReclaimed') && bg.includes('RECLAIM_MS') && bg.includes("['mark', 'release'].includes(msg.type)"),
-      'pill: ⏏ reclaim is enforced — findTab refuses re-driving a human-reclaimed tab (mark = deliberate re-claim)'
+      bg.includes('humanReclaimed') && !bg.includes('RECLAIM_MS') && bg.includes("['mark', 'release'].includes(msg.type)"),
+      'pill: ⏏ reclaim is enforced and sticky — findTab refuses re-driving a human-reclaimed tab until mark (no timed lapse)'
+    );
+    // v1.24 review batch — the behaviors the fake extension can't execute:
+    assert(
+      bg.includes('pillQ') && bg.includes('function pillWrite'),
+      'pill: every narration write rides a per-tab chain — a tick landing after the idle reset froze its label forever (#41)'
+    );
+    assert(
+      bg.includes('pillBusy') && bg.includes("busy ? pillBusy.get(tabId)"),
+      'pill: capture-window restores repaint the in-flight label, not a lying "AI idle"'
+    );
+    assert(
+      bg.includes('pill back between polls'),
+      'wait --pixel-change: the pill is down only per-capture, not for the whole watch (the most-watched command wore no marking)'
+    );
+    assert(
+      bg.includes('msg._markedByMe = true') && bg.includes('was released again (no markers left)'),
+      '#37: a command that marked the tab and hit a permanent unscriptable wall releases its own fresh mark (no pill-less 🟣 group residue)'
+    );
+    assert(
+      bg.includes("u.host === 'chromewebstore.google.com'") && bg.includes('can never be driven'),
+      '#37: open/nav refuse chrome://, chrome-extension://, and Web Store targets up front — a marked tab no command can act on is the residue'
+    );
+    assert(
+      bg.includes('humanWaits') && bg.includes('one handoff at a time'),
+      'wait --human: a second concurrent handoff on one tab is refused (it would re-arm the acted flag under the first waiter)'
+    );
+    assert(
+      bg.includes('window.__bridgeTyping = true') && bg.includes('another type is still running'),
+      'trusted type honors the synthetic type overlap guard (#32 class — CDP keys + a lost synthetic loop garble the payload)'
+    );
+    assert(
+      bg.includes('/another debugger holds/.test(errText(e))'),
+      'shot: the captureVisibleTab fallback never fires on the foreign-debugger error (it would steal the human\'s view mid-DevTools)'
+    );
+    assert(
+      bg.includes('cdpRefs.set(tabId, 0)'),
+      'detach failure on a live tab leaves a doctor-visible refcount entry (the one residue class doctor could not see)'
+    );
+    assert(
+      bg.includes('offlinePainted') && bg.includes('2500'),
+      'pill: bridge-offline paint waits out a 2.5s grace — a reconnect blip stays calm'
+    );
+    assert(
+      bg.includes('seat taken — another live connection holds this profile id'),
+      'seat-taken loser logs to swlogs (a cloned profile dir used to bounce silently forever)'
+    );
+    assert(
+      bg.includes('wedged (5s)'),
+      'storage watchdogs: a wedged storage.session/profile-id read degrades to empty state instead of hanging every command'
     );
     // Driven tabs wear a toolbar badge too: on non-injectable pages (chrome://,
     // Web Store, PDF) pill, group and favicon ALL fail — the badge is the one
@@ -1191,6 +1307,28 @@ try {
       fs.readFileSync(histPath2, 'utf8')
     );
     fs.unlinkSync(histPath2);
+
+    // Dual install: TWO seats reporting the SAME tab id+url = one Chrome with
+    // two bridge builds (store + unpacked share no storage → two profile
+    // ids). tabs warns in the merged list, and routing refuses with the real
+    // cause — the human's ⏏/reclaim gate covers only one install.
+    const extDup = await wsClient(PORT, 'alpha-twin');
+    extDup.onMessage((msg) => {
+      const respond = (result) => extDup.send({ id: msg.id, ok: true, result });
+      if (msg.type === 'ping') return respond('pong');
+      if (msg.type === 'probe') return respond([{ id: 1, url: 'https://example.com/', lastAccessed: 1 }].filter((t) => t.url.includes(msg.urlMatch)));
+      if (msg.type === 'tabs') return respond([{ id: 1, url: 'https://example.com/', title: 'Example', driven: false }]);
+      return respond(msg);
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    const tabsDual = await cli('tabs');
+    assert(tabsDual.stdout.includes('TWO bridge builds'), 'dual-install: merged tabs carries the loud warning row', tabsDual.stdout);
+    const dualRefused = await cli('snap', 'example.com');
+    assert(dualRefused.status !== 0 && dualRefused.stderr.includes('the SAME tab') && dualRefused.stderr.includes('⏏ covers only one install'), 'dual-install: routing the shared tab refuses with the real cause', dualRefused.stdout + dualRefused.stderr);
+    extDup.socket.destroy();
+    await new Promise((r) => setTimeout(r, 200)); // let the seat drop before later sections probe
+    const tabsAfter = await cli('tabs');
+    assert(!tabsAfter.stdout.includes('TWO bridge builds'), 'dual-install: warning clears when the twin seat leaves', tabsAfter.stdout);
 
     // PINNED tabs/doctor route through their own branches (no match to probe,
     // so the general path's profile normalize never runs) — a NAME passed via
