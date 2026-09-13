@@ -363,6 +363,14 @@ s_marks() {
   "${CLI[@]}" click "static.html?x=marks" "#bridge-disconnect" --trusted >/dev/null 2>&1
   sleep 1
   "${CLI[@]}" tabs "static.html?x=marks" | grep -q '"driven":true' && bad "trusted ⏏ click did not release" || ok "trusted ⏏ click releases the tab"
+  # The reclaim is ENFORCED (v1.24): the next plain command on a ⏏-released
+  # tab must REFUSE — otherwise an agent in a command loop re-marks the tab
+  # within seconds and, from the human's seat, nobody noticed.
+  "${CLI[@]}" snap "static.html?x=marks" >"$OUT/07-gate.log" 2>&1 || true
+  assert_grep "post-⏏ command refused — the reclaim is enforced" "$OUT/07-gate.log" 'the human released this tab via ⏏'
+  # mark is the deliberate re-claim — this suite wants the tab back for section 8.
+  "${CLI[@]}" mark "static.html?x=marks" >/dev/null 2>&1
+  "${CLI[@]}" tabs "static.html?x=marks" | grep -q '"driven":true' && ok "mark re-claims a ⏏-released tab deliberately" || bad "mark did not re-claim"
 
   # Status favicon on release. A plain post-release eval can't see the truth
   # (the eval itself re-marks and re-stamps first) — an observer installed

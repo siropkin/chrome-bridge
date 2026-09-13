@@ -1,7 +1,10 @@
-// chrome-bridge popup — two jobs: copy the active tab's id:<tabId> reference
-// (the exact <match> every cli command understands — see findTab), and hand a
-// first-time user the self-contained setup prompt for their agent. Pure popup:
-// no background round-trip (extension pages have the tabs permission too).
+// chrome-bridge popup — three jobs: copy the active tab's id:<tabId> reference
+// (the exact <match> every cli command understands — see findTab), hand a
+// first-time user the self-contained setup prompt for their agent, and the
+// human's release controls — the one reclaim path that works even when a
+// driven tab can't show the pill (chrome://, Web Store, PDF). Pure popup for
+// tabs (extension pages have the tabs permission too); release rides the
+// service worker via runtime messaging.
 // Bridge status comes from GET /health — a GET, so the server's drive-by
 // guards don't apply, and <all_urls> host permission covers 127.0.0.1.
 // NOTE: 9333 is hardcoded in FOUR places — server.mjs, cli.mjs,
@@ -24,7 +27,7 @@ fetch('http://127.0.0.1:9333/health', { signal: AbortSignal.timeout(2000) })
     $('status-text').textContent = 'bridge not running';
   });
 
-chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+chrome.tabs.query({ active: true, currentWindow: true }).then(async ([tab]) => {
   if (!tab) {
     $('title').textContent = 'no active tab';
     $('copy').disabled = true;
@@ -42,6 +45,28 @@ chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
       }
     );
   });
+  // Driven-tab controls — the emergency stop. Hidden entirely while nothing
+  // is driven: a calm popup shows nothing to stop.
+  const state = await chrome.runtime.sendMessage({ type: 'bridge-state', tabId: tab.id }).catch(() => null);
+  if (!state?.count) return;
+  $('driven').hidden = false;
+  $('driven-count').textContent = `🟣 ${state.count} tab${state.count > 1 ? 's' : ''} driven by your AI agent`;
+  const release = (btn, msg) => {
+    btn.hidden = false;
+    btn.addEventListener('click', () => {
+      chrome.runtime
+        .sendMessage(msg)
+        .then(() => {
+          $('driven').hidden = true;
+          $('status').textContent = 'Released ✓ — the tab(s) are yours again';
+        })
+        .catch((e) => {
+          $('status').textContent = 'Release failed: ' + e;
+        });
+    });
+  };
+  if (state.active) release($('release-tab'), { type: 'release-active', tabId: tab.id });
+  release($('release-all'), { type: 'release-all' });
 });
 
 $('setup').addEventListener('click', () => {

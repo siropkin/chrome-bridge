@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Chrome Bridge",
-  "version": "1.23.1",
+  "version": "1.24.0",
   "minimum_chrome_version": "117",
   "description": "AI browser automation via a local server: your agent drives your real logged-in Chrome — you watch and can veto any tab.",
   "icons": { "128": "icons/icon128.png", "48": "icons/icon48.png", "32": "icons/icon32.png", "16": "icons/icon16.png" },

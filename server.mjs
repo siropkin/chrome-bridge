@@ -153,7 +153,14 @@ async function route(msg) {
   if (msg.type === 'tabs') {
     // Read-only: merged across profiles. Single profile keeps today's output
     // byte-identical (no profile tags) — the common case stays the old shape.
-    if (msg.profile) return ask(await seatByProfileGrace(String(msg.profile)), msg); // pinned: that seat's rows, untagged
+    if (msg.profile) {
+      const seat = await seatByProfileGrace(String(msg.profile));
+      // Normalize to the pid: summarize/CLI_LINES resolve the tag via
+      // seatTag(msg.profile) — a NAME left here printed as its 4-char id
+      // prefix in the feed ('@haze' for hazel, found live).
+      msg.profile = seat.pid;
+      return ask(seat, msg); // pinned: that seat's rows, untagged
+    }
     if (!seats.size) throw new Error('extension not connected — load extension/ at chrome://extensions');
     if (seats.size === 1) return ask(seats.values().next().value, msg);
     const rows = [];
@@ -182,6 +189,7 @@ async function route(msg) {
     let entries = [...seats.entries()];
     if (msg.profile) {
       const seat = await seatByProfileGrace(String(msg.profile));
+      msg.profile = seat.pid; // same normalize as pinned tabs — the feed tag, not a 4-char name prefix
       entries = [[seat.pid, seat]];
     }
     const out = [];
@@ -327,9 +335,10 @@ const D = (m) => (m.diff ? ' --diff' : '');
 const CLI_LINES = {
   open: (m) => `open ${shellq(m.url)}`,
   navigate: (m) => `nav ${shellq(m.urlMatch)} ${shellq(m.url)}${D(m)}`,
-  close: (m) => `close ${shellq(m.urlMatch)}`,
+  close: (m) => `close ${shellq(m.urlMatch)}${m.all ? ' --all' : ''}`,
   mark: (m) => `mark ${shellq(m.urlMatch)}`,
   release: (m) => `release ${shellq(m.urlMatch)}`,
+  activate: (m) => `activate ${shellq(m.urlMatch)}`,
   unemulate: (m) => `unemulate ${shellq(m.urlMatch)}`,
   tabs: (m) => `tabs${m.urlMatch ? ' ' + shellq(m.urlMatch) : ''}`,
   doctor: (m) => `doctor${m.fix ? ' --fix' : ''}`,
@@ -351,6 +360,13 @@ const CLI_LINES = {
   // shouldn't either). pushAct emits these as `# secret ·` comments so a
   // replay skips the step instead of typing literal stars.
   fill: (m) => `fill ${shellq(m.urlMatch)} ${shellq(m.target)}${D(m)} -- "***"`,
+  // clear: the #34 emptier — a replay without it APPENDS where the recorded
+  // session REPLACED. activate: the #33 hidden-tab companion of a --trusted
+  // click; without it the replayed click hits the hidden-tab refusal. Both
+  // were missing from this table (the registry drift the SEVEN-registries
+  // comment warns fails silently): the commands ran fine and silently
+  // dropped out of every history --batch export.
+  clear: (m) => `clear ${shellq(m.urlMatch)} ${shellq(m.target)}${D(m)}`,
   type: (m) => `type ${shellq(m.urlMatch)} ${shellq(m.target)}${m.trusted ? ' --trusted' : ''}${D(m)} -- "***"`,
   // A clipboard-mode replay would read whatever sensitive content happens to
   // be on the clipboard later. Treat BOTH paste modes as non-replayable.

@@ -355,6 +355,12 @@ async function run(cmdName, args) {
         const res = await fetch(`${BASE}/health`);
         const h = await res.json();
         print(h);
+        // Exit 1 when the extension is disconnected: `health && …` preflights
+        // and SDK-style gating read the exit code, and 0 here lied about a
+        // bridge that can't run a command. The JSON still prints — which half
+        // failed stays readable — and the stale-version warnings above ride
+        // stderr either way.
+        if (!h.extension) process.exitCode = 1;
         // A loaded-but-stale extension still passes health (the SW seat is old
         // code — README's upgrade trap). Each profile self-reports its version
         // on the WS handshake; compare them with the manifest on disk.
@@ -806,8 +812,16 @@ async function run(cmdName, args) {
           // The extension silently clamps at 30s — fail here instead so the
           // agent doesn't read "no requests" for a window it believes it watched.
           if (duration > 30000) fail('--dur max is 30000 ms — run successive captures for longer windows');
-        } else if (rest[i] === '--filter') filter = rest[++i];
-        else if (rest[i] === '--body') body = rest[++i];
+        } else if (rest[i] === '--filter') {
+          // Missing value must fail loud: a trailing --filter used to yield
+          // undefined and the capture ran UNFILTERED — on a busy tab the
+          // 100-line cap then buried the lines the agent asked for.
+          filter = rest[++i];
+          if (filter === undefined) fail('--filter needs a value');
+        } else if (rest[i] === '--body') {
+          body = rest[++i];
+          if (body === undefined) fail('--body needs a value');
+        }
         else if (rest[i] === '--ws') ws = true;
         else if (rest[i] === '--har') {
           har = rest[++i];
@@ -950,7 +964,11 @@ async function run(cmdName, args) {
       // #35: no matching tab → ride a throwaway tab on the TARGET'S origin
       // (fetching from an unrelated tab is cross-origin and dies on CORS).
       // open → retry by id → close; --keep leaves it for follow-up fetches.
-      if (res && res.error && res.error.includes('no tab matching')) {
+      // Single-profile miss only: the multi-profile routing refusal ALSO says
+      // 'no tab matching … in any connected profile', and a bare open can't
+      // pick a seat there — the routing error already names the --profile
+      // remedy, so don't narrate a scratch tab that can't open.
+      if (res && res.error && res.error.includes('no tab matching') && !res.error.includes('in any connected profile')) {
         console.error(`no tab matching "${match}" — opening a scratch tab on ${u.host} for this fetch${keep ? ' (kept open)' : ''}`);
         const opened = await cmd({ type: 'open', url });
         res = await cmd({ type: 'fetch', urlMatch: `id:${opened.id}`, url }, true);

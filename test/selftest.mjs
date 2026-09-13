@@ -143,7 +143,7 @@ try {
 
   // health before extension connects
   let h = await cli('health');
-  assert(h.status === 0 && JSON.parse(h.stdout).extension === false, 'health: extension false before connect');
+  assert(h.status !== 0 && JSON.parse(h.stdout).extension === false, 'health: extension false before connect — exit 1 (a disconnected bridge must not pass a `health && …` preflight)', h.stdout + h.stderr);
 
   // connect fake extension
   const ext = await wsClient(PORT, 'alpha-test');
@@ -205,7 +205,7 @@ try {
     // in a `snap | grep` pipe otherwise) while stdout carries the tree.
     if (msg.type === 'snap' && msg.scope === 'trunc')
       return respond('tree line A\ntree line B\n… truncated at 300 nodes — scope with: snap <match> <css>');
-    if (['snap', 'press', 'type', 'hover', 'net', 'click', 'fill', 'paste', 'navigate', 'scroll', 'ask', 'upload', 'console', 'note', 'measure', 'grid', 'open', 'close', 'mark', 'release', 'unemulate', 'wait', 'emulate', 'resize', 'dialog', 'drag'].includes(msg.type)) return respond(msg); // echo for flag-parsing checks
+    if (['snap', 'press', 'type', 'hover', 'net', 'click', 'fill', 'paste', 'navigate', 'scroll', 'ask', 'upload', 'console', 'note', 'measure', 'grid', 'open', 'close', 'mark', 'release', 'activate', 'unemulate', 'wait', 'emulate', 'resize', 'dialog', 'drag', 'clear'].includes(msg.type)) return respond(msg); // echo for flag-parsing checks
     return respond(null);
   });
   await new Promise((r) => setTimeout(r, 100));
@@ -638,7 +638,7 @@ try {
     // sendCommand tore the shared session mid-flight (5.5% of interleaved
     // CDP commands in stress). (6 wrap sites: upload/net/emulate/unemulate/
     // shot/dialog.)
-    assert(bg.split('withCdp(').length === 12, 'ext: CDP handlers serialize per tab (helper + 10 wrap sites — v1.18.13: release clears emulation behind the lock)');
+    assert(bg.split('withCdp(').length === 13, 'ext: CDP handlers serialize per tab (helper + 11 wrap sites — v1.18.13 release-clears emulation behind the lock, v1.24 release detaches a leaked no-emulation refcount)');
     // open must not await the favicon/banner marking — executeScript sits
     // pending forever on an uncommitted navigation (unreachable URL), which
     // hung open past its 8s cap to the server's 70s timeout. The response
@@ -694,6 +694,17 @@ try {
     assert(bg.includes('pillTick') && bg.includes('startTick') && bg.includes('stopTick'), 'pill: elapsed-seconds ticker runs while a command is in flight');
     assert(bg.includes('scrollTop = p.scrollHeight'), 'pill: open history panel auto-scrolls to the newest lines');
     assert(bg.includes('⚠ bridge offline — reconnecting…'), 'pill: bridge outage shows as offline, not AI idle');
+    // The ⏏ reclaim is ENFORCED, not advisory: without the findTab gate the
+    // next command in the agent's loop re-marked a ⏏-released tab within
+    // seconds — visible, but not durable.
+    assert(
+      bg.includes('humanReclaimed') && bg.includes('RECLAIM_MS') && bg.includes("['mark', 'release'].includes(msg.type)"),
+      'pill: ⏏ reclaim is enforced — findTab refuses re-driving a human-reclaimed tab (mark = deliberate re-claim)'
+    );
+    // Driven tabs wear a toolbar badge too: on non-injectable pages (chrome://,
+    // Web Store, PDF) pill, group and favicon ALL fail — the badge is the one
+    // marker that works everywhere.
+    assert(bg.includes('setBadgeText') && bg.includes("color: '#9333ea'"), 'ext: driven tabs wear a toolbar badge (the everywhere-marker)');
     assert(bg.includes("msg.type === 'note' ? 4000 : 800"), 'pill: a note holds its label ~4s — a ~100ms note command must not flash unseen');
     assert(bg.includes("replace(/^(Error:\\s*)+/, '')"), 'pill history: doubled Error: nesting deduped (the feed fix 756df17, third surface)');
     // Tab-match confusion: a lookalike URL path (evil.com/github.com matches
@@ -978,6 +989,29 @@ try {
   const rows2 = JSON.parse(doc2.stdout);
   assert(rows2.find((r) => r.id === 7)?.fixed === 'released', 'doctor --fix releases residue tabs via the release path', doc2.stdout);
   assert(rows2.find((r) => r.staleMemory)?.pruned === true, 'doctor --fix prunes stale memory', doc2.stdout);
+  // history --batch must replay EVERY wire command: clear and activate were
+  // missing from the server's CLI_LINES table and close dropped --all — a
+  // replayed `close --all` closed ONE tab and reported ok, a replayed fill
+  // sequence APPENDED where the recorded session replaced (the registry drift
+  // the SEVEN-registries comment warns fails silently).
+  const clearRun = await cli('clear', 'example.com', '@e2', '--diff');
+  const actRun = await cli('activate', 'example.com');
+  const closeAllRun = await cli('close', 'example.com', '--all');
+  const replayPath = '/tmp/chrome-bridge-selftest-replay.batch';
+  const replayExport = await cli('history', '--batch', replayPath);
+  const replayScript = fs.readFileSync(replayPath, 'utf8');
+  assert(
+    clearRun.status === 0 &&
+      actRun.status === 0 &&
+      closeAllRun.status === 0 &&
+      replayScript.includes('clear example.com @e2 --diff') &&
+      replayScript.includes('activate example.com') &&
+      replayScript.includes('close example.com --all'),
+    'history --batch replays clear, activate, and close --all (registry drift class)',
+    replayExport.stdout + '\n' + replayScript
+  );
+  fs.unlinkSync(replayPath);
+
   // The journal must NOT leak into the command feed — watch/history stay
   // command-focused (the ring above is the only in-memory surface).
   const feedLines = (await fetch(`http://127.0.0.1:${PORT}/log`).then((r) => r.json())).lines;
@@ -1158,6 +1192,22 @@ try {
     );
     fs.unlinkSync(histPath2);
 
+    // PINNED tabs/doctor route through their own branches (no match to probe,
+    // so the general path's profile normalize never runs) — a NAME passed via
+    // --profile used to print as its 4-char id prefix in the feed ('@oak' for
+    // oak-test) AND break the exported replay ('--profile oak' doesn't route).
+    const pinnedTabs = await cli('tabs', '--profile', 'beta');
+    const feedPinned = (await fetch(`http://127.0.0.1:${PORT}/log`).then((r) => r.json())).lines;
+    const pinnedFeedLine = feedPinned.filter((a) => a.line.includes('tabs @')).slice(-1)[0]?.line || '';
+    const histPath3 = '/tmp/chrome-bridge-selftest3.batch';
+    await cli('history', '--batch', histPath3);
+    assert(
+      pinnedTabs.status === 0 && pinnedFeedLine.includes('tabs @beta') && fs.readFileSync(histPath3, 'utf8').includes('--profile beta tabs'),
+      'pinned tabs: feed tag and replay carry the full profile name (route normalizes name → pid)',
+      pinnedFeedLine + '\n' + fs.readFileSync(histPath3, 'utf8')
+    );
+    fs.unlinkSync(histPath3);
+
     // --- human-facing profile names -------------------------------------------
     // The extension derives a stable word from its profile id (?name= in the WS
     // handshake); the feed and /health show it — a uuid prefix (@4371) means
@@ -1240,7 +1290,7 @@ try {
   ext.socket.destroy();
   await new Promise((r) => setTimeout(r, 500));
   h = await cli('health');
-  assert(JSON.parse(h.stdout).extension === false, 'health: extension false after disconnect', h.stdout + h.stderr);
+  assert(h.status !== 0 && JSON.parse(h.stdout).extension === false, 'health: extension false after disconnect — exit 1 (a disconnected bridge must not pass a `health && …` preflight)', h.stdout + h.stderr);
 
   // stop → health fails → start (detached) → health recovers. Runs last: it
   // kills the test server for real, and `start` spawns a detached replacement
@@ -1272,7 +1322,10 @@ try {
     start.stdout + start.stderr
   );
   const hUp = await cli('health');
-  assert(hUp.status === 0 && JSON.parse(hUp.stdout).ok === true, 'health ok after start', hUp.stdout + hUp.stderr);
+  // Server back up, extension still absent (the fake one disconnected above):
+  // the JSON says ok, the EXIT CODE stays 1 — a disconnected bridge must not
+  // pass a `health && …` preflight, which is the whole point of the exit code.
+  assert(hUp.status !== 0 && JSON.parse(hUp.stdout).ok === true && JSON.parse(hUp.stdout).extension === false, 'health ok after start — but exit 1 while the extension is absent', hUp.stdout + hUp.stderr);
   await cli('stop'); // leave no detached server behind
 
   console.log(`\n${passed} checks passed`);

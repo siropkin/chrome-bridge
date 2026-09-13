@@ -12,15 +12,23 @@
   #ref { font: 12px ui-monospace, monospace; background: #f3e8ff; color: #6b21a8; border-radius: 6px; padding: 6px 8px; margin-bottom: 8px; }
   button { width: 100%; padding: 7px 0; border: 0; border-radius: 8px; background: #9333ea; color: #fff; font: 600 13px system-ui, sans-serif; cursor: pointer; }
   button:disabled { opacity: 0.5; cursor: default; }
-  #setup { background: #fff; color: #9333ea; border: 1px solid #9333ea; margin-top: 6px; }
+  #release-tab, #setup { background: #fff; color: #9333ea; border: 1px solid #9333ea; margin-top: 6px; }
+  #release-all { margin-top: 6px; }
+  #driven-count { color: #6b21a8; font-weight: 600; margin-top: 6px; }
   #status { min-height: 15px; margin-top: 6px; color: #6b21a8; font-size: 12px; }
-  .hint { margin-top: 6px; color: #8a7ca8; font-size: 11px; }
+  .hint { margin-top: 6px; color: #6b5f85; font-size: 11px; } /* AA on white — #8a7ca8 was 3.8:1 */
   .divider { border-top: 1px solid #ede9fe; margin: 10px 0; }
 </style>
 <div id="bridge-status" role="status"><span class="dot"></span><span id="status-text">checking…</span></div>
 <div id="title">…</div>
 <div id="ref"></div>
 <button id="copy">Copy tab reference</button>
+<div id="driven" hidden>
+  <div class="divider"></div>
+  <div id="driven-count"></div>
+  <button id="release-tab" hidden>⏏ Release this tab</button>
+  <button id="release-all">Release all agent tabs</button>
+</div>
 <div class="divider"></div>
 <button id="setup">Copy setup prompt for your AI agent</button>
 <div class="hint">Paste it to your agent (Claude, Cursor, …) — it installs and verifies everything itself.</div>

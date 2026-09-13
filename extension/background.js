@@ -146,6 +146,11 @@ function connect() {
       // handle() (an unknown type there throws) and mark the socket: the
       // 500ms hot reconnect in onclose would churn the server at 2Hz — let
       // the 30s keepalive alarm re-probe instead.
+      // Drop the queued journal lines too: the seat HOLDER journals its own
+      // transitions — a loser that queued boot lines (two extension builds in
+      // one profile share the storage keys and the profile id) flushes
+      // duplicate boot events into server.log before it ever reads this.
+      pendingJournal.length = 0;
       s._seatTaken = true;
       ws = null;
       return;
@@ -192,7 +197,14 @@ function connect() {
       // alone — otherwise any stray command would stick an icon on them with
       // no release to ever restore it. Release restores in releaseTab.
       const tabId = msg._tabId;
-      if (msg._pill) inflight.set(tabId, (inflight.get(tabId) || 1) - 1);
+      // Decrement only an EXISTING entry: a tab closed mid-command already
+      // had its entry deleted by onRemoved — recreating it as a deadId->0
+      // pair leaks one inert entry per such command until the SW restarts.
+      if (msg._pill && inflight.has(tabId)) {
+        const n = (inflight.get(tabId) || 1) - 1;
+        if (n > 0) inflight.set(tabId, n);
+        else inflight.delete(tabId);
+      }
       if (tabId != null && drivenTabs.has(tabId)) {
         // Consecutive failures since the last ok: the durable "something
         // failed" glance — ✗ in the favicon is 16px in the strip, but the
@@ -272,6 +284,18 @@ chrome.alarms.onAlarm.addListener(() => {
 // driven. `release` undoes all of it.
 const drivenTabs = new Set();
 
+// The human's ⏏ reclaim, ENFORCED: tabId → reclaim time. Without this the
+// next command in the agent's loop re-marks a ⏏-released tab within seconds
+// (findTab auto-marks every match) — the reclaim was visible but not
+// durable, and from the human's seat "nobody noticed". findTab refuses every
+// command on a reclaimed tab for RECLAIM_MS except an explicit `mark` (the
+// deliberate re-claim, which clears the flag) and `release` (cleanup — it
+// keeps the flag, so an agent can't bypass the gate by releasing). Memory-
+// only like inflight: the ⏏ click itself wakes the worker, so the flag is
+// always set on a live SW; an SW death inside the window just ends it early.
+const humanReclaimed = new Map();
+const RECLAIM_MS = 60_000;
+
 // Per-tab bridge state lives in chrome.storage.session: it survives the MV3
 // service-worker cycle and dies with the browser — exactly the lifetime these
 // visuals have. Without it an SW restart wiped the maps while the pages kept
@@ -331,9 +355,13 @@ function injectBanner(respectHide) {
     'position:fixed;bottom:8px;right:8px;background:#9333ea;color:#fff;font:12px system-ui,sans-serif;padding:3px 10px;border-radius:11px;pointer-events:auto;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.4);user-select:none;display:flex;align-items:center;gap:6px';
   // The pill is the product's trust surface — make it reachable and announced
   // for keyboard/screen-reader users (this tool's own pitch is an a11y tree).
-  pill.setAttribute('role', 'button');
+  // role=GROUP, not button: the ⏏/✕ spans are role=button children, and a
+  // button inside a button hides the children from some screen readers — a
+  // group exposes all three controls. tabIndex + Enter/Space stay: the pill
+  // body still opens the history panel for keyboard users.
+  pill.setAttribute('role', 'group');
   pill.tabIndex = 0;
-  pill.setAttribute('aria-label', 'An AI agent is driving this tab (chrome-bridge) — click for action history');
+  pill.setAttribute('aria-label', 'An AI agent is driving this tab (chrome-bridge) — press Enter for action history');
   const label = document.createElement('span');
   label.setAttribute('role', 'status'); // narration changes announced politely
   label.setAttribute('aria-live', 'polite');
@@ -380,10 +408,21 @@ function injectBanner(respectHide) {
     }
     const p = document.createElement('pre');
     p.id = 'bridge-log';
+    // Keyboard-reachable (tabIndex + role=log so it scrolls and announces),
+    // Esc closes — the panel was Enter-openable but never focusable before.
+    p.tabIndex = 0;
+    p.setAttribute('role', 'log');
     p.style.cssText =
       'position:fixed;bottom:36px;right:8px;width:380px;max-width:calc(100vw - 16px);max-height:50vh;overflow:auto;margin:0;background:rgba(24,12,40,.94);color:#e9d5ff;font:11px/1.6 monospace;padding:8px 10px;border-radius:8px;pointer-events:auto;white-space:pre-wrap;box-shadow:0 2px 12px rgba(0,0,0,.5)';
     p.textContent = pill.dataset.log || '(no activity yet)';
+    p.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        p.remove();
+      }
+    });
     d.appendChild(p);
+    p.focus();
   };
   pill.onkeydown = (e) => {
     if (e.key === 'Enter' || e.key === ' ') {
@@ -807,6 +846,13 @@ function markTab(tabId) {
   drivenTabs.add(tabId);
   journal('mark', tabId);
   persist();
+  // Toolbar badge on EVERY driven tab: on non-injectable pages (chrome://,
+  // Web Store, PDF) the pill, the group and the favicon stamp ALL fail, and
+  // the tab used to carry zero human-visible markers while the agent drove
+  // it — this is the one marker that works everywhere (chrome.action needs
+  // no injection). Survives navigations, cleared in releaseTab.
+  chrome.action.setBadgeText({ tabId, text: '•' }).catch(() => {});
+  chrome.action.setBadgeBackgroundColor({ tabId, color: '#9333ea' }).catch(() => {});
   const p = (async () => {
     await groupTab(tabId);
     if (!drivenTabs.has(tabId)) return; // a release landed mid-mark — don't resurrect the pill
@@ -844,6 +890,19 @@ const awaitMark = (tabId, ms = 2000) => {
 
 async function releaseTab(tabId, opts = {}) {
   drivenTabs.delete(tabId);
+  chrome.action.setBadgeText({ tabId, text: '' }).catch(() => {}); // the everywhere-marker (markTab) — restore it everywhere too
+  // The human's ⏏ (flash) also cuts a live net capture short — the same
+  // detached/wake handshake onDetach uses: the capture reports "cut short"
+  // and detaches NOW instead of sleeping out its --dur on a tab it no
+  // longer drives. An agent/CLI release leaves captures alone (old
+  // behavior): the agent owns that timing.
+  if (opts.flash) {
+    const c = netCollectors.get(tabId);
+    if (c) {
+      c.detached = true;
+      c.wake?.();
+    }
+  }
   tabActivity.delete(tabId); // else a re-mark resurrects the stale history ring
   shotBaselines.delete(tabId); // else a later session's first --diff compares against a previous session's pixels
   // pillSeq/inflight deliberately STAY: they're per-command bookkeeping, not
@@ -858,6 +917,12 @@ async function releaseTab(tabId, opts = {}) {
   // to explain why (found by the flow review) — same clear as unemulate,
   // serialized behind any in-flight CDP sibling.
   if (emulatedTabs.has(tabId)) await withCdp(tabId, () => clearEmulation(tabId)).catch(() => {}); // best-effort like every other step — a wedged CDP clear must not abort the release tail
+  // A leaked debugger refcount with no emulation is the one residue class
+  // doctor --fix couldn't clear (the release path cleaned every marker but
+  // the attached session; only a tab close freed it). Detach it, serialized
+  // behind any in-flight CDP sibling. No-op on the common balanced path —
+  // and a live capture is not "leaked": its own finally detaches.
+  if (cdpRefs.has(tabId) && !emulatedTabs.has(tabId)) await withCdp(tabId, () => detachDbg(tabId)).catch(() => {});
   if (drivenTabs.has(tabId)) return; // re-marked mid-release — the new mark owns the markers now (mirrors markTab's guard); stripping them here would leave a naked driven tab
   await setFavicon(tabId, null); // restore the site's own favicon
   persist();
@@ -935,6 +1000,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   tabActivity.delete(tabId);
   pillSeq.delete(tabId);
   inflight.delete(tabId);
+  humanReclaimed.delete(tabId);
   navSeq.delete(tabId);
   dbgSince.delete(tabId);
   markInflight.delete(tabId); // a mark whose injectBanner pends forever (uncommitted nav) never self-prunes
@@ -972,7 +1038,7 @@ function remapTabId(newTabId, oldTabId) {
   cdpRefs.delete(oldTabId);
   cdpQ.delete(oldTabId); // the dead session's pending chain can only wedge the new id (up to 65s)
   emulatedTabs.delete(oldTabId); // the override died with the old renderer — the new id is fresh for the next emulate
-  for (const m of [tabActivity, failedSinceOk, worldCache, shotBaselines]) {
+  for (const m of [tabActivity, failedSinceOk, worldCache, shotBaselines, humanReclaimed]) {
     if (m.has(oldTabId)) {
       m.set(newTabId, m.get(oldTabId));
       m.delete(oldTabId);
@@ -1002,12 +1068,51 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
     ready
       .then(() => releaseTab(sender.tab.id, { flash: true }))
       .then(() => {
+        // The reclaim is enforced, not just narrated: findTab refuses every
+        // later command on this tab for RECLAIM_MS (mark = deliberate re-claim).
+        humanReclaimed.set(sender.tab.id, Date.now());
         // Tell the agent's feed (watch/history): the human took the tab back.
         // Without this the next command silently re-marks and nobody noticed.
         if (ws && ws.readyState === WebSocket.OPEN)
           ws.send(JSON.stringify({ type: 'event', kind: 'self-release', tabId: sender.tab.id, url: sender.tab.url || '' }));
       })
       .catch(() => {});
+    return;
+  }
+  // The popup's surfaces — the one reclaim path that works even when a driven
+  // tab can't show the pill (chrome://, Web Store, PDF). Popup-originated
+  // messages have no sender.tab; extension pages are the trusted context.
+  if (msg?.type === 'bridge-state') {
+    return ready.then(() => ({ count: drivenTabs.size, active: msg.tabId != null && drivenTabs.has(msg.tabId) }));
+  }
+  if (msg?.type === 'release-active' && msg.tabId != null) {
+    // The popup's ⏏ is the same human reclaim as the pill's — arm the same
+    // 60s gate, or an agent mid-loop re-marks the tab seconds after the
+    // human stopped it from the one surface that always exists.
+    return ready
+      .then(() => releaseTab(msg.tabId, { flash: true }))
+      .then(() => {
+        humanReclaimed.set(msg.tabId, Date.now());
+        return { count: drivenTabs.size };
+      })
+      .catch((e) => ({ error: String(e) }));
+  }
+  if (msg?.type === 'release-all') {
+    // The emergency stop: every driven tab back to the human in one click,
+    // each with its own '✓ released' fade — and each gated like a ⏏ (the
+    // human said stop; the next agent command must not undo it). Copy the
+    // set first — releaseTab mutates drivenTabs while we iterate it.
+    return ready
+      .then(async () => {
+        let n = 0;
+        for (const id of [...drivenTabs]) {
+          await releaseTab(id, { flash: true }).catch(() => {});
+          humanReclaimed.set(id, Date.now());
+          n++;
+        }
+        return { count: n };
+      })
+      .catch((e) => ({ error: String(e) }));
   }
 });
 
@@ -1261,7 +1366,18 @@ const ready = (async () => {
   // pill the human ✕'d on THIS document (respectHide), which stays hidden.
   for (const id of [...drivenTabs]) {
     groupTab(id).catch(() => {}); // strip marker, like markTab's
-    chrome.scripting.executeScript({ target: { tabId: id }, func: injectBanner, args: [true] }).catch(() => {});
+    chrome.scripting
+      .executeScript({ target: { tabId: id }, func: injectBanner, args: [true] })
+      // Then reset the label — restoreBanner's two-call pattern: the dead
+      // worker's last pillInject left the IN-FLIGHT label up with the purple
+      // frame lit ('clicking "Submit"… 14s', or a dead handoff's '🙋 your
+      // turn'), and injectBanner early-returns on the same-version banner —
+      // without this reset the "agent is acting RIGHT NOW" signal stays lit
+      // on a worker that isn't running anything.
+      .then(() =>
+        chrome.scripting.executeScript({ target: { tabId: id }, func: pillInject, args: [idleLabel(id), tabActivity.get(id) || [], null, false] })
+      )
+      .catch(() => {});
     if (tabStatus.get(id)) setFavicon(id, tabStatus.get(id));
   }
   persist(); // the ⏳ resets above became durable only now
@@ -1815,6 +1931,12 @@ const SNAP_SRC = (scope, diff, href, skel) => `(() => {
   // shared key would report every link as changed when the flag is toggled.
   const skey = (scopeSel || '') + (${href ? 'true' : 'false'} ? '|href' : '') + (${skel ? 'true' : 'false'} ? '|skel' : '');
   const prev = store[skey] || null;
+  // --diff with NO baseline at this scope (the --skeleton drill-down's first
+  // diff, or a --diff on a never-snapped tab) used to print the full tree
+  // unlabeled — the agent asked 'what changed' and got an unmarked everything.
+  // Name the shape; the marker line carries no @eN ref so the store below
+  // (and any later diff) never sees it.
+  if (${diff ? 'true' : 'false'} && !prev) lines.unshift('(first snap at this scope — the full tree follows, not a diff; act, then snap --diff again)');
   const cur = {};
   // Star markers are display-only — strip them before storing, else a starred
   // line from a full snap diffs as "changed" against its unstarred diff twin.
@@ -2762,8 +2884,14 @@ async function trustedInput(tab, msg) {
       } else if (msg.type === 'type') {
         const what = await runEval(tab.id, trustedFocusSrc(msg.target));
         const delay = Math.min(25, 15000 / (msg.value.length || 1));
-        for (const ch of msg.value) {
-          await cdpKeyEvent(tab.id, ch);
+        const chars = [...msg.value];
+        for (let i = 0; i < chars.length; i++) {
+          // Released (⏏ or `release`) mid-type: stop feeding CDP keys into a
+          // tab the human took back — say where it stopped so the agent can
+          // readback instead of retrying the whole payload.
+          if (!drivenTabs.has(tab.id))
+            throw new Error('released mid-type — the tab was released (⏏?) after ' + i + '/' + chars.length + ' chars; readback with eval before deciding');
+          await cdpKeyEvent(tab.id, chars[i]);
           await new Promise((r) => setTimeout(r, delay));
         }
         res = `typed ${msg.value.length} chars into ${what} (trusted)`;
@@ -3251,6 +3379,10 @@ async function waitHuman(tab, msg) {
     const iv = setInterval(async () => {
       try {
         const t = await chrome.tabs.get(tab.id);
+        // The human ⏏'d mid-handoff: they ended the handoff themselves — stop
+        // waiting, and tell the agent (their wait errors instead of hanging to
+        // its 285s budget on a tab nobody is acting in).
+        if (!drivenTabs.has(tab.id)) { clearInterval(iv); resolve('released'); return; }
         if (t.url !== url0) { clearInterval(iv); resolve('nav'); return; }
         const r = await chrome.scripting.executeScript({ target: { tabId: tab.id }, world: 'ISOLATED', func: () => !!window.__bridgeHumanActed });
         if (r?.[0]?.result) { clearInterval(iv); resolve('input'); return; }
@@ -3276,6 +3408,7 @@ async function waitHuman(tab, msg) {
   });
   if (how === 'timeout') throw new Error('timeout after ' + timeout + 'ms — the human did not act in this tab; nudge them (note <match> …) or re-run with a longer --timeout');
   if (how === 'gone') throw new Error('the tab was closed while waiting for the human');
+  if (how === 'released') throw new Error('the human released the tab (⏏) mid-handoff — they took it back while it was theirs to act in');
   // A login usually navigates: the whole page (and every ref, and the diff
   // baseline) died with the old document. Fresh full snap instead of a diff.
   if (how === 'nav' || (await chrome.tabs.get(tab.id).catch(() => null))?.url !== url0) {
@@ -3319,6 +3452,9 @@ async function waitPixel(tab, msg) {
       // was pure waste (found by review).
       bmp0 = await pngBitmap(cap0.b64);
       for (;;) {
+        // Released (⏏ or `release`) mid-watch: stop polling and drop the CDP
+        // session — the tab is the human's again; a watch on it has no client.
+        if (!drivenTabs.has(tab.id)) throw new Error('released mid-watch — the tab was released (⏏?) while waiting for pixels; re-mark deliberately if the human meant to hand it back');
         if (Date.now() - t0 >= timeout) throw new Error('timeout after ' + timeout + 'ms — no pixel change detected');
         await new Promise((r) => setTimeout(r, 800));
         // Plain capture: the frame is whatever the viewport is NOW — scroll
@@ -3427,14 +3563,32 @@ async function findTab(msg) {
         return String(t.url).slice(0, 40);
       }
     };
+    // id + title per match, not just the host: the documented ambiguous case
+    // is two tabs on the SAME site (identical-URL dupes), where a hosts-only
+    // list reads 'github.com, github.com' and the agent pays a `tabs` round
+    // trip to learn what this line could have said. id:<tabId> is the exact
+    // reference every command accepts — re-run with it, no guessing.
+    const row = (t) => `id:${t.id} ${host(t)}` + (t.title ? ` "${t.title.slice(0, 30)}"` : '');
     throw new Error(
       `⚠ ${matches.length} tabs match "${msg.urlMatch}" — refusing to choose one; matched: ` +
-        matches.slice(0, 4).map(host).join(', ') +
+        matches.slice(0, 4).map(row).join(', ') +
         (matches.length > 4 ? ` (+${matches.length - 4} more)` : '') +
-        '. Re-run with a longer <match>.'
+        '. Re-run with a longer <match>, or target one exactly: id:<tabId>.'
     );
   }
   msg._tabId = matches[0].id;
+  // The ⏏ reclaim gate: the human took this tab back (pill ⏏) and findTab's
+  // auto-mark would hand it to the next command in the agent's loop within
+  // seconds — refuse everything for the window. `mark` is the deliberate
+  // re-claim (passes and clears the flag); `release` passes and KEEPS it (a
+  // stray agent release must not launder the tab back). `tabs`/`probe` never
+  // reach findTab — listing and routing stay possible while gated.
+  const reclaimed = humanReclaimed.get(matches[0].id);
+  if (reclaimed && !['mark', 'release'].includes(msg.type) && Date.now() - reclaimed < RECLAIM_MS)
+    throw new Error(
+      `⚠ the human released this tab via ⏏ at ${new Date(reclaimed).toTimeString().slice(0, 8)} — they took it back; ask before driving it again (commands on a ⏏-released tab are refused for ${RECLAIM_MS / 1000}s). Re-claim deliberately with: mark <match>`
+    );
+  if (msg.type === 'mark') humanReclaimed.delete(matches[0].id);
   // Every command resolving here marks the tab, reads included (owner's
   // call: the pill must show on any tab the agent is LOOKING at, not just
   // the ones it changes — a read-only session used to leave the browser

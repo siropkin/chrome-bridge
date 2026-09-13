@@ -6,7 +6,9 @@
 
 [![MIT license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Node ≥ 18](https://img.shields.io/badge/node-%E2%89%A5%2018-339933)](https://nodejs.org) [![zero dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](package.json)
 
-Let **any AI agent** drive the Chrome you're already using — your open tabs, logged-in sessions, SSO. Playwright and friends drive a browser they launched, with a profile of their own; MCP bridges need an MCP-capable client and a configured server. chrome-bridge needs neither: it drives the Chrome you're logged into — that's the only mode — with one small extension and one zero-dependency Node CLI. Every tab the agent touches wears a 🟣 pill that narrates what it's doing.
+**Install from the [Chrome Web Store](https://chromewebstore.google.com/detail/chrome-bridge/kmhjlnokjigmnimgjjmiahlinjbcebkg)** — or `git clone` and load the unpacked folder.
+
+Let **any AI agent** drive the Chrome you're already using — your existing Chrome profile, logged in: open tabs, cookies, SSO. Playwright and friends drive a browser they launched, with a profile of their own; MCP bridges need an MCP-capable client and a configured server. chrome-bridge needs neither: it drives the Chrome you're logged into — that's the only mode — with one small extension and one zero-dependency Node CLI. Every tab the agent touches wears a 🟣 pill that narrates what it's doing.
 
 ![a driven tab in motion — the 🟣 pill narrates each action, a purple frame lights up while a command runs, the pointer flashes where the agent clicks](docs/demo.gif)
 
@@ -110,17 +112,35 @@ That's the whole integration. `AGENTS.md` is a self-contained operating manual �
 
 ## The human stays in control
 
-Tabs the bridge drives get a 🟣 pill in the bottom-right corner (click it for the full action history; ✕ hides it until the next navigation; ⏏ disconnects the agent from the tab) and join a 🟣 tab group so you always know what's being automated — including read-only commands (`snap`, `measure`, `console`): any tab the agent is *looking at* wears the pill, not just the ones it changes. The pill narrates what the agent is doing right now (`🟣 taking screenshot…`, `🟣 reading page…`, with elapsed seconds while a command runs) and its history panel lists the last actions, scrolled to the newest; when nothing's running it reads `🟣 AI idle` — plus `⚠ N failed since last ok` until a command lands again, and `⚠ bridge offline` while the server is unreachable. While a command runs, a purple viewport frame lights up, the tab's favicon shows ⏳ (✅ when it lands, ✗ when it fails — the ✗ stays until the next command), and clicks/hovers flash a purple pointer where the agent acts. `release` (or `close`) gives them back. The ⏏ is the human's escape hatch: one trusted click ends the bridge's claim on the tab — markers, group, device emulation, all of it — no CLI needed (synthetic page clicks can't fake it).
+Tabs the bridge drives get a 🟣 pill in the bottom-right corner (click it for the full action history; ✕ hides it until the next navigation; ⏏ disconnects the agent from the tab) and join a 🟣 tab group so you always know what's being automated — including read-only commands (`snap`, `measure`, `console`): any tab the agent is *looking at* wears the pill, not just the ones it changes. The pill narrates what the agent is doing right now (`🟣 taking screenshot…`, `🟣 reading page…`, with elapsed seconds while a command runs) and its history panel lists the last actions, scrolled to the newest; when nothing's running it reads `🟣 AI idle` — plus `⚠ N failed since last ok` until a command lands again, and `⚠ bridge offline` while the server is unreachable. While a command runs, a purple viewport frame lights up, the tab's favicon shows ⏳ (✅ when it lands, ✗ when it fails — the ✗ stays until the next command), and clicks/hovers flash a purple pointer where the agent acts. `release` (or `close`) gives them back. The ⏏ is the human's escape hatch: one trusted click ends the bridge's claim on the tab — markers, group, device emulation, all of it — no CLI needed (synthetic page clicks can't fake it), **and it's enforced: for the next 60s the bridge refuses every further agent command on that tab** (the agent is told to ask; an in-flight step may still finish). Tabs that can't show the pill (chrome://, Web Store, PDF) wear a purple dot on the toolbar button instead. The toolbar popup adds the panic buttons: release THIS tab, or release ALL agent tabs at once.
 
 ![the 🟣 pill narrating a driven tab, with its action history open](docs/store/screenshot-1-pill.png)
 
-## Why not Playwright (or playwright-mcp)?
+## chrome-bridge vs Playwright and playwright-mcp
 
-Playwright drives a browser it launched — a separate Playwright-managed profile, not the Chrome you're logged into, so the agent starts every session logged out (attach modes exist — a `--remote-debugging-port` relaunch, or playwright-mcp's extension mode — but they're opt-in, and playwright-mcp now also ships a CLI for coding agents). chrome-bridge drives the Chrome you're already looking at; that's the only mode. It borrows Playwright's two best ideas (accessibility-tree snapshots with element refs, ref-based actions) and skips the 40 MB dependency and the separate profile.
+If you're looking for a Playwright alternative that uses your existing Chrome session: Playwright drives a browser it launched — a separate Playwright-managed profile, not the Chrome you're logged into, so the agent starts every session logged out (attach modes exist — a `--remote-debugging-port` relaunch, or playwright-mcp's extension mode — but they're opt-in, and playwright-mcp now also ships a CLI for coding agents). chrome-bridge drives the Chrome you're already looking at; that's the only mode. It borrows Playwright's two best ideas (accessibility-tree snapshots with element refs, ref-based actions) and skips the 40 MB dependency and the separate profile.
 
-## Why not an MCP browser bridge?
+## chrome-bridge vs MCP browser bridges, Chrome DevTools MCP, and Claude for Chrome
 
-MCP bridges (mcp-chrome, BrowserMCP) need an MCP-capable client and a configured, long-running MCP server (playwriter ships a CLI too, but still launches/attaches a browser instance). Chrome DevTools MCP's no-MCP CLI can attach to your real profile (`--autoConnect`, Chrome 144+) — as an opt-in flag, and its pitch is DevTools depth (performance traces, debugging), not minimalism. chrome-bridge's real-browser mode is the *only* mode, and the client is anything that can run a shell command: a plain CLI plus one command endpoint (`POST /cmd`) — nothing for the agent to install or configure — and the same commands work from a script, a cron job, or your own terminal.
+MCP bridges (mcp-chrome, BrowserMCP) need an MCP-capable client and a configured, long-running MCP server (playwriter ships a CLI too, but still launches/attaches a browser instance). Chrome DevTools MCP's no-MCP CLI can attach to your real profile (`--autoConnect`, Chrome 144+) — as an opt-in flag, and its pitch is DevTools depth (performance traces, debugging), not minimalism. Claude for Chrome is Anthropic's extension — Claude-app-only and screenshot-driven; chrome-bridge works with any agent (Claude Code, Cursor, Qwen, GLM, your own loop) and reads pages as token-cheap a11y trees. Cloud browser farms like Browserbase have none of your logins; chrome-bridge is local and logged in. chrome-bridge's real-browser mode is the *only* mode, and the client is anything that can run a shell command: a plain CLI plus one command endpoint (`POST /cmd`) — nothing for the agent to install or configure — and the same commands work from a script, a cron job, or your own terminal.
+
+## How it compares
+
+A guide, not a ranking — every tool below does real work. Checked 2026-09-12 from each repo's own README; things change, verify before deciding.
+
+| | chrome-bridge | kiarina/chrome-bridge | luigimasango-dev/chrome-bridge | makriman/Agent-Chrome-Bridge |
+|---|---|---|---|---|
+| MCP client + server config required | no | yes (FastMCP, Streamable HTTP) | yes (stdio, Node 24+) | no |
+| Runtime dependencies | zero (Node ≥ 18) | Python + uv + 3 packages | Node 24+ | — |
+| Human oversight while it runs | 🟣 pill narrating live, action history, one-click disconnect | per-op silent WebM recording (after the fact) | env-var write gate (before the fact) | manual per-tab arming, one tab at a time |
+| Reads pages as | a11y tree with element refs | selectors | selectors | selectors |
+| Extension on the Chrome Web Store | yes | yes | no | no |
+
+## Chrome 136 broke copying (or reusing) your Chrome profile
+
+Since Chrome 136 (May 2025), the classic tricks for automating *your* browser stopped working: Chrome silently refuses `--remote-debugging-port` when it points at the default user-data-dir, so Playwright/Puppeteer can't attach to your daily profile, and copying the profile dir elsewhere breaks its logins — "Failed to decrypt" cookie errors, a locked profile, or "Chrome is already in use". The usual workaround is a dedicated `--user-data-dir` with one manual login: a second profile whose logins you maintain, and Google accounts in particular are picky about brand-new profiles.
+
+chrome-bridge sidesteps the whole problem: the extension rides inside the Chrome you're already running, in the profile you're already logged into — no remote debugging port, no user-data-dir, no relaunch, no profile copy. Your sessions just work, the way CDP-based attach to the daily profile hasn't since 136.
 
 ## Install detail
 
@@ -234,6 +254,14 @@ node cli.mjs unemulate news.ycombinator.com                # back to normal
 4. `shot` only when pixels matter, and then cheap: `--max 800 --format jpeg`, or `--crop` to the component.
 5. For layout questions ("is this centered?") trust `measure` numbers, not eyeballs.
 6. Batch independent steps — `printf 'click m @e4\nfill m @e2 "hi"\n' \| node cli.mjs batch` — one process and one shell call for the whole sequence.
+
+## What people use it for
+
+- "Check my dashboard every morning and drop the delta in Slack" — a cron-launched agent runs the check on the already-logged-in tab; if a login wall ever appears, `wait --human` hands the tab back to you for two minutes.
+- Fill the CMS from a CSV without re-logging in — the agent rides the already-open admin tab.
+- Answer a Stack Overflow question with your real logged-in session — the repro lives in your browser, not a clean profile.
+- Review the staging build against the Figma — the design-eye pass on the real URL, grid overlay and all.
+- Anywhere a clean browser hits a wall your real one doesn't: SSO, anti-bot walls, internal dashboards behind a VPN.
 
 ## Design reviews
 
