@@ -230,7 +230,7 @@ The bridge also cleans up after itself at the source: on every service-worker st
 
 ### Fill a React form
 
-Always `fill`, never set `.value` in `eval` — `fill` uses the native value setter + input/change events so React's value tracker sees a real change. Rich editors that own their content model (Quill, Reddit/LinkedIn composers) revert `fill` — use `paste <match> @ref -- "text"` (real-paste semantics) instead.
+Always `fill`, never set `.value` in `eval` — `fill` uses the native value setter + input/change events so React's value tracker sees a real change. Rich editors that own their content model (Quill, Reddit/LinkedIn composers) revert `fill` — use `paste <match> @ref -- "text"` (real-paste semantics) instead. **Persistence is never implied:** a successful fill/paste/type only means the DOM took it — an app's autosave may track its own input pipeline and never fire (a Habr draft looked filled and was gone after a reload). Before `nav`/reload/`close` on an editor or publish page, confirm a save request actually fired (`net <match>` while editing, or click the app's own Save), or re-enter from your source file. `fill` flags the risky targets (rich-editor field, or a text field outside any `<form>`) in its reply.
 
 ### Shadow DOM pages (Reddit's faceplate-\*, LinkedIn's composer)
 

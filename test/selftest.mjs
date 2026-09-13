@@ -780,6 +780,7 @@ try {
     assert(bg.includes('const clearSrc') && bg.includes('selectAllChildren') && bg.includes("execCommand('delete')") && bg.includes('replaceChildren'), 'ext: clear empties inputs and contenteditables, with a DOM-removal fallback when the editor blocks the native delete (#34)');
     assert(cliSrc.includes("case 'clear':"), 'cli: clear command routed');
     assert(cliSrc.includes("res.error.includes('no tab matching')") && cliSrc.includes('urlMatch: `id:${opened.id}`') && cliSrc.includes("'--keep'"), 'cli: fetch with no matching tab rides a scratch tab on the target origin, closing it after unless --keep (#35)');
+    assert(bg.includes('persistHint') && bg.includes("!el.closest('form')") && bg.includes('confirm a save fired (net)'), 'ext: fill flags targets an app autosave may never notice — rich editors and formless text fields (#36)');
     // The bridge's own UI must not defeat the bridge's own observation: the
     // pill ticker mutates every 5s on a driven tab (settle could never go
     // quiet — every --diff ate its full 3s cap) and the pill is a role=button

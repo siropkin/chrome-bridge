@@ -123,6 +123,8 @@ s_interact() {
   for cmd in 'filled #name' 'filled #notes' 'clicked #cb' 'filled #sel' 'clicked #submit' 'typed 2 chars into #auto' 'pressed Enter' 'hovered #hov' 'dragged #drag-src'; do
     assert_grep "verdict: $cmd" "$log" "succeeded · $cmd"
   done
+  # #36: in-form fields persist through the form — no autosave hint there
+  assert_ngrep "in-form fill stays quiet (no false autosave hint)" "$log" 'filled #name.*⚠'
   assert_grep "autocomplete dropdown appears on per-char type" "$log" 'option "apple valley"'
   assert_grep "autocomplete picks via ArrowDown+Enter" "$log" 'ac typed-pick'
   assert_grep "paste into contenteditable" "$log" 'pasted 17 chars into #ce'
@@ -605,6 +607,11 @@ s_type() {
   "${CLI[@]}" clear "x=type" '#plain' --profile "$P1" >>"$OUT/type-clear.log" 2>&1
   "${CLI[@]}" eval "x=type" "JSON.stringify(document.getElementById('plain').value)" --profile "$P1" >>"$OUT/type-clear.log" 2>&1
   assert_grep "plain input cleared" "$OUT/type-clear.log" '^""$'
+  # #36: fill flags the targets an autosave pipeline may never notice
+  "${CLI[@]}" fill "x=type" '#plain' 'probe' --profile "$P1" >>"$OUT/type-clear.log" 2>&1
+  assert_grep "formless-input fill carries the autosave hint" "$OUT/type-clear.log" 'no <form> around this field'
+  "${CLI[@]}" fill "x=type" '#rewrite' 'probe' --profile "$P1" >>"$OUT/type-clear.log" 2>&1
+  assert_grep "rich-editor fill carries the autosave hint" "$OUT/type-clear.log" 'rich-editor field'
   "${CLI[@]}" close "x=type" --profile "$P1" >/dev/null 2>&1
 }
 

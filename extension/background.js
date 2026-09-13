@@ -2108,7 +2108,16 @@ const fillSrc = (target, value) => `(() => {
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
   }
-  return 'filled ' + sel;
+  // #36: a fill can land in the DOM yet never enter the app's persistence
+  // pipeline — Habr's autosave tracks its own input path, the draft looked
+  // filled and died silently on reload. Flag the risky targets in the reply
+  // so the agent knows to verify a save before leaving the page.
+  const persistHint = el.isContentEditable
+    ? ' — ⚠ rich-editor field: its autosave pipeline may not track a programmatic fill — confirm a save fired (net) before nav/close'
+    : (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && !el.closest('form')
+      ? ' — ⚠ no <form> around this field: if the app autosaves, confirm a save fired (net) before nav/close'
+      : '';
+  return 'filled ' + sel + persistHint;
 })()`;
 
 // Empty a field (#34). Synthetic keys can't: select-all is a browser default
