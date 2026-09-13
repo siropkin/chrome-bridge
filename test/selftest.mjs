@@ -763,7 +763,7 @@ try {
     assert(bg.includes('waitHuman') && bg.includes('e.isTrusted'), 'ext: wait --human completes only on trusted input');
     assert(serverSrc.includes("msg.type === 'type') return await ask(seat, msg, Math.min(285_000, CMD_TIMEOUT_MS + (msg.value?.length || 0) * 100)"), 'server: type reply budget scales with payload length, capped at the undici wall (#29)');
     assert(serverSrc.includes("EADDRINUSE") && serverSrc.includes("server.on('error'"), 'server: a taken port exits with one clean line, not an unhandled-error stack dump');
-    assert(serverSrc.includes("typeof m.code !== 'string'") && serverSrc.includes('Array.isArray(m.crop)'), 'server: replay formatters are total — a malformed raw /cmd field must not cost the ring its entry (logging failed for shot/eval in the live log)');
+    assert(serverSrc.includes("typeof m.code !== 'string'") && serverSrc.includes('Array.isArray(m.crop)') && serverSrc.includes('Array.isArray(msg.files)') && serverSrc.includes('Object.hasOwn(CLI_LINES'), 'server: replay formatters are total — a malformed raw /cmd field must not cost the ring its entry (logging failed for shot/eval in the live log; files/world/proto-key dispatch are the same throw class)');
     assert(bg.includes('const errText') && bg.includes('errText(e)') && bg.includes("Cannot access a chrome-extension"), 'ext: CDP protocol-error envelopes unwrap to their message; cross-extension tabs get a named error');
     assert(bg.includes("world: 'ISOLATED'") && bg.includes('__bridgeHumanActed'), 'ext: the human-acted flag lives in the ISOLATED world (page JS cannot flip it)');
     assert(serverSrc.includes("msg.type === 'wait' && msg.human"), 'server: wait --human rides the long-wait path past the 70s cap');

@@ -371,8 +371,11 @@ const CLI_LINES = {
   // A missing/non-string code (a raw /cmd caller sent eval without it) drops
   // to a comment too — the formatter must be total: its throw costs the ring
   // the whole entry ('logging failed for eval' in server.log, found live).
+  // Total over ANY parsed /cmd body, not just the cli's: a non-string world
+  // ({"world":true}) must not throw either, and an empty code would replay as
+  // `eval <match>` — a batch line missing its required arg.
   eval: (m) =>
-    typeof m.code !== 'string' || m.code.includes('\n')
+    typeof m.code !== 'string' || !m.code || m.code.includes('\n') || (m.world != null && typeof m.world !== 'string')
       ? null
       : `eval ${shellq(m.urlMatch)} ${shellq(m.code)}${m.world && m.world !== 'auto' ? ' --world ' + m.world.toLowerCase() : ''}`,
   // The output path is CLI-side and never rides the msg — placeholder name.
@@ -380,7 +383,9 @@ const CLI_LINES = {
   // caller's {"crop":"z"} used to throw here and lose the ring entry (the
   // try/catch around pushAct saves the server, not the line).
   shot: (m) =>
-    `shot ${shellq(m.urlMatch)} shot-replay.png${m.full ? ' --full' : ''}${Array.isArray(m.crop) ? ' --crop ' + m.crop.join(',') : ''}` +
+    `shot ${shellq(m.urlMatch)} shot-replay.png${m.full ? ' --full' : ''}${
+      Array.isArray(m.crop) && m.crop.length === 4 && m.crop.every(Number.isFinite) ? ' --crop ' + m.crop.join(',') : ''
+    }` +
     `${m.max != null ? ' --max ' + m.max : ''}${m.scale != null ? ' --scale ' + m.scale : ''}` +
     `${m.format ? ' --format ' + m.format : ''}${m.quality != null ? ' --quality ' + m.quality : ''}${m.diff ? ' --diff' : ''}`,
   net: (m) =>
@@ -408,7 +413,10 @@ function summarize(msg) {
   // text is its whole purpose, and wait --text is a page-text expectation.
   const extra =
     msg.target || msg.url || msg.key || msg.selector || msg.find || (msg.type === 'dialog' ? '' : msg.text) || msg.question ||
-    (msg.files || []).map((f) => String(f).split('/').pop()).join(', ') || '';
+    // total like the CLI_LINES formatters: a non-array files ({"files":"a.txt"}
+    // from a raw /cmd caller) must not throw here either — the ring would lose
+    // the whole entry ('logging failed for upload').
+    (Array.isArray(msg.files) ? msg.files.map((f) => String(f).split('/').pop()).join(', ') : '') || '';
   if (extra) s.push(String(extra).slice(0, 40));
   return s.join(' ');
 }
@@ -427,7 +435,11 @@ function pushAct(msg, out, ms) {
   // is commented out so a replayed script proceeds past it instead of dying.
   // Secret-shaped commands (fill/type/paste values) are redacted in CLI_LINES
   // AND commented out here — a replay must skip the step, not type "***".
-  const replay = CLI_LINES[msg.type]?.(msg);
+  // Own-key only: CLI_LINES is a plain object, so msg.type '__proto__'
+  // resolves to Object.prototype (not callable → the throw this table's
+  // totality exists to prevent) and 'constructor'/'toString' resolve to
+  // callable builtins emitting a garbage '[object Object]' replay line.
+  const replay = Object.hasOwn(CLI_LINES, msg.type) ? CLI_LINES[msg.type](msg) : null;
   const prof = msg.profile ? `--profile ${seatTag(msg.profile)} ` : '';
   const secret = !!msg && (['fill', 'type', 'paste', 'upload'].includes(msg.type) || (msg.type === 'dialog' && !!msg.text));
   // extreload can't ride a replay either: mid-batch it restarts the worker out
