@@ -110,6 +110,9 @@ fill <match> <@ref|css> <value> [--diff]   set input value (React-safe); on a na
                                   matches option value or label — the error lists options on a miss;
                                   a value starting with '--' goes after a bare '--' separator:
                                   fill <match> <ref> -- <value>
+clear <match> <@ref|css> [--diff]   empty an input/textarea/contenteditable — the path when
+                                  synthetic select-all+Backspace fails (editor-owned models:
+                                  Editor.js & co) or the tab must stay in the background
 type <match> <@ref|css> <text> [--diff] [--trusted]
                                   per-char typing — triggers autocomplete/keystroke UIs;
                                   '--' separator for '--'-leading text, same as fill;

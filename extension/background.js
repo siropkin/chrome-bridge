@@ -635,6 +635,7 @@ const ACT_VERBS = {
   drag: ['dragging', 'dragged'],
   dialog: ['answering a dialog', 'answered a dialog'],
   fill: ['filling in', 'filled in'],
+  clear: ['clearing', 'cleared'],
   paste: ['pasting into', 'pasted into'],
   upload: ['uploading file to', 'uploaded file to'],
   type: ['typing into', 'typed into'],
@@ -2110,6 +2111,37 @@ const fillSrc = (target, value) => `(() => {
   return 'filled ' + sel;
 })()`;
 
+// Empty a field (#34). Synthetic keys can't: select-all is a browser default
+// they skip, and editor-owned models (Editor.js & co) decline synthetic
+// Backspace and even execCommand('delete'). Order of attempts for
+// contenteditable: real Selection + execCommand (the browser's editing
+// pipeline — plain CE and cooperative editors take it); if the editor blocks
+// it, DOM removal + an input event (mutation-observing editors — ProseMirror,
+// Slate, Editor.js — reconcile their model from that).
+const clearSrc = (target) => `(() => {
+  ${DEEPQ}
+  const sel = ${JSON.stringify(target)};
+  const el = mustQuery(sel);
+  el.scrollIntoView({ block: 'center' });
+  el.focus?.();
+  if (el.isContentEditable) {
+    getSelection().selectAllChildren(el);
+    let native = false;
+    try { native = document.execCommand('delete') && !el.textContent; } catch (e) {}
+    if (!native) el.replaceChildren();
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
+    return 'cleared ' + sel + (native ? '' : ' — the editor blocked the native delete; used DOM removal + input event (mutation-observing editors reconcile — verify with snap before trusting the model)');
+  }
+  if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+    if (['checkbox', 'radio', 'file'].includes(el.type)) throw new Error('clear doesn\\'t apply to ' + el.type + ' inputs — click toggles, upload sets files');
+    nativeSet(el, '');
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return 'cleared ' + sel;
+  }
+  throw new Error('clear needs an input, textarea, or contenteditable — got <' + el.tagName.toLowerCase() + '>');
+})()`;
+
 // Per-char typing: real keydown/input/keyup per character, so autocomplete and
 // keystroke-driven UIs react (fill sets the value in one shot and they don't).
 const typeSrc = (target, text) => `(async () => {
@@ -3340,7 +3372,7 @@ async function waitPixel(tab, msg) {
 // Adding a command? SEVEN registries stay in sync (a missing one fails SILENTLY):
 // cli.mjs USAGE · cli.mjs run() · server.mjs CLI_LINES · server.mjs route() (only if it
 // needs special routing) · background.js handle() · ACT_VERBS (pill narration) · MUTATING.
-const MUTATING = new Set(['click', 'fill', 'paste', 'type', 'press', 'upload', 'eval', 'hover', 'scroll', 'grid', 'emulate', 'resize', 'drag', 'dialog', 'fetch']);
+const MUTATING = new Set(['click', 'fill', 'clear', 'paste', 'type', 'press', 'upload', 'eval', 'hover', 'scroll', 'grid', 'emulate', 'resize', 'drag', 'dialog', 'fetch']);
 
 // <match> is a URL/title substring — or id:<tabId>, the exact reference the
 // toolbar popup copies (also shown in tabs/open output). ONE predicate for
@@ -4023,11 +4055,12 @@ async function handle(msg) {
     return await actAndVerify(tab.id, msg, () => trustedInput(tab, msg));
   }
 
-  if (['click', 'fill', 'type', 'press', 'hover'].includes(msg.type)) {
+  if (['click', 'fill', 'clear', 'type', 'press', 'hover'].includes(msg.type)) {
     const tab = await findTab(msg);
     const src =
       msg.type === 'click' ? clickSrc(msg.target, msg.dbl) :
       msg.type === 'fill' ? fillSrc(msg.target, msg.value) :
+      msg.type === 'clear' ? clearSrc(msg.target) :
       msg.type === 'type' ? typeSrc(msg.target, msg.value) :
       msg.type === 'press' ? pressSrc(msg.key, msg.target) :
       hoverSrc(msg.target);

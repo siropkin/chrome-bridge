@@ -576,6 +576,23 @@ s_type() {
   # flat 70s cap; the payload-scaled budget must let it finish. (~75s here.)
   "${CLI[@]}" type "x=type" '#heavy' "$(printf 'h%.0s' {1..60})" >"$OUT/type-heavy.log" 2>&1
   assert_grep "heavy editor: long type survives past the old 70s cap" "$OUT/type-heavy.log" 'typed 60 chars'
+  # #34: clear — the only programmatic emptying path. Plain CE and the
+  # preventDefault-ing editor take the native Selection+execCommand delete;
+  # the execCommand-blocking editor (the vc.ru symptom) forces the DOM-removal
+  # fallback. Both model observers must reconcile to empty text.
+  "${CLI[@]}" clear "x=type" '#rewrite' --profile "$P1" >"$OUT/type-clear.log" 2>&1
+  assert_grep "plain CE clears via the native delete" "$OUT/type-clear.log" '^cleared #rewrite$'
+  "${CLI[@]}" clear "x=type" '#owned' --profile "$P1" >>"$OUT/type-clear.log" 2>&1
+  assert_grep "preventDefault-ing editor clears natively (no fallback note)" "$OUT/type-clear.log" '^cleared #owned$'
+  "${CLI[@]}" eval "x=type" "document.getElementById('owned-model').textContent" --profile "$P1" >>"$OUT/type-clear.log" 2>&1
+  assert_grep "preventDefault-ing editor model: empty text" "$OUT/type-clear.log" 'text: ""'
+  "${CLI[@]}" clear "x=type" '#hardowned' --profile "$P1" >>"$OUT/type-clear.log" 2>&1
+  assert_grep "execCommand-blocking editor names the fallback" "$OUT/type-clear.log" 'blocked the native delete'
+  "${CLI[@]}" eval "x=type" "document.getElementById('hardowned-model').textContent" --profile "$P1" >>"$OUT/type-clear.log" 2>&1
+  assert_grep "blocked editor model reconciled to empty" "$OUT/type-clear.log" 'blocks: 0 · text: ""'
+  "${CLI[@]}" clear "x=type" '#plain' --profile "$P1" >>"$OUT/type-clear.log" 2>&1
+  "${CLI[@]}" eval "x=type" "JSON.stringify(document.getElementById('plain').value)" --profile "$P1" >>"$OUT/type-clear.log" 2>&1
+  assert_grep "plain input cleared" "$OUT/type-clear.log" '^""$'
   "${CLI[@]}" close "x=type" --profile "$P1" >/dev/null 2>&1
 }
 

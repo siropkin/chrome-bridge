@@ -226,6 +226,9 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     matches option value or label — error lists the options on a miss);
                                     a value starting with '--' goes after a bare '--' separator:
                                     fill <match> <ref> -- <value>
+  clear <match> <@ref|css> [--diff]   empty an input/textarea/contenteditable — works where
+                                    synthetic select-all+Backspace can't (editor-owned models
+                                    like Editor.js get a Selection-delete or DOM removal)
   type <match> <@ref|css> <text> [--diff] [--trusted]
                                     per-char typing — triggers autocomplete/keystroke UIs;
                                     '--' separator for '--'-leading text, same as fill;
@@ -676,6 +679,12 @@ async function run(cmdName, args) {
     case 'drag': {
       const rest = takeFlags(args, ['--diff', '--trusted'], 3, 'drag <match> <@ref|css> <@ref|css> [--diff] [--trusted]');
       print(await cmd({ type: 'drag', urlMatch: rest[0], from: rest[1], to: rest[2], ...(args.includes('--diff') ? { diff: true } : {}), ...(args.includes('--trusted') ? { trusted: true } : {}) }));
+      break;
+    }
+
+    case 'clear': {
+      const rest = takeFlags(args, ['--diff'], 2, 'clear <match> <@ref|css> [--diff]');
+      print(await cmd({ type: 'clear', urlMatch: rest[0], target: rest[1], ...(args.includes('--diff') ? { diff: true } : {}) }));
       break;
     }
 

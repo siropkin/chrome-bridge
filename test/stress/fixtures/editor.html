@@ -19,6 +19,18 @@
        synchronous work. 60 chars ≈ 74s > the old flat 70s command cap. -->
   <div id="heavy" contenteditable="true"></div>
 
+  <!-- #34: two editor-owned shapes. #owned preventDefaults beforeinput
+       deletions (the editor wants deletions through its own model) — on this
+       shape the native Selection+execCommand delete still empties the text.
+       #hardowned reproduces the vc.ru symptom exactly: execCommand('delete')
+       returns false and nothing is deleted — clear's DOM-removal fallback is
+       the only way out. Both reconcile their model via MutationObserver. -->
+  <div id="owned" contenteditable="true"><p>block one</p><p>block two</p></div>
+  <div id="owned-model">blocks: 2</div>
+  <div id="hardowned" contenteditable="true"><p>stubborn one</p><p>stubborn two</p></div>
+  <div id="hardowned-model">blocks: 2</div>
+  <input id="plain" value="prefilled value">
+
   <script>
     (() => {
       const rw = document.getElementById('rewrite');
@@ -38,6 +50,28 @@
         const t0 = performance.now();
         while (performance.now() - t0 < 1200); // the framework's per-keystroke bill
       });
+
+      // #34 fixture logic: the editors own all deletions…
+      for (const id of ['owned', 'hardowned']) {
+        const ed = document.getElementById(id);
+        ed.addEventListener('beforeinput', (e) => {
+          if (e.inputType.startsWith('delete')) e.preventDefault(); // model-driven editor declines raw deletes
+        });
+        // …and reconcile their model from DOM mutations (what clear relies on)
+        new MutationObserver(() => {
+          document.getElementById(id + '-model').textContent = 'blocks: ' + ed.querySelectorAll('p').length + ' · text: ' + JSON.stringify(ed.textContent);
+        }).observe(ed, { childList: true, subtree: true, characterData: true });
+      }
+      // #hardowned: the vc.ru observation — delete is not even enabled for the
+      // editor's selection state, so execCommand returns false having done
+      // nothing. Scoped to calls made while THIS editor is focused so the
+      // #owned test above still exercises the genuine native path.
+      const origExec = document.execCommand.bind(document);
+      document.execCommand = (cmd, ...rest) => {
+        const ae = document.activeElement;
+        if (cmd === 'delete' && ae && ae.id === 'hardowned') return false;
+        return origExec(cmd, ...rest);
+      };
     })();
   </script>
 </body>
