@@ -126,15 +126,14 @@ MCP bridges (mcp-chrome, BrowserMCP) need an MCP-capable client and a configured
 
 ## How it compares
 
-A guide, not a ranking — every tool below does real work. Checked 2026-09-12 from each repo's own README; things change, verify before deciding.
+A guide, not a ranking — every tool below does real work. Checked 2026-09-12 against each tool's own docs; "—" means not a stated feature, verify what matters to you.
 
-| | chrome-bridge | kiarina/chrome-bridge | luigimasango-dev/chrome-bridge | makriman/Agent-Chrome-Bridge |
-|---|---|---|---|---|
-| MCP client + server config required | no | yes (FastMCP, Streamable HTTP) | yes (stdio, Node 24+) | no |
-| Runtime dependencies | zero (Node ≥ 18) | Python + uv + 3 packages | Node 24+ | — |
-| Human oversight while it runs | 🟣 pill narrating live, action history, one-click disconnect | per-op silent WebM recording (after the fact) | env-var write gate (before the fact) | manual per-tab arming, one tab at a time |
-| Reads pages as | a11y tree with element refs | selectors | selectors | selectors |
-| Extension on the Chrome Web Store | yes | yes | no | no |
+| | chrome-bridge | playwright-mcp | Chrome DevTools MCP | Browser MCP / mcp-chrome | Claude for Chrome |
+|---|---|---|---|---|---|
+| Drives your real logged-in Chrome | the only mode | opt-in (extension / debugging-port attach) | opt-in (`--autoConnect`, Chrome 144+) | no — launches its own browser | yes, but only from the Claude app |
+| Needs an MCP-capable client + server config | no | yes | optional (ships a CLI) | yes | n/a |
+| Works with any agent that runs shell commands | yes | MCP clients | MCP clients | MCP clients | Claude app only |
+| You watch and can veto while it runs | 🟣 pill narrating live, action history, one-click disconnect (enforced) | — | — | — | — |
 
 ## Chrome 136 broke copying (or reusing) your Chrome profile
 
