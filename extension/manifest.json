@@ -3,7 +3,7 @@
   "name": "Chrome Bridge",
   "version": "1.23.1",
   "minimum_chrome_version": "117",
-  "description": "Let an AI agent drive this browser via a local server on this computer only. A 🟣 pill narrates what the agent does.",
+  "description": "AI browser automation via a local server: your agent drives your real logged-in Chrome — you watch and can veto any tab.",
   "icons": { "128": "icons/icon128.png", "48": "icons/icon48.png", "32": "icons/icon32.png", "16": "icons/icon16.png" },
   "permissions": ["tabs", "tabGroups", "scripting", "alarms", "debugger", "storage", "clipboardWrite"],
   "host_permissions": ["<all_urls>"],

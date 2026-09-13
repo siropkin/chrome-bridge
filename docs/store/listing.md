@@ -1,15 +1,15 @@
 # Chrome Web Store listing — canonical copy
 
 Paste-ready text for the Chrome Web Store console (no API for these fields — copy by hand).
-Keep in sync with README.md's pitch sections. Last synced: v1.23.0 (trusted-input honesty sweep).
+Keep in sync with README.md's pitch sections. Last synced: 2026-09-12 (control-story pass: search head terms in the short description, the a11y-tree/token-efficiency and human-control stories in the body).
 
 ## Short description (max 132 chars)
 
-Let an AI agent drive this browser via a local server on this computer only. A 🟣 pill narrates what the agent does.
+AI browser automation via a local server: your agent drives your real logged-in Chrome — you watch and can veto any tab.
 
 ## Detailed description
 
-chrome-bridge lets ANY AI agent drive the Chrome you're already using — your open tabs, your logged-in sessions, your SSO. Playwright-style tools drive a browser they launched with a fresh profile; chrome-bridge drives your real browser. That's the only mode.
+chrome-bridge is browser automation for AI agents: ANY agent can drive the Chrome you're already using — your open tabs, your logged-in sessions, your SSO. Playwright-style tools drive a browser they launched with a fresh profile; chrome-bridge drives your real browser. That's the only mode.
 
 GETTING STARTED — 3 steps, under a minute:
 
@@ -22,8 +22,9 @@ The agent does the rest itself: downloads the tiny zero-dependency bridge, start
 WHAT YOU GET
 
 • Your agent can read pages, click, fill forms, navigate, screenshot, capture network traffic — in YOUR logged-in browser.
+• AI-first under the hood: the agent reads pages as an accessibility tree instead of screenshots — an order of magnitude fewer tokens per look — and every command is a one-line shell call any agent can run.
 • Full local control: everything runs on 127.0.0.1, nothing leaves your machine. No cloud relay, no account, no telemetry.
-• Automation you can see: every tab the agent touches wears a 🟣 pill narrating each action, joins a 🟣 tab group, and shows status in the favicon. One trusted click on ⏏ disconnects the agent from a tab.
+• Built for the human watching: every tab the agent touches wears a 🟣 pill narrating each action in real time, joins a 🟣 tab group, and shows status in the favicon; every action lands in a history you can review; one trusted click on ⏏ rejects the agent from that tab.
 • Point the agent at an exact tab: the toolbar popup copies a tab reference (id:…) that pins every command to that tab.
 • Honest actions: if the page re-sorts under a saved element reference, the action fails loudly instead of clicking the wrong element; a click the app ignored says so instead of faking success; trusted input refuses to fake-fire on a hidden tab; a fill an editor's autosave can't see carries a warning; typing into heavy editors (docs, block editors) is paced and verified.
 • Rich editor savvy: the agent can drop whole structured documents (headings, lists, links) into block editors in one shot — and clear them again, even when the editor owns its content model.
