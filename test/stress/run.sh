@@ -150,6 +150,9 @@ s_interact() {
   "${CLI[@]}" click rich.html '#pad' --diff >/dev/null 2>&1
   "${CLI[@]}" eval rich.html "document.getElementById('pad-status').textContent" >>"$OUT/03-rich.log"
   assert_grep "untrusted canvas click recorded" "$OUT/03-rich.log" 'canvas click isTrusted=false'
+  # trusted input needs the tab in front (#33) — opens land active:false, so
+  # without activate this click is at the mercy of the window's active tab
+  "${CLI[@]}" activate rich.html --profile "$P1" >/dev/null 2>&1
   "${CLI[@]}" click rich.html '#pad' --trusted --diff >/dev/null 2>&1
   "${CLI[@]}" eval rich.html "document.getElementById('pad-status').textContent" >>"$OUT/03-rich.log"
   assert_grep "trusted canvas click: isTrusted=true" "$OUT/03-rich.log" 'canvas click isTrusted=true'
@@ -341,6 +344,8 @@ s_marks() {
   "${CLI[@]}" eval "static.html?x=marks" "document.getElementById('bridge-disconnect').click(); 'clicked'" >/dev/null 2>&1
   "${CLI[@]}" tabs "static.html?x=marks" | grep -q '"driven":true' && ok "synthetic ⏏ click ignored (isTrusted guard)" || bad "synthetic click released the tab"
   # pill ⏏: a trusted (CDP Input) click releases — the human's escape hatch
+  # (activate first: trusted input refuses hidden tabs now, #33)
+  "${CLI[@]}" activate "static.html?x=marks" --profile "$P1" >/dev/null 2>&1
   "${CLI[@]}" click "static.html?x=marks" "#bridge-disconnect" --trusted >/dev/null 2>&1
   sleep 1
   "${CLI[@]}" tabs "static.html?x=marks" | grep -q '"driven":true' && bad "trusted ⏏ click did not release" || ok "trusted ⏏ click releases the tab"
@@ -574,6 +579,22 @@ s_type() {
   "${CLI[@]}" close "x=type" --profile "$P1" >/dev/null 2>&1
 }
 
+s_trusted() {
+  SECTION=trusted
+  # #33: CDP input on a hidden tab fires zero page events but used to report
+  # success. The fix refuses loudly and names activate — verify the whole loop.
+  # opens land active:false, so both tabs start hidden behind P1's current tab.
+  "${CLI[@]}" open "$FX/static.html?x=trusted" --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" click "x=trusted" 'button' --trusted --profile "$P1" >"$OUT/trusted-hidden.log" 2>&1 && bad "trusted click on a hidden tab must fail" || true
+  assert_grep "hidden-tab trusted refusal names the remedy" "$OUT/trusted-hidden.log" 'tab is hidden.*activate'
+  "${CLI[@]}" activate "x=trusted" --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" eval "x=trusted" 'document.visibilityState' --profile "$P1" >"$OUT/trusted-vis.log" 2>&1
+  assert_grep "activate makes the tab visible" "$OUT/trusted-vis.log" '^visible$'
+  "${CLI[@]}" click "x=trusted" 'button' --trusted --profile "$P1" >"$OUT/trusted-front.log" 2>&1
+  assert_grep "trusted click works once the tab is in front" "$OUT/trusted-front.log" 'clicked button \(trusted\)'
+  "${CLI[@]}" close "x=trusted" --profile "$P1" >/dev/null 2>&1
+}
+
 # ---------------------------------------------------------------- section 12
 s_doctor() {
   SECTION=doctor
@@ -621,7 +642,7 @@ cleanup() {
 }
 
 # ---------------------------------------------------------------- main
-ALL="profiles churn interact dialog pixel waits net marks misc edges ids refs type doctor cleanup"
+ALL="profiles churn interact dialog pixel waits net marks misc edges ids refs type trusted doctor cleanup"
 SECTIONS=${*:-$ALL}
 cd "$REPO"
 detect_profiles || { echo "FAIL: no connected profile (cli profiles)"; exit 1; }
@@ -634,7 +655,7 @@ for sec in $SECTIONS; do
   case $sec in
     profiles) s_profiles ;; churn) s_churn ;; interact) s_interact ;; dialog) s_dialog ;;
     pixel) s_pixel ;; waits) s_waits ;; net) s_net ;; marks) s_marks ;; misc) s_misc ;;
-    edges) s_edges ;; ids) s_ids ;; refs) s_refs ;; type) s_type ;; doctor) s_doctor ;; cleanup) cleanup ;;
+    edges) s_edges ;; ids) s_ids ;; refs) s_refs ;; type) s_type ;; trusted) s_trusted ;; doctor) s_doctor ;; cleanup) cleanup ;;
     *) echo "unknown section: $sec" ;;
   esac
 done

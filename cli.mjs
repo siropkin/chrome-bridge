@@ -291,6 +291,8 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     the verdict costs cloud tokens, not the noise
   grid <match>                      toggle 8px alignment grid
   mark|release <match>              add/remove driven-tab markers; release clears emulation too
+  activate <match>                  bring a background tab to the front (trusted input
+                                    needs it — CDP dispatch on a hidden tab fires nothing)
   note <match> <text>              narrate to the human — shows in the driven tab's pill + history
                                     (use sparingly: before a risky/long sequence, or to explain why)
   watch                            live feed of every bridge command — the terminal twin of the pill;
@@ -621,6 +623,7 @@ async function run(cmdName, args) {
     case 'mark':
     case 'release':
     case 'unemulate':
+    case 'activate':
       if (!args[0]) fail(`usage: ${cmdName} <match>`);
       print(await cmd({ type: cmdName, urlMatch: args[0] }));
       break;

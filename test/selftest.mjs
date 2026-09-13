@@ -707,7 +707,7 @@ try {
       'ext: findTab refuses ambiguous same-profile matches before selecting a tab'
     );
     assert(!findTabBlock.includes('drivenTabs.has(b.id)'), 'ext: findTab has no driven/MRU ambiguity fallback');
-    assert(findTabBlock.includes("!['release', 'mark', 'unemulate'].includes(msg.type)"), 'ext: unique tab commands still auto-mark');
+    assert(findTabBlock.includes("!['release', 'mark', 'unemulate', 'activate'].includes(msg.type)"), 'ext: unique tab commands still auto-mark (activate only reorders tabs — not driving)');
     assert(bg.includes('bad relay message — reconnecting') && bg.includes("if (!msg || typeof msg !== 'object' || Array.isArray(msg))"), 'ext: malformed relay frames trigger a clean reconnect');
     assert(bg.includes('if (msg.all)') && bg.includes('closed: matches.length'), 'ext: close --all drains every match — the remedy for identical-URL tabs no <match> can separate');
     assert(serverSrc.includes("k.startsWith('_')"), 'server: /cmd strips underscore-internal fields (_tabId/_pill are extension-set only)');
@@ -792,6 +792,8 @@ try {
     assert(bg.includes('settleFrames') && bg.split('await settleFrames(').length === 3, 'ext: captures wait two rAFs before reading the compositor (mid-redirect tiled-shot race, #25)');
     assert(bg.includes('hash-only navigation') && bg.includes("split('#')[0]"), 'ext: nav to a same-document #hash URL warns the view was not re-validated (#26)');
     assert(bg.includes("replace(/\\r\\n?/g, '\\n')") && bg.includes('ex.text.endsWith(head)'), 'ext: CDP error text is CR-normalized and never duplicates its message line (#27)');
+    assert(bg.includes("trusted (CDP) input reaches only the foreground tab") && bg.includes("runEval(tab.id, 'document.visibilityState')"), 'ext: --trusted refuses on a hidden tab instead of reporting a silent success (#33)');
+    assert(bg.includes("chrome.tabs.update(tab.id, { active: true })") && bg.includes('chrome.windows.update(tab.windowId, { focused: true })'), 'ext: activate brings the tab to the front AND focuses its window (#33)');
     // Shadow-piercing target resolution: document.querySelector can't reach
     // open shadow roots (Reddit's faceplate-*, LinkedIn's nested roots) —
     // every action script resolves via deepQuery (@refs/document CSS first,

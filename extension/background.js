@@ -628,6 +628,7 @@ const ACT_VERBS = {
   close: ['closing tab', 'closed tab'],
   mark: ['marking tab', 'marked tab'],
   release: ['releasing tab', 'released tab'],
+  activate: ['activating tab', 'activated tab'],
   snap: ['reading page', 'read page'],
   shot: ['taking screenshot', 'took screenshot'],
   click: ['clicking', 'clicked'],
@@ -2665,6 +2666,13 @@ async function cdpDrag(tabId, x1, y1, x2, y2) {
 }
 
 async function trustedInput(tab, msg) {
+  // CDP Input.dispatch* on a hidden tab fires ZERO page events while the
+  // command would still report success — and the coords trustedPointSrc
+  // computes come from the hidden tab's stale layout, so a dispatch that does
+  // land can hit an unrelated element (#33). Refuse loudly; the synthetic
+  // path works fine on hidden tabs.
+  if ((await runEval(tab.id, 'document.visibilityState').catch(() => null)) === 'hidden')
+    throw new Error('tab is hidden — trusted (CDP) input reaches only the foreground tab: nothing would fire, and coordinates computed now are stale. activate <match> it first, or drop --trusted (synthetic input works on hidden tabs)');
   const point = (target, coverage, ripple) => runEval(tab.id, trustedPointSrc(target, coverage, ripple)).then((s) => JSON.parse(s));
   let res;
   // First-ever command on a fresh tab: let the in-flight auto-mark land
@@ -3398,7 +3406,7 @@ async function findTab(msg) {
   // the banner in (note's probe; shot / wait --pixel-change / trusted
   // input's suppression windows) awaitMark() it, which also sees a SIBLING
   // command's mark that a per-message handle would miss.
-  if (!['release', 'mark', 'unemulate'].includes(msg.type) && !drivenTabs.has(matches[0].id)) markTab(matches[0].id).catch(() => {});
+  if (!['release', 'mark', 'unemulate', 'activate'].includes(msg.type) && !drivenTabs.has(matches[0].id)) markTab(matches[0].id).catch(() => {});
   // Not `release`: it would flash ⏳ on the still-driven tab right before
   // releaseTab restores the site's own favicon. Fire-and-forget for the same
   // uncommitted-nav reason as open() — an awaited executeScript there can
@@ -3968,6 +3976,16 @@ async function handle(msg) {
   if (msg.type === 'release') {
     const tab = await findTab(msg);
     await releaseTab(tab.id);
+    return { id: tab.id };
+  }
+
+  // Bring a background tab to the front — the remedy the hidden-tab trusted
+  // input refusal (#33) names. activate within its window, then focus the
+  // window (a background WINDOW keeps the tab unfocused for CDP input too).
+  if (msg.type === 'activate') {
+    const tab = await findTab(msg);
+    await chrome.tabs.update(tab.id, { active: true });
+    await chrome.windows.update(tab.windowId, { focused: true });
     return { id: tab.id };
   }
 
