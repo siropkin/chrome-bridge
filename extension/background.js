@@ -2802,17 +2802,28 @@ const trustedPointSrc = (target, coverage, ripple) => `(() => {
 })()`;
 
 // Page-side focus for press/type: the key events go to whatever holds focus.
-const trustedFocusSrc = (target) => `(() => {
+// The field requirement is key-aware (#46): type (no key) and text-editing
+// keys (chars, Backspace/Delete/Insert) are a silent noop without a field —
+// refuse. Dismissal/navigation keys (Escape closes a dialog, Enter activates
+// the focused control, Tab moves focus) are meaningful on ANY focused
+// element — dispatch to document.activeElement whatever it is.
+const trustedFocusSrc = (target, key) => `(() => {
   ${DEEPQ}
-  const sel = ${JSON.stringify(target || '')};
-  const el = sel ? deepQuery(sel) : document.activeElement;
+  const sel = ${JSON.stringify(target || '')}, keyIn = ${JSON.stringify(key || '')};
+  const el = sel ? deepQuery(sel) : (document.activeElement || document.body);
   if (sel) {
     if (!el) throw new Error(queryErr(sel));
     el.scrollIntoView({ block: 'center' });
     el.focus?.();
   }
-  if (!el || !(el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable))
-    throw new Error('no text field focused — pass an @ref|css target or click the field first');
+  const parts = keyIn.includes('+') && keyIn !== '+' ? keyIn.split('+') : [];
+  const base = parts.length ? parts.pop() : keyIn;
+  // A ctrl/alt/meta combo is a shortcut, never text entry — no field needed
+  // (Shift alone still types: Shift+a = 'A').
+  const shortcut = parts.some((m) => ['Control', 'Ctrl', 'Alt', 'Meta', 'Cmd', 'Command'].includes(m));
+  const needsField = !keyIn || (!shortcut && (base.length === 1 || ['Backspace', 'Delete', 'Insert'].includes(base)));
+  if (needsField && !(el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable))
+    throw new Error('no text field focused — pass an @ref|css target or click the field first' + (keyIn ? ' (only text-editing keys need a field; Escape/Enter/Tab/arrows dispatch to whatever holds focus)' : ''));
   return '<' + el.tagName.toLowerCase() + (el.isContentEditable ? ' contenteditable' : '') + '>';
 })()`;
 
@@ -2961,7 +2972,7 @@ async function trustedInput(tab, msg) {
         await cdpDrag(tab.id, p1.cx, p1.cy, p2.cx, p2.cy);
         res = `dragged ${msg.from} onto ${msg.to} (trusted)`;
       } else if (msg.type === 'press') {
-        const what = await runEval(tab.id, trustedFocusSrc(msg.target));
+        const what = await runEval(tab.id, trustedFocusSrc(msg.target, msg.key));
         await cdpKeyEvent(tab.id, msg.key);
         res = `pressed ${msg.key} on ${what} (trusted)`;
       } else if (msg.type === 'type') {
