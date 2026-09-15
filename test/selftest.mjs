@@ -701,9 +701,9 @@ try {
     assert(bg.split('await attachDbg(').length >= 6 && bg.split('await detachDbg(').length >= 6, 'ext: all 6 CDP call sites refcounted');
     // CDP commands serialize per tab — an unemulate racing a sibling's
     // sendCommand tore the shared session mid-flight (5.5% of interleaved
-    // CDP commands in stress). (6 wrap sites: upload/net/emulate/unemulate/
-    // shot/dialog.)
-    assert(bg.split('withCdp(').length === 13, 'ext: CDP handlers serialize per tab (helper + 11 wrap sites — v1.18.13 release-clears emulation behind the lock, v1.24 release detaches a leaked no-emulation refcount)');
+    // CDP commands in stress). (Wrap sites: upload/net/emulate/unemulate/
+    // shot/dialog/trustedInput/fetch fallback/fetch --csrf cookie read…)
+    assert(bg.split('withCdp(').length === 14, 'ext: CDP handlers serialize per tab (helper + 12 wrap sites — v1.18.13 release-clears emulation behind the lock, v1.24 release detaches a leaked no-emulation refcount, v1.25 fetch --csrf cookie read)');
     // open must not await the favicon/banner marking — executeScript sits
     // pending forever on an uncommitted navigation (unreachable URL), which
     // hung open past its 8s cap to the server's 70s timeout. The response

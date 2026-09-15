@@ -192,7 +192,7 @@ HTTP API 只有一个命令端点:`POST /cmd`,Body 如 `{"type": "snap", "urlMat
 | `eval <match> <js\|-> [--world main\|isolated]` | 在页面中执行 JS;`-` 从 stdin 读取 |
 | `shot <match> <out> [--max px] [--scale N] [--format jpeg] [--quality N] [--crop x,y,w,h] [--full] [--diff]` | CDP 截图。长边默认限制为 `--max` 1280px(`0` = 原始分辨率)——模型读取大图时本来就会缩小,原图只增加文件体积不增加细节。`--full` = 整页高度。`--diff` 与上一次 `--diff` 截图对比(固定基线的尺寸/缩放,跟随当前滚动位置——对比的是智能体当前看到的画面),只保存变化的区域——无障碍树看不到的画布/像素变化 |
 | `net <match> [--dur ms] [--filter s] [--body s] [--ws] [--har out.har]` | CDP 网络抓包(单次 ≤30 秒)——每个请求一行紧凑输出,并标注发起者(`⟵ api-client.js:88`);`--ws` 同时抓取 WebSocket 帧(`→` 发送 / `←` 接收——聊天/流式应用);`--body s` 附加匹配的 JSON/文本响应体;`--har out.har` 把抓包存为可分享的 HAR 1.2(DevTools/Burp 可打开)——它携带完整请求/响应头(含 cookies/令牌),以仅所有者可读(0600)写入:请当作机密对待 |
-| `fetch <match> <url> [--out file] [--keep]` | 在页面内发 fetch,复用登录会话——需要登录的 JSON/信息源直接可取,无需 eval 拼接;二进制响应必须 `--out`,文本打印截断在 5 万字符(`--out` 保存完整内容);没有匹配标签页时会在目标源打开一个临时标签页,取完即关(`--keep` 则保留以便续取) |
+| `fetch <match> <url> [--out file] [--keep] [--header "k: v"]... [--csrf]` | 在页面内发 fetch,复用登录会话——需要登录的 JSON/信息源直接可取,无需 eval 拼接;二进制响应必须 `--out`,文本打印截断在 5 万字符(`--out` 保存完整内容);没有匹配标签页时会在目标源打开一个临时标签页,取完即关(`--keep` 则保留以便续取);`--header` 为检查请求头的会话 API 附加请求头;`--csrf` 自动把 JSESSIONID Cookie 作为 `csrf-token` 请求头 |
 | `measure <match> <css>` | 元素位置 + 计算样式,JSON 输出——不看像素也能知道布局真相 |
 | `console <match> [--clear] [--ask [q]]` | 页面 console + 未捕获错误(首次调用时安装钩子);`--ask` 用本地 Gemini Nano 分诊日志——只有结论消耗云端 token |
 | `grid <match>` | 开关 8px 对齐网格覆盖层 |
