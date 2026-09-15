@@ -1992,8 +1992,10 @@ const SNAP_SRC = (scope, diff, href, skel) => `(() => {
   ${DEEPQ}
   // Scope = subtree root: a CSS selector (document-level, then open shadow
   // roots) or an @ref — the --skeleton drill-down is 'snap <match> @eN'.
-  const root = scopeSel ? (scopeSel.startsWith('@') ? window.__bridgeRefs?.[scopeSel.slice(1)] : document.querySelector(scopeSel) || deepAll(scopeSel, document)[0]) : document.body;
-  if (!root) throw new Error('scope not found: ' + scopeSel + (scopeSel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ''));
+  // Same staleness rules as deepQuery: a detached scope node is gone (#47).
+  const scopeRef = scopeSel?.startsWith('@') ? window.__bridgeRefs?.[scopeSel.slice(1)] : undefined;
+  const root = scopeSel ? (scopeSel.startsWith('@') ? (scopeRef?.isConnected ? scopeRef : null) : document.querySelector(scopeSel) || deepAll(scopeSel, document)[0]) : document.body;
+  if (!root) throw new Error('scope not found: ' + scopeSel + (scopeSel.startsWith('@') ? staleRefHint() : ''));
   walk(root, 0);
   if (truncated) lines.push('… truncated at ' + MAX + ' nodes' + (scopeSel ? '' : ' — scope with: snap <match> <css>'));
   // --diff: lines added/changed/removed since the last snap at THIS scope.
@@ -2126,7 +2128,12 @@ const DEEPQ = `
   };
   const deepQuery = (sel) => {
     if (sel.startsWith('@')) {
-      const refEl = window.__bridgeRefs?.[sel.slice(1)] || null;
+      let refEl = window.__bridgeRefs?.[sel.slice(1)] || null;
+      // A re-render (SPA poll, dialog unmount) detaches the node but leaves it
+      // in the refs map until the next snap prunes it — acting on it measures
+      // a 0x0 rect and misreads as 'covered by overlay' at 0,0, or dispatches
+      // into the void (#47). Detached = gone.
+      if (refEl && !refEl.isConnected) refEl = null;
       // A ref's identity is its snap-time role+name, not the node: a re-sorted
       // virtualized list (LinkedIn messaging) keeps the NODE alive but puts a
       // different row's content in it — acting on it reports success at the
@@ -2143,9 +2150,16 @@ const DEEPQ = `
     return document.querySelector(sel) || deepAll(sel, document)[0] || null;
   };
   // deepQuery + the canonical miss error in one place — every action script
-  // embeds this; the '@' suffix teaches the recovery move (refs expire on
-  // navigation). A CSS miss gets the same hint style for consistency.
-  const queryErr = (sel) => 'element not found: ' + sel + (sel.startsWith('@') ? ' — refs expire on navigation; run snap again' : ' — check the selector against a fresh snap');
+  // embeds this; the '@' suffix teaches the recovery move. The hint splits on
+  // WHY the ref is dead (#47): navigation destroys the page's refs map
+  // entirely; an SPA re-render (poll refetch, dialog state change) kills the
+  // node while the map lives — blaming navigation sends the agent looking for
+  // a nav that never happened. A CSS miss gets the same hint style.
+  const staleRefHint = () =>
+    window.__bridgeRefs
+      ? ' — the page re-rendered since the snap (this node is gone, no navigation happened); run snap again for fresh refs'
+      : ' — refs expire on navigation; run snap again';
+  const queryErr = (sel) => 'element not found: ' + sel + (sel.startsWith('@') ? staleRefHint() : ' — check the selector against a fresh snap');
   const mustQuery = (sel) => {
     const el = deepQuery(sel);
     if (!el) throw new Error(queryErr(sel));
