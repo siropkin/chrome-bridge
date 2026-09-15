@@ -275,7 +275,9 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     --pixel-change polls the viewport until pixels move
                                     (canvas changes the tree can't see; attaches CDP)
   eval <match> <js|-> [--world main|isolated]     '-' reads JS from stdin; output
-                                    caps at 50K chars — return less (slice in-page), or fetch --out
+                                    caps at 50K chars — return less (slice in-page), or fetch --out;
+                                    top-level const/let are scoped to each call — re-running
+                                    the same snippet never collides (set globals via window.x)
   shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full] [--diff]
                                     --max caps the long edge (default 1280, 0 = native res);
                                     --diff compares against the previous --diff shot and, on

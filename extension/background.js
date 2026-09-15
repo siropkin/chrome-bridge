@@ -3335,7 +3335,14 @@ async function runEval(tabId, code, world = 'auto') {
   await attachDbg(tabId);
   try {
     const res = await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
-      expression: code,
+      // Block-wrapped (#48): bare Runtime.evaluate runs at GLOBAL scope, so a
+      // snippet's top-level const/let leak into the global lexical environment
+      // and re-running the same snippet dies on 'Identifier already declared'.
+      // A block's completion value is still its last statement's, so results
+      // are unchanged; var and window.* assignments still set globals — only
+      // let/const are scoped to the call (the scripting-world paths never
+      // leaked: their eval runs inside the injected function).
+      expression: '{\n' + code + '\n}',
       awaitPromise: true,
       returnByValue: true,
     });

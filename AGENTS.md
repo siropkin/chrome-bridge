@@ -167,7 +167,9 @@ wait <match> <css|--text t|--human|--pixel-change> [--timeout ms]
                                   --pixel-change polls until pixels move — canvas changes
                                   the tree can't see (attaches CDP for the wait)
 eval <match> <js|-> [--world main|isolated]     '-' reads JS from stdin; output caps at
-                                  50K chars (truncation note names the remedy) — return less
+                                  50K chars (truncation note names the remedy) — return less;
+                                  top-level const/let are call-scoped: re-runs never collide
+                                  (set globals via window.x)
                                   (select narrower, slice in-page) or fetch --out the data
 shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full] [--diff]
                                   --max caps the long edge (default 1280, 0 = native res);
