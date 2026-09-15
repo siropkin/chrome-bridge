@@ -310,7 +310,10 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
   grid <match>                      toggle 8px alignment grid
   mark|release <match>              add/remove driven-tab markers; release clears emulation too
   activate <match>                  bring a background tab to the front (trusted input
-                                    needs it — CDP dispatch on a hidden tab fires nothing)
+                                    needs it — CDP dispatch on a hidden tab fires nothing);
+                                    warns when the tab STAYS hidden — an occluded/minimized
+                                    window can't be activated into view; emulate <match>
+                                    focus is the remedy there
   note <match> <text>              narrate to the human — shows in the driven tab's pill + history
                                     (use sparingly: before a risky/long sequence, or to explain why)
   watch                            live feed of every bridge command — the terminal twin of the pill;

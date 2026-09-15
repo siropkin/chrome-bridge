@@ -2909,8 +2909,14 @@ async function trustedInput(tab, msg) {
   // command would still report success — and the coords trustedPointSrc
   // computes come from the hidden tab's stale layout, so a dispatch that does
   // land can hit an unrelated element (#33). Refuse loudly; the synthetic
-  // path works fine on hidden tabs.
-  if ((await runEval(tab.id, 'document.visibilityState').catch(() => null)) === 'hidden')
+  // path works fine on hidden tabs. Two hidden states, two remedies (#45):
+  // hasFocus()=true + hidden = the Chrome WINDOW is fully covered by other
+  // apps (macOS occlusion) — activate cannot un-occlude it, emulate focus can;
+  // hasFocus()=false = a plain background tab — activate is the fix.
+  const vis = await runEval(tab.id, 'document.visibilityState + "|" + document.hasFocus()').catch(() => null);
+  if (vis === 'hidden|true')
+    throw new Error('tab is hidden while its window has focus — the Chrome window is fully covered by other apps (macOS occlusion) or minimized; activate cannot un-occlude it. Use emulate <match> focus (flips visibilityState — trusted input then works), or drop --trusted (synthetic input works on hidden tabs)');
+  if (vis?.startsWith('hidden'))
     throw new Error('tab is hidden — trusted (CDP) input reaches only the foreground tab: nothing would fire, and coordinates computed now are stale. activate <match> it first, or drop --trusted (synthetic input works on hidden tabs)');
   const point = (target, coverage, ripple) => runEval(tab.id, trustedPointSrc(target, coverage, ripple)).then((s) => JSON.parse(s));
   let res;
@@ -4330,7 +4336,19 @@ async function handle(msg) {
     const tab = await findTab(msg);
     await chrome.tabs.update(tab.id, { active: true });
     await chrome.windows.update(tab.windowId, { focused: true });
-    return { id: tab.id };
+    // Occlusion (#45): a Chrome window fully covered by other apps (or
+    // minimized) keeps the tab visibilityState=hidden even after a successful
+    // activate — an ok reply here is a lie the next --trusted command pays
+    // for. Poll briefly (the visibilitychange lands async), then name the
+    // working remedy: emulate focus.
+    let vis = null;
+    for (let i = 0; i < 6 && vis !== 'visible'; i++) {
+      vis = await runEval(tab.id, 'document.visibilityState').catch(() => null);
+      if (vis !== 'visible') await new Promise((r) => setTimeout(r, 150));
+    }
+    return vis === 'hidden'
+      ? { id: tab.id, warning: 'tab is still hidden — the window is occluded or minimized and activate cannot un-occlude it. For trusted input: emulate <match> focus' }
+      : { id: tab.id };
   }
 
   if (msg.type === 'eval') {
