@@ -292,12 +292,16 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     open it; text/JSON bodies land in the file, not the lines) —
                                     the HAR carries full headers incl. cookies/tokens: owner-only
                                     0600, treat it as a secret
-  fetch <match> <url> [--out file] [--keep]
+  fetch <match> <url> [--out file] [--keep] [--header "k: v"]... [--csrf]
                                     in-page fetch riding the logged-in session — login-walled
                                     JSON/feeds answer it; binary responses need --out, text
                                     prints capped at 50K chars (--out gets the full body);
                                     no matching tab → a scratch tab on the target origin is
-                                    opened, fetched, closed (--keep leaves it for follow-ups)
+                                    opened, fetched, closed (--keep leaves it for follow-ups);
+                                    --header adds request headers for session APIs that check
+                                    them (x-restli-protocol-version & co); --csrf attaches the
+                                    JSESSIONID cookie as the csrf-token header (Voyager-class
+                                    APIs; briefly attaches CDP to read the httpOnly cookie)
   measure <match> <css>             rect + computed styles as JSON
   console <match> [--clear] [--ask [question]]
                                     page console + errors (hook installs on first call);
@@ -1049,21 +1053,33 @@ async function run(cmdName, args) {
       // the agent hand-rolling eval fetch plumbing. The response is untrusted
       // page content like everything else the bridge returns.
       const [match, url, ...rest] = args;
-      let outFile = null, keep = false;
+      let outFile = null, keep = false, csrf = false;
+      const headers = {};
       for (let i = 0; i < rest.length; i++) {
         if (rest[i] === '--out') {
           outFile = rest[++i];
-          if (outFile === undefined) fail('usage: fetch <match> <url> [--out file] [--keep]');
+          if (outFile === undefined) fail('usage: fetch <match> <url> [--out file] [--keep] [--header "k: v"]... [--csrf]');
         } else if (rest[i] === '--keep') keep = true;
-        else fail(`unknown flag ${rest[i]} (flags: --out file, --keep)`);
+        else if (rest[i] === '--csrf') csrf = true;
+        else if (rest[i] === '--header') {
+          const h = rest[++i];
+          if (h === undefined) fail('--header needs a value: --header "name: value"');
+          const ci = h.indexOf(':');
+          if (ci < 1) fail(`--header needs "name: value" (got ${JSON.stringify(h)})`);
+          headers[h.slice(0, ci).trim()] = h.slice(ci + 1).trim();
+        } else fail(`unknown flag ${rest[i]} (flags: --out file, --keep, --header "k: v", --csrf)`);
       }
-      if (!match || !url) fail('usage: fetch <match> <url> [--out file] [--keep]');
+      if (!match || !url) fail('usage: fetch <match> <url> [--out file] [--keep] [--header "k: v"]... [--csrf]');
       let u;
       try {
         u = new URL(url);
       } catch {}
       if (!u || !/^https?:$/.test(u.protocol)) fail('fetch needs a full http(s) URL');
-      let res = await cmd({ type: 'fetch', urlMatch: match, url }, true);
+      // --header/--csrf must ride BOTH the direct fetch and the scratch-tab
+      // retry below — a headerless retry of a CSRF-checked API is a 403 that
+      // reads as "the API is broken", not "the flag got dropped".
+      const extra = { ...(Object.keys(headers).length ? { headers } : {}), ...(csrf ? { csrf: true } : {}) };
+      let res = await cmd({ type: 'fetch', urlMatch: match, url, ...extra }, true);
       // #35: no matching tab → ride a throwaway tab on the TARGET'S origin
       // (fetching from an unrelated tab is cross-origin and dies on CORS).
       // open → retry by id → close; --keep leaves it for follow-up fetches.
@@ -1074,7 +1090,7 @@ async function run(cmdName, args) {
       if (res && res.error && res.error.includes('no tab matching') && !res.error.includes('in any connected profile')) {
         console.error(`no tab matching "${match}" — opening a scratch tab on ${u.host} for this fetch${keep ? ' (kept open)' : ''}`);
         const opened = await cmd({ type: 'open', url });
-        res = await cmd({ type: 'fetch', urlMatch: `id:${opened.id}`, url }, true);
+        res = await cmd({ type: 'fetch', urlMatch: `id:${opened.id}`, url, ...extra }, true);
         if (!keep) await cmd({ type: 'close', urlMatch: `id:${opened.id}` }, true);
       }
       if (res && res.error) fail(res.error);

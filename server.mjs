@@ -409,7 +409,14 @@ const CLI_LINES = {
   // Absolute paths and filenames are local sensitive data; never preserve
   // them in a durable replay file.
   upload: (m) => `upload ${shellq(m.urlMatch)} ${shellq(m.target)} "***"${D(m)}`,
-  fetch: (m) => `fetch ${shellq(m.urlMatch)} ${shellq(m.url)}`,
+  // --csrf replays honestly (the token is derived extension-side per run —
+  // that's its point). --header VALUES are redacted like fill values: a
+  // csrf-token or Authorization header is the same class of secret, and the
+  // line is commented out (secret below) so a replay skips the step.
+  fetch: (m) =>
+    `fetch ${shellq(m.urlMatch)} ${shellq(m.url)}${m.csrf ? ' --csrf' : ''}${
+      m.headers && typeof m.headers === 'object' ? Object.keys(m.headers).map((k) => ` --header ${shellq(k + ': ***')}`).join('') : ''
+    }`,
   ask: (m) => `ask ${shellq(m.urlMatch)} ${shellq(m.question)}`,
   wait: (m) =>
     `wait ${shellq(m.urlMatch)}${m.selector ? ' ' + shellq(m.selector) : ''}${m.text ? ' --text ' + shellq(m.text) : ''}${
@@ -489,7 +496,11 @@ function pushAct(msg, out, ms) {
   // callable builtins emitting a garbage '[object Object]' replay line.
   const replay = Object.hasOwn(CLI_LINES, msg.type) ? CLI_LINES[msg.type](msg) : null;
   const prof = msg.profile ? `--profile ${seatTag(msg.profile)} ` : '';
-  const secret = !!msg && (['fill', 'type', 'paste', 'upload'].includes(msg.type) || (msg.type === 'dialog' && !!msg.text));
+  const secret =
+    !!msg &&
+    (['fill', 'type', 'paste', 'upload'].includes(msg.type) ||
+      (msg.type === 'dialog' && !!msg.text) ||
+      (msg.type === 'fetch' && !!msg.headers && typeof msg.headers === 'object' && Object.keys(msg.headers).length > 0));
   // extreload can't ride a replay either: mid-batch it restarts the worker out
   // from under the later lines (driven-tab memory and emulation die with it).
   const cmd =

@@ -176,12 +176,14 @@ shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--c
                                   (it watches what you see), and, on change, saves ONLY the changed
                                   region (padded, capture res) — canvas/pixel changes the tree can't see.
                                   --scale/--max are ignored while a baseline exists (noted in the reply)
-fetch <match> <url> [--out file] [--keep]
+fetch <match> <url> [--out file] [--keep] [--header "k: v"]... [--csrf]
                                   in-page fetch riding the logged-in session — login-walled
                                   JSON/feeds answer it without eval plumbing; binary needs
                                   --out, text prints capped at 50K chars (--out: full body);
                                   no matching tab → scratch tab on the target origin (closed
-                                  after, unless --keep)
+                                  after, unless --keep); --header adds request headers for
+                                  session APIs that check them; --csrf attaches the JSESSIONID
+                                  cookie as csrf-token (LinkedIn Voyager-class APIs)
 net <match> [--dur ms] [--filter s] [--body s] [--ws] [--har out.har]
                                   capture network for N ms, capped at 30s (CDP; one line per
                                   request) — run successive captures for longer windows;

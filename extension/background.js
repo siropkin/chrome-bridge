@@ -3220,9 +3220,11 @@ const nanoSrc = (context, question) => `(async () => {
 // (credentials: include), so the cookies ride it. Body capped at 512KB — a
 // bigger body belongs in --out, and an unbounded one would ride the WS frame
 // regardless. Binary comes back base64 (a JS string can't hold the bytes
-// honestly); the CLI decodes it into --out.
-const fetchSrc = (url) => `(async () => {
-  const res = await fetch(${JSON.stringify(url)}, { credentials: 'include' });
+// honestly); the CLI decodes it into --out. headers = --header/--csrf extras
+// (#43): session APIs like LinkedIn Voyager reject a bare fetch on its CSRF
+// check — the session cookie rides, but the csrf-token header must too.
+const fetchSrc = (url, headers) => `(async () => {
+  const res = await fetch(${JSON.stringify(url)}, { credentials: 'include', headers: ${JSON.stringify(headers || {})} });
   const ct = res.headers.get('content-type') || '';
   if (!/text|json|xml|javascript|csv/i.test(ct)) {
     const buf = new Uint8Array(await res.arrayBuffer());
@@ -3722,6 +3724,26 @@ async function findTab(msg) {
 }
 
 async function cmdFetch(tab, msg) {
+  // --csrf (#43): session APIs (LinkedIn Voyager) check a csrf-token header
+  // whose value is the JSESSIONID cookie — httpOnly, so no page-side read can
+  // reach it. The debugger already holds the permission: Network.getCookies
+  // answers httpOnly cookies for the URL. Brief attach, header attached to
+  // the in-page fetch below.
+  const headers = { ...(msg.headers || {}) };
+  if (msg.csrf) {
+    const cookies = await withCdp(tab.id, async () => {
+      await attachDbg(tab.id);
+      try {
+        return await chrome.debugger.sendCommand({ tabId: tab.id }, 'Network.getCookies', { urls: [msg.url] });
+      } finally {
+        await detachDbg(tab.id);
+      }
+    });
+    const j = (cookies?.cookies || []).find((c) => c.name === 'JSESSIONID');
+    if (!j) throw new Error('--csrf: no JSESSIONID cookie reaches ' + new URL(msg.url).host + ' — wrong origin, or the profile is not logged in');
+    headers['csrf-token'] = j.value.replace(/^"|"$/g, ''); // the cookie stores the value quoted
+  }
+  const hasHeaders = Object.keys(headers).length > 0;
   // In-page fetch first — the page's session rides it. A page CSP
   // (connect-src) or a cross-origin CORS refusal falls back to the
   // browser-network read: Network.loadNetworkResource fetches outside the
@@ -3729,8 +3751,15 @@ async function cmdFetch(tab, msg) {
   // net --body reads bodies through. Shape handled defensively; a Chrome
   // version that answers differently fails loudly here, not silently.
   try {
-    return await runEval(tab.id, fetchSrc(msg.url));
+    return await runEval(tab.id, fetchSrc(msg.url, headers));
   } catch (e) {
+    // The fallback can't carry custom headers (Network.loadNetworkResource
+    // has no headers param) — a headerless retry of a CSRF-checked API is a
+    // 403 that misreads as "the API broke". Fail with the real error instead.
+    if (hasHeaders)
+      throw new Error(
+        String(e).replace(/^(Error:\s*)+/, '') + ' — custom headers ride only the in-page fetch; the browser-network fallback cannot carry them'
+      );
     const read = await withCdp(tab.id, async () => {
       await attachDbg(tab.id);
       try {
