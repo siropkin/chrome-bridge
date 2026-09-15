@@ -57,7 +57,9 @@ The bridge is for pages a plain HTTP request can't handle — interaction (click
 
 ```
 batch                             read commands from stdin, one per line ('#' = comment,
-                                  quotes honored) — one process for N commands; stops on first error
+                                  quotes honored; eval payloads ride verbatim — quotes are
+                                  JS syntax there, not grouping) — one process for N
+                                  commands; stops on first error
 tabs [match]                      list tabs (compact JSON); [match] filters by URL/title substring;
                                   several profiles connected → merged, rows carry a profile tag
 profiles                          list connected Chrome profiles — id and name (for --profile) + version

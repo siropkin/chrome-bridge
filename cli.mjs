@@ -176,7 +176,9 @@ const splitDashDash = (args) => {
 const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
 
   batch                             read commands from stdin, one per line ('#' = comment,
-                                    quotes honored) — one process for N commands; stops on first error
+                                    quotes honored; eval payloads ride verbatim — quotes are
+                                    JS syntax there, not grouping) — one process for N
+                                    commands; stops on first error
   tabs [match]                      list tabs (compact JSON); [match] filters by URL/title substring;
                                     with multiple Chrome profiles connected, merged with a profile tag.
                                     Rows carry the tab id: a <match> of id:<tabId> — from the toolbar
@@ -605,6 +607,53 @@ async function run(cmdName, args) {
       const lines = (await stdin()).split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
       for (const line of lines) {
         console.error('$ ' + line); // stderr: stdout stays pure concatenated results (machine-parseable)
+        // eval's payload is CODE, not shell words: tokenize() strips quotes
+        // that are JS syntax ("button" → button → ReferenceError, #42). eval
+        // lines parse off the RAW text: an optional --profile pair, the
+        // <match> (bare or one quoted token), then the payload rides verbatim
+        // — unless it's exactly one quoted token with an optional trailing
+        // '--world w' (the shape history --batch emits via shellq), which is
+        // unquoted once so a replay round-trips the original code.
+        if (/^(?:--profile\s+\S+\s+)?eval(\s|$)/.test(line)) {
+          let rest = line;
+          const prof = rest.match(/^--profile\s+(\S+)\s+/);
+          if (prof) {
+            if (prof[1].startsWith('--')) fail('--profile needs an id or name (see: cli.mjs profiles)');
+            PROFILE = prof[1];
+            rest = rest.slice(prof[0].length);
+          }
+          rest = rest.replace(/^eval/, '').trimStart();
+          const unq = (t) => {
+            if (t[0] !== '"' && t[0] !== "'") return t;
+            if (t[0] === '"') {
+              try {
+                return JSON.parse(t); // shellq emits JSON — the exact inverse
+              } catch {
+                return t;
+              }
+            }
+            return t.slice(1, -1);
+          };
+          let match;
+          if (rest[0] === '"' || rest[0] === "'") {
+            const e = rest.indexOf(rest[0], 1);
+            if (e < 0) fail('unterminated quote in batch line');
+            match = unq(rest.slice(0, e + 1));
+            rest = rest.slice(e + 1).trimStart();
+          } else {
+            const i = rest.search(/\s/);
+            if (i < 0) fail('usage: eval <match> <js|-> [--world main|isolated]');
+            match = rest.slice(0, i);
+            rest = rest.slice(i).trimStart();
+          }
+          if (!rest) fail('usage: eval <match> <js|-> [--world main|isolated]');
+          const qm =
+            rest.match(/^("(?:[^"\\]|\\.)*"|'[^']*')(\s+--world\s+(main|isolated))?\s*$/i) ||
+            rest.match(/^(\S+)(\s+--world\s+(main|isolated))\s*$/i);
+          if (qm) await run('eval', qm[3] ? [match, unq(qm[1]), '--world', qm[3]] : [match, unq(qm[1])]);
+          else await run('eval', [match, rest]);
+          continue;
+        }
         const tokens = tokenize(line);
         // A leading --profile routes this line (history --batch emits one per
         // recorded command; without this the token reads as a command name) and
