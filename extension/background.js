@@ -2232,9 +2232,37 @@ const COVERAGE_SRC = `
   }
 `;
 
+// Modal-opened detection (#51): a click whose real result is a blocking
+// dialog (LinkedIn InMail's 'Share your contact info?') reads as success —
+// the app even clears its composer, and a later reload loses the draft for
+// good. If a modal OPENED because of the click, say so before the agent
+// assumes the action completed. Shadow-piercing via deepAll (LinkedIn modals
+// live in shadow roots). Requires DEEPQ in scope; shared by the synthetic
+// click and the --trusted path.
+const MODAL_FUNCS = `
+  const bridgeVisModals = () => deepAll('dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"]', document)
+    .filter((m) => { const r = m.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
+  const bridgeModalNote = (before) => {
+    const mods = bridgeVisModals();
+    if (mods.length <= before) return '';
+    const txt = (mods[mods.length - 1].innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 60);
+    return ' — a modal dialog opened as a result' + (txt ? ' ("' + txt + '")' : '') + ' — resolve it before assuming the action completed';
+  };
+`;
+const MODAL_COUNT_SRC = `(() => { ${DEEPQ} ${MODAL_FUNCS} return bridgeVisModals().length; })()`;
+const modalNoteSrc = (before) => `(async () => {
+  ${DEEPQ}
+  ${MODAL_FUNCS}
+  // Give the dialog a beat to animate in (the synthetic path's effect wait
+  // covers this there).
+  await new Promise((r) => setTimeout(r, 400));
+  return bridgeModalNote(${before});
+})()`;
+
 const clickSrc = (target, dbl) => `(async () => {
   ${DEEPQ}
   ${FRAME_SRC}
+  ${MODAL_FUNCS}
   const sel = ${JSON.stringify(target)};
   const el = mustQuery(sel);
   ${FILE_INPUT_GUARD}
@@ -2252,7 +2280,7 @@ const clickSrc = (target, dbl) => `(async () => {
   // the target (or a body-level portal), focus, value/checked, the URL.
   // Watch briefly and say when nothing did, naming the --trusted remedy.
   // Bridge UI traffic (cursor ripple teardown, pill ticker) is excluded.
-  const f0 = document.activeElement, u0 = location.href, c0 = el.checked, v0 = el.value;
+  const f0 = document.activeElement, u0 = location.href, c0 = el.checked, v0 = el.value, m0 = bridgeVisModals().length;
   let mutated = false, navigating = false;
   const mo = new MutationObserver((ms) => {
     for (const m of ms) {
@@ -2284,7 +2312,7 @@ const clickSrc = (target, dbl) => `(async () => {
   mo.disconnect();
   if (navigating) return 'clicked ' + sel${dbl ? ' (double)' : ''} + ' — page navigating';
   const effect = mutated || document.activeElement !== f0 || location.href !== u0 || el.checked !== c0 || el.value !== v0;
-  return 'clicked ' + sel${dbl ? ' (double)' : ''} + (effect ? '' : ' — no observable page effect: the app may ignore synthetic clicks — retry with --trusted');
+  return 'clicked ' + sel${dbl ? ' (double)' : ''} + (effect ? '' : ' — no observable page effect: the app may ignore synthetic clicks — retry with --trusted') + bridgeModalNote(m0);
 })()`;
 
 const fillSrc = (target, value) => `(() => {
@@ -2972,8 +3000,10 @@ async function trustedInput(tab, msg) {
       if (msg.type === 'click') {
         const p = await point(msg.target, true, true);
         if (!p.inBanner) suppression = await removeBannerForCapture(tab.id);
+        const m0 = await runEval(tab.id, MODAL_COUNT_SRC).catch(() => 0);
         await cdpMouseClick(tab.id, p.cx, p.cy, msg.dbl);
         res = `clicked ${msg.target} (trusted${msg.dbl ? ', double' : ''})`;
+        res += await runEval(tab.id, modalNoteSrc(m0)).catch(() => '');
       } else if (msg.type === 'hover') {
         const p = await point(msg.target, false, false);
         if (!p.inBanner) suppression = await removeBannerForCapture(tab.id);
@@ -3025,7 +3055,7 @@ async function trustedInput(tab, msg) {
 // they reach JS listeners but don't trigger browser defaults (form submit).
 // Modifier combos: 'Control+k' splits into ctrlKey + key 'k' — 'press Control+k'
 // dispatches key='k' with the flag set, which is what app handlers match.
-const pressSrc = (keyIn, target) => `(() => {
+const pressSrc = (keyIn, target) => `(async () => {
   ${DEEPQ}
   const sel = ${JSON.stringify(target || '')}, keyIn = ${JSON.stringify(keyIn)};
   let el = document.activeElement || document.body;
@@ -3052,10 +3082,29 @@ const pressSrc = (keyIn, target) => `(() => {
   // success — fail loud, the error doubles as the accepted-keys list.
   if (key.length > 1 && !KEYCODE[key]) throw new Error('unknown key ' + JSON.stringify(key) + ' — named keys: Enter, Tab, Escape, Backspace, Delete, Insert, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, or a single character (space = " ")');
   o.keyCode = key.length === 1 ? (/[a-z]/i.test(key) ? key.toUpperCase().charCodeAt(0) : key.charCodeAt(0)) : (KEYCODE[key] || 0);
+  // Effect observation (#50, same trap as #23 clicks): Gmail's search box
+  // ignores synthetic Enter — no hashchange, no render — while 'pressed'
+  // reads as success. Synthetic keys also never trigger browser defaults
+  // (text insertion, form submit), so a noop is common. Watch briefly and
+  // name the --trusted remedy when nothing moved. Scroll counts: ArrowDown /
+  // PageDown on a scroller is a real effect with no DOM mutation.
+  const f0 = document.activeElement, u0 = location.href, v0 = el.value, s0 = window.scrollY;
+  let mutated = false;
+  const mo = new MutationObserver((ms) => {
+    for (const m of ms) {
+      if ([...m.addedNodes, ...m.removedNodes].some((n) => n.nodeType === 1 && /^(bridge-banner|bridge-cursor|bridge-grid)$/.test(n.id || ''))) continue;
+      const t = m.target;
+      if (el.contains(t) || t === document.body || t === document.documentElement || t.contains?.(el)) { mutated = true; break; }
+    }
+  });
+  mo.observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true });
   el.dispatchEvent(new KeyboardEvent('keydown', o));
   el.dispatchEvent(new KeyboardEvent('keypress', { ...o, charCode: key.length === 1 ? key.charCodeAt(0) : 0 }));
   el.dispatchEvent(new KeyboardEvent('keyup', o));
-  return 'pressed ' + keyIn + ' on <' + el.tagName.toLowerCase() + '>';
+  await new Promise((r) => setTimeout(r, 350));
+  mo.disconnect();
+  const effect = mutated || document.activeElement !== f0 || location.href !== u0 || el.value !== v0 || window.scrollY !== s0;
+  return 'pressed ' + keyIn + ' on <' + el.tagName.toLowerCase() + '>' + (effect ? '' : ' — no observable page effect: the app may ignore synthetic keys — retry with --trusted');
 })()`;
 
 const hoverSrc = (target) => `(() => {

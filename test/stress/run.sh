@@ -574,7 +574,18 @@ s_refs() {
   # the <p> has no handler and takes no focus, so nothing observable moves.
   "${CLI[@]}" click "x=refs" 'p' >"$OUT/refs-noop.log" 2>&1
   assert_grep "ignored click says so and names --trusted" "$OUT/refs-noop.log" 'no observable page effect.*--trusted'
+  # #50: same trap through press — a synthetic Enter nothing handles must not
+  # read as a plain success either (Gmail search ignored it silently).
+  "${CLI[@]}" press "x=refs" Enter 'p' >"$OUT/refs-noop-press.log" 2>&1
+  assert_grep "ignored press says so and names --trusted" "$OUT/refs-noop-press.log" 'no observable page effect.*--trusted'
   "${CLI[@]}" close "x=refs" >/dev/null 2>&1
+  # #51: a click whose real result is a blocking modal must say so — the app
+  # can clear its composer (looking sent) while the message sits behind the
+  # dialog, and a later reload loses it.
+  "${CLI[@]}" open "$FX/modal.html?x=refs" --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" click "modal.html?x=refs" '#open-modal' >"$OUT/refs-modal.log" 2>&1
+  assert_grep "modal-opening click names the dialog" "$OUT/refs-modal.log" 'a modal dialog opened as a result'
+  "${CLI[@]}" close "modal.html?x=refs" >/dev/null 2>&1
 }
 
 s_type() {
@@ -637,6 +648,12 @@ s_trusted() {
   "${CLI[@]}" click "x=trusted" 'button' --trusted --profile "$P1" >"$OUT/trusted-front.log" 2>&1
   assert_grep "trusted click works once the tab is in front" "$OUT/trusted-front.log" 'clicked button \(trusted\)'
   "${CLI[@]}" close "x=trusted" --profile "$P1" >/dev/null 2>&1
+  # #51: the trusted path names a modal the click opened, same as synthetic.
+  "${CLI[@]}" open "$FX/modal.html?x=trusted" --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" activate "modal.html?x=trusted" --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" click "modal.html?x=trusted" '#open-modal' --trusted --profile "$P1" >"$OUT/trusted-modal.log" 2>&1
+  assert_grep "trusted click that opens a modal says so" "$OUT/trusted-modal.log" 'a modal dialog opened as a result'
+  "${CLI[@]}" close "modal.html?x=trusted" --profile "$P1" >/dev/null 2>&1
 }
 
 # ---------------------------------------------------------------- section 12
@@ -671,7 +688,7 @@ cleanup() {
   for m in "stress/fixtures/static.html" "stress/fixtures/counter.html" \
            "stress/fixtures/big.html" "stress/fixtures/rich.html" "stress/fixtures/change.html" \
            "stress/fixtures/fixedheader.html" "stress/fixtures/slowchange.html" "stress/fixtures/net.html" \
-           "stress/fixtures/alert.html" "stress/fixtures/csp.html" "test/upload.html" \
+           "stress/fixtures/alert.html" "stress/fixtures/csp.html" "stress/fixtures/modal.html" "test/upload.html" \
            "localhost:9334/fixtures/iframe.html"; do
     for p in "$P1" "$P2"; do
       [ -z "$p" ] && continue

@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>stress modal</title>
+</head>
+<body>
+  <h1>Modal fixture</h1>
+  <!-- #51: a click whose real result is a blocking dialog must say so -->
+  <button id="open-modal" onclick="document.getElementById('m').showModal()">Open modal</button>
+  <dialog id="m">
+    <p>Share your contact info?</p>
+    <button id="dismiss" onclick="this.closest('dialog').close()">No, don't share</button>
+  </dialog>
+</body>
+</html>
