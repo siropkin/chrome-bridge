@@ -574,6 +574,12 @@ s_refs() {
   # the <p> has no handler and takes no focus, so nothing observable moves.
   "${CLI[@]}" click "x=refs" 'p' >"$OUT/refs-noop.log" 2>&1
   assert_grep "ignored click says so and names --trusted" "$OUT/refs-noop.log" 'no observable page effect.*--trusted'
+  # #50 (Gmail's dead Search button): a dead FOCUSABLE control must warn too —
+  # the click's own focus() move onto the button is not a page effect. Button
+  # two, not one: the fresh-ref click above already focused button one, and a
+  # click on the ALREADY-focused button can't exercise the focus self-mask.
+  "${CLI[@]}" click "x=refs" 'button:nth-of-type(2)' >"$OUT/refs-noop-btn.log" 2>&1
+  assert_grep "ignored click on a focusable button still warns" "$OUT/refs-noop-btn.log" 'no observable page effect.*--trusted'
   # #50: same trap through press — a synthetic Enter nothing handles must not
   # read as a plain success either (Gmail search ignored it silently).
   "${CLI[@]}" press "x=refs" Enter 'p' >"$OUT/refs-noop-press.log" 2>&1
@@ -654,6 +660,16 @@ s_trusted() {
   "${CLI[@]}" click "modal.html?x=trusted" '#open-modal' --trusted --profile "$P1" >"$OUT/trusted-modal.log" 2>&1
   assert_grep "trusted click that opens a modal says so" "$OUT/trusted-modal.log" 'a modal dialog opened as a result'
   "${CLI[@]}" close "modal.html?x=trusted" --profile "$P1" >/dev/null 2>&1
+  # #50: trusted Enter must fire keypress + default activation (implicit form
+  # submit) — CDP keyDown without `text` produces neither, and Gmail's search
+  # silently ignored a 'real' Enter while synthetic Enter fired its router.
+  "${CLI[@]}" open "$FX/keypress.html?x=trusted" --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" activate "keypress.html?x=trusted" --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" fill "keypress.html?x=trusted" '#i' 'hello' --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" press "keypress.html?x=trusted" Enter '#i' --trusted --profile "$P1" >"$OUT/trusted-enter.log" 2>&1
+  "${CLI[@]}" eval "keypress.html?x=trusted" "document.getElementById('out').textContent" --profile "$P1" >>"$OUT/trusted-enter.log" 2>&1
+  assert_grep "trusted Enter fires keypress + implicit submit" "$OUT/trusted-enter.log" '^submitted:hello$'
+  "${CLI[@]}" close "keypress.html?x=trusted" --profile "$P1" >/dev/null 2>&1
 }
 
 # ---------------------------------------------------------------- section 12

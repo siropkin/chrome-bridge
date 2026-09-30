@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>stress keypress</title>
+</head>
+<body>
+  <h1>Keypress fixture</h1>
+  <!-- #50: a trusted Enter must fire keypress AND the default activation
+       (implicit form submit) — CDP keyDown without text produces neither,
+       and Gmail's search silently ignored a 'real' Enter. -->
+  <form onsubmit="document.getElementById('out').textContent='submitted:'+document.getElementById('i').value;return false">
+    <input id="i" onkeypress="document.getElementById('out').textContent='keypress:'+event.key">
+  </form>
+  <div id="out"></div>
+</body>
+</html>

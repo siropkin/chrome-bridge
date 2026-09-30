@@ -2286,6 +2286,11 @@ const clickSrc = (target, dbl) => `(async () => {
     for (const m of ms) {
       if ([...m.addedNodes, ...m.removedNodes].some((n) => n.nodeType === 1 && /^(bridge-banner|bridge-cursor|bridge-grid)$/.test(n.id || ''))) continue;
       const t = m.target;
+      // Ancestor class/style churn is ambient on SPA shells (Gmail's app
+      // container mutates constantly, masking the no-op) — only attributes
+      // ON/INSIDE the target count. Ceiling: a click whose SOLE effect is a
+      // class toggle on an ancestor (theme switch on <html>) now warns.
+      if (m.type === 'attributes' && !el.contains(t)) continue;
       if (el.contains(t) || t === document.body || t === document.documentElement || t.contains?.(el)) { mutated = true; break; }
     }
   });
@@ -2311,7 +2316,13 @@ const clickSrc = (target, dbl) => `(async () => {
   });
   mo.disconnect();
   if (navigating) return 'clicked ' + sel${dbl ? ' (double)' : ''} + ' — page navigating';
-  const effect = mutated || document.activeElement !== f0 || location.href !== u0 || el.checked !== c0 || el.value !== v0;
+  // The dispatch's own el.focus() must not count as the page effect — a dead
+  // button read as clean 'clicked' purely because focus moved onto it (#50,
+  // Gmail's Search button). Focus still counts when it lands ELSEWHERE (an
+  // app handler ran) or when el takes text: there focus IS the click's job.
+  const ae = document.activeElement;
+  const focusEffect = ae !== f0 && (ae !== el || el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
+  const effect = mutated || focusEffect || location.href !== u0 || el.checked !== c0 || el.value !== v0;
   return 'clicked ' + sel${dbl ? ' (double)' : ''} + (effect ? '' : ' — no observable page effect: the app may ignore synthetic clicks — retry with --trusted') + bridgeModalNote(m0);
 })()`;
 
@@ -2932,7 +2943,13 @@ async function cdpKeyEvent(tabId, keyIn) {
     for (const { bit, ...ev } of MODKEYS.reverse()) await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', { ...ev, modifiers: (held &= ~bit), type: 'keyUp' });
     return;
   }
-  await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', { ...base, type: 'keyDown', ...(isChar ? { text: key, unmodifiedText: key } : {}) });
+  // Enter also needs `text` (DevTools/Puppeteer send '\r'): without it Blink
+  // fires keydown/keyup but NO keypress and runs no default activation — an
+  // implicit form submit (Gmail search) never happens and the app silently
+  // ignores a 'real' Enter its keypress handler never saw (#50). Not with
+  // Ctrl/Meta held: modified Enter is an accelerator, not text entry.
+  const enterText = key === 'Enter' && (bits & (BITS.control | BITS.meta)) === 0;
+  await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', { ...base, type: 'keyDown', ...(isChar ? { text: key, unmodifiedText: key } : enterText ? { text: '\r', unmodifiedText: '\r' } : {}) });
   await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', { ...base, type: 'keyUp' });
 }
 
@@ -3094,6 +3111,9 @@ const pressSrc = (keyIn, target) => `(async () => {
     for (const m of ms) {
       if ([...m.addedNodes, ...m.removedNodes].some((n) => n.nodeType === 1 && /^(bridge-banner|bridge-cursor|bridge-grid)$/.test(n.id || ''))) continue;
       const t = m.target;
+      // Same ambient-churn filter as click: ancestor class/style mutations
+      // are constant on SPA shells — only attributes ON/INSIDE el count.
+      if (m.type === 'attributes' && !el.contains(t)) continue;
       if (el.contains(t) || t === document.body || t === document.documentElement || t.contains?.(el)) { mutated = true; break; }
     }
   });
