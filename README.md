@@ -274,7 +274,7 @@ node cli.mjs unemulate news.ycombinator.com                # back to normal
 
 `node test/selftest.mjs` — end-to-end check with a fake extension (no Chrome needed); runs on every push via GitHub Actions (Node 18/20/22). How to land changes (selftest gate, version bump, tags, style): see *Developing* in [AGENTS.md](AGENTS.md).
 
-chrome-bridge is **not on npm** — the only install path is this repo (anything `npm install chrome-bridge` gives you is an unrelated package). To pin what an agent will run, check out a tag — e.g. `git checkout v1.18.13`; `git tag -l` lists the latest.
+chrome-bridge's npm entry is the scoped installer [`@siropkin/chrome-bridge`](https://www.npmjs.com/package/@siropkin/chrome-bridge) — `npx @siropkin/chrome-bridge` clones this repo into `~/.chrome-bridge`, starts the server, then forwards to the real CLI. The bare `chrome-bridge` npm name belongs to an unrelated 2017 package (chrome-pagevars): `npm install chrome-bridge` is NOT this project (neither are `chrome-bridge-mcp`/`chrome-bridge-sdk`). To pin what an agent will run, check out a tag — e.g. `git checkout v1.25.2`; `git tag -l` lists the latest.
 
 ## License
 

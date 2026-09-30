@@ -1,0 +1,25 @@
+{
+  "name": "@siropkin/chrome-bridge",
+  "version": "1.25.2",
+  "description": "Drive your real, logged-in Chrome from any AI agent — installer/launcher for github.com/siropkin/chrome-bridge",
+  "keywords": ["chrome", "browser-automation", "ai-agent", "claude-code", "cursor", "web-automation"],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "chrome-bridge": "bin.mjs"
+  },
+  "files": [
+    "bin.mjs"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/siropkin/chrome-bridge.git",
+    "directory": "npm"
+  },
+  "homepage": "https://github.com/siropkin/chrome-bridge",
+  "publishConfig": {
+    "access": "public"
+  }
+}

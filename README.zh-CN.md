@@ -245,7 +245,7 @@ node cli.mjs unemulate news.ycombinator.com                # 恢复正常
 
 `node test/selftest.mjs`——用模拟扩展做端到端检查(不需要 Chrome);每次 push 由 GitHub Actions 自动运行(Node 18/20/22)。如何提交变更(自测门禁、版本号、标签、风格)见 [AGENTS.md](AGENTS.md) 的 *Developing* 一节。
 
-chrome-bridge **不在 npm 上**——唯一的安装途径就是本仓库(`npm install chrome-bridge` 装到的是无关的同名包)。要固定智能体运行的代码,请签出标签——例如 `git checkout v1.18.13`;`git tag -l` 列出最新标签。
+chrome-bridge 的 npm 入口是受限域安装包 [`@siropkin/chrome-bridge`](https://www.npmjs.com/package/@siropkin/chrome-bridge)——`npx @siropkin/chrome-bridge` 会把本仓库克隆到 `~/.chrome-bridge`、启动服务,然后转发到真正的 CLI。npm 上的裸名 `chrome-bridge` 属于一个 2017 年的无关项目(chrome-pagevars):`npm install chrome-bridge` 装到的不是本项目(`chrome-bridge-mcp`/`chrome-bridge-sdk` 同样无关)。要固定智能体运行的代码,请签出标签——例如 `git checkout v1.25.2`;`git tag -l` 列出最新标签。
 
 ## 许可证
 
