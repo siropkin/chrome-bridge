@@ -1070,6 +1070,20 @@ try {
       'drift: AGENTS.md Commands block vs cli USAGE commands',
       `usage: ${[...usageCmds].sort()} docs: ${[...docCmds].sort()}`
     );
+
+    // SKILL.md is the quick reference agents read FIRST — and nothing checked
+    // it: it shipped '--diff is its only option' for upload a full release
+    // after --chooser landed (#56), found by a manual audit (v1.26.2). It is a
+    // summary, not a mirror: every command must be NAMED unless an explicit
+    // omission list keeps it AGENTS.md-only, and a few load-bearing flags must
+    // appear. A new command/flag fails here until the skill rides along (or the
+    // omission is chosen deliberately).
+    const skillMd = fs.readFileSync(`${ROOT}.claude/skills/chrome-bridge/SKILL.md`, 'utf8');
+    const SKILL_OMITS = ['grid', 'resize', 'stop']; // niche/rare — AGENTS.md-only by design
+    const skillMissing = [...usageCmds].filter((c) => !SKILL_OMITS.includes(c) && !new RegExp(`\\b${c}\\b`).test(skillMd));
+    assert(skillMissing.length === 0, 'drift: SKILL.md names every cli USAGE command (else list it in SKILL_OMITS)', `missing: ${skillMissing.sort()}`);
+    for (const flag of ['--chooser', '--csrf', '--world', '--trusted', '--profile'])
+      assert(skillMd.includes(flag), `drift: SKILL.md mentions ${flag}`, 'load-bearing for first-hour flows — the skill must name it');
   }
 
   // activity feed (watch): every relayed command lands in /log; since= yields a delta

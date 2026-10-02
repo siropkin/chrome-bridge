@@ -1850,32 +1850,6 @@ const SNAP_SRC = (scope, diff, href, skel) => `(() => {
   // interpolation inside a template's comment — it still interpolates.)
   const hidden = (el) => { const s = getComputedStyle(el); return s.display === 'none' || s.visibility === 'hidden'; };
   const hasBox = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-  function roleOf(el) {
-    const explicit = el.getAttribute('role');
-    if (explicit) return ['presentation', 'none'].includes(explicit) ? null : explicit;
-    if (el.tagName === 'INPUT') return INPUT_ROLE[el.type] || 'textbox';
-    // editing HOSTS (the attr marks the host; inheritors read 'inherit') —
-    // fill/paste drive contenteditable editors, but the tree never showed
-    // them (stress: rich fixture's #ce invisible between its headings)
-    const ce = el.getAttribute('contenteditable');
-    if (ce === 'true' || ce === 'plaintext-only') return 'textbox';
-    return ROLE_BY_TAG[el.tagName] || null;
-  }
-  function nameOf(el, role) {
-    const al = el.getAttribute('aria-label');
-    if (al && al.trim()) return al.trim().slice(0, 60);
-    const lb = el.getAttribute('aria-labelledby');
-    if (lb) {
-      const t = lb.split(/\\s+/).map((id) => document.getElementById(id)?.textContent).filter(Boolean).join(' ').trim();
-      if (t) return t.slice(0, 60);
-    }
-    if (role === 'img') return el.alt || '';
-    if (el.tagName === 'IFRAME') return (el.getAttribute('src') || '').slice(0, 60); // a cross-origin frame is otherwise a black hole in the tree
-    if (el.tagName === 'INPUT') return el.placeholder || el.name || '';
-    const text = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
-    if (text) return text.slice(0, 60);
-    return (el.getAttribute('title') || '').trim().slice(0, 60);
-  }
   function stateOf(el, role, name) {
     const s = [];
     if (el.disabled || el.getAttribute('aria-disabled') === 'true') s.push('disabled');
