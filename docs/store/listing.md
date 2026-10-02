@@ -35,7 +35,9 @@ Advanced users can also run it from source (git clone) — see the GitHub repo.
 
 PRIVACY
 
-The extension talks only to a local server on 127.0.0.1 that you (or your agent) start. No data leaves your machine. Full policy: https://github.com/siropkin/chrome-bridge/blob/master/PRIVACY.md
+The extension talks only to a local server on 127.0.0.1 that you (or your agent) start. No data leaves your machine. Full policy: https://raw.githubusercontent.com/siropkin/chrome-bridge/master/PRIVACY.md
+
+(The console's privacy-link checker rejected the github.com/blob/… URL as "not reachable" at v1.26.0 submission — the raw.githubusercontent.com URL passes. Paste the raw one into the console field, exactly, no trailing period.)
 
 ## Category
 
