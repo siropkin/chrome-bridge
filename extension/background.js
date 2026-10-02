@@ -371,6 +371,16 @@ function injectBanner(respectHide) {
   // idle tabs stay clean. pointer-events: none, covers nothing. The border
   // transition keeps the on/off from snapping at command boundaries.
   d.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;border:3px solid transparent;border-radius:2px;transition:border-color .15s ease';
+  // The pill lives in a shadow root, not the light DOM: innerText/textContent
+  // never cross a shadow boundary, so `document.body.innerText` (eval, agent
+  // scripts) stops scraping the pill's own narration — on an unrendered page
+  // the pill was the ONLY body text and eval returned it as the result (#57).
+  // OPEN mode: pillInject/flashReleased run in whatever world the tab's refs
+  // live in (MAIN on CSP-fallback tabs) and must reach in via .shadowRoot — a
+  // closed root's saved reference wouldn't cross worlds. The page could still
+  // reach in too, but it could already remove the host outright; the ⏏ guard
+  // is isTrusted, not DOM obscurity. Bonus: page CSS resets can't clobber us.
+  const shadow = d.attachShadow({ mode: 'open' });
   const pill = document.createElement('div');
   // #9333ea over the old #a855f7: white 12px text passes WCAG AA (5.4:1, was
   // 3.96:1) — the pill's whole job is being read at a glance. system-ui matches
@@ -426,8 +436,8 @@ function injectBanner(respectHide) {
   // (pill.dataset.log, fed by pillInject). Click again to close. The ✕ span
   // keeps the old whole-pill click-to-hide behavior.
   pill.onclick = () => {
-    if (document.getElementById('bridge-log')) {
-      document.getElementById('bridge-log').remove();
+    if (shadow.querySelector('#bridge-log')) {
+      shadow.querySelector('#bridge-log').remove();
       return;
     }
     const p = document.createElement('pre');
@@ -445,7 +455,7 @@ function injectBanner(respectHide) {
         p.remove();
       }
     });
-    d.appendChild(p);
+    shadow.appendChild(p);
     p.focus();
   };
   pill.onkeydown = (e) => {
@@ -488,7 +498,7 @@ function injectBanner(respectHide) {
   // Order: label, ⏏ release, ✕ hide LAST — the toast/notification convention
   // (dismiss is always the terminal control; Material chips, macOS banners).
   pill.append(label, off, x);
-  d.appendChild(pill);
+  shadow.appendChild(pill);
   (document.body || document.documentElement).appendChild(d);
 }
 
@@ -502,7 +512,7 @@ function removeBanner() {
 // to rebuild (not early-return) if the agent re-marks inside the fade window.
 function flashReleased() {
   const banner = document.getElementById('bridge-banner');
-  const pill = banner?.querySelector('div');
+  const pill = banner?.shadowRoot?.querySelector('div');
   if (!pill) return;
   banner.dataset.fading = '1';
   banner.style.borderColor = 'transparent';
@@ -512,7 +522,7 @@ function flashReleased() {
   pill.firstChild.textContent = '🟣 ✓ released — yours again (a running action may still finish)';
   pill.title = 'released';
   pill.style.pointerEvents = 'none';
-  document.getElementById('bridge-log')?.remove();
+  banner.shadowRoot.querySelector('#bridge-log')?.remove();
   setTimeout(() => banner.remove(), 2000);
 }
 
@@ -536,7 +546,7 @@ function pillInject(label, lines, target, active) {
   // re-render can wipe #bridge-banner mid-session) from the user's ✕ hide
   // (respect it — bridgeHide is set only by the ✕ handler).
   if (!banner) return document.documentElement.dataset.bridgeHide === '1' ? 'hid' : 'gone';
-  const pill = banner.querySelector('div');
+  const pill = banner.shadowRoot?.querySelector('div');
   if (!pill) return;
   banner.style.borderColor = active ? 'rgba(147,51,234,.75)' : 'transparent';
   // Every @eN — in the current label AND the 30-line history ring — resolves
@@ -557,7 +567,7 @@ function pillInject(label, lines, target, active) {
   // Fixed short hint naming all three affordances — a 30-line native tooltip
   // doesn't scroll and duplicates the click-to-open panel that holds the log.
   pill.title = 'AI is driving this tab — click for history · ⏏ releases · ✕ hides';
-  const p = document.getElementById('bridge-log');
+  const p = banner.shadowRoot?.querySelector('#bridge-log');
   if (p) {
     p.textContent = log || '(no activity yet)'; // panel open → live-update it
     p.scrollTop = p.scrollHeight; // newest last — an opened panel shows what just happened, not the oldest lines
@@ -2134,6 +2144,14 @@ const DEEPQ = `
       // a 0x0 rect and misreads as 'covered by overlay' at 0,0, or dispatches
       // into the void (#47). Detached = gone.
       if (refEl && !refEl.isConnected) refEl = null;
+      // A re-render can also hide-but-keep the old subtree (leave transitions,
+      // keep-alive caches, v-show): the husk stays connected and identity-stable,
+      // so it survives the prune — and click dispatches into the void at 0,0
+      // behind a 'succeeded' verdict (#58). Mint only stamps nodes with a box
+      // and no display/visibility:none, so not-rendered at resolve always means
+      // the page changed under the ref. checkVisibility (not a 0x0-rect test)
+      // so a scrolled-off content-visibility:auto element is NOT misread as dead.
+      if (refEl && refEl.checkVisibility && !refEl.checkVisibility({ checkVisibilityCSS: true })) refEl = null;
       // A ref's identity is its snap-time role+name, not the node: a re-sorted
       // virtualized list (LinkedIn messaging) keeps the NODE alive but puts a
       // different row's content in it — acting on it reports success at the
@@ -2157,7 +2175,7 @@ const DEEPQ = `
   // a nav that never happened. A CSS miss gets the same hint style.
   const staleRefHint = () =>
     window.__bridgeRefs
-      ? ' — the page re-rendered since the snap (this node is gone, no navigation happened); run snap again for fresh refs'
+      ? ' — the page re-rendered since the snap (this node is gone or hidden, no navigation happened); run snap again for fresh refs'
       : ' — refs expire on navigation; run snap again';
   const queryErr = (sel) => 'element not found: ' + sel + (sel.startsWith('@') ? staleRefHint() : ' — check the selector against a fresh snap');
   const mustQuery = (sel) => {
@@ -2860,7 +2878,10 @@ const trustedPointSrc = (target, coverage, ripple) => `(() => {
   // at the wrong point
   const [cxTop, cyTop] = toTop(el, cx, cy);
   showCursor(cxTop, cyTop, ${ripple ? 'true' : 'false'});
-  return JSON.stringify({ cx: Math.round(cxTop), cy: Math.round(cyTop), inBanner: !!el.closest('#bridge-banner') });
+  // inBanner must see THROUGH the pill's shadow root (closest() stops at the
+  // boundary): a trusted click ON ⏏/✕ is the sanctioned escape hatch — if the
+  // suppression window removed the banner it would remove the target (#57).
+  return JSON.stringify({ cx: Math.round(cxTop), cy: Math.round(cyTop), inBanner: !!(el.closest('#bridge-banner') || el.getRootNode()?.host?.id === 'bridge-banner') });
 })()`;
 
 // Page-side focus for press/type: the key events go to whatever holds focus.

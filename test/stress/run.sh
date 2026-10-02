@@ -357,7 +357,7 @@ s_marks() {
   # pill ⏏: a synthetic click must NOT release (a hostile page must not be
   # able to strip its own driven markers) — only trusted input counts
   "${CLI[@]}" snap "static.html?x=marks" >/dev/null
-  "${CLI[@]}" eval "static.html?x=marks" "document.getElementById('bridge-disconnect').click(); 'clicked'" >/dev/null 2>&1
+  "${CLI[@]}" eval "static.html?x=marks" "document.getElementById('bridge-banner').shadowRoot.getElementById('bridge-disconnect').click(); 'clicked'" >/dev/null 2>&1
   "${CLI[@]}" tabs "static.html?x=marks" | grep -q '"driven":true' && ok "synthetic ⏏ click ignored (isTrusted guard)" || bad "synthetic click released the tab"
   # pill ⏏: a trusted (CDP Input) click releases — the human's escape hatch
   # (activate first: trusted input refuses hidden tabs now, #33)
@@ -418,7 +418,7 @@ s_misc() {
   assert_grep "grid off (toggle clears)" "$OUT/08.log" '^false$'
   # note → pill history
   "${CLI[@]}" note "$M" "stress suite running here" >/dev/null 2>&1
-  "${CLI[@]}" eval "$M" "const b=document.getElementById('bridge-banner'); const pill=b?.querySelector('[aria-label*=driving]') || b?.firstElementChild; String(pill?.dataset.log?.includes('stress suite running here'))" >>"$OUT/08.log" 2>&1
+  "${CLI[@]}" eval "$M" "const b=document.getElementById('bridge-banner'); const pill=b?.shadowRoot?.querySelector('[aria-label*=driving]') || b?.shadowRoot?.firstElementChild; String(pill?.dataset.log?.includes('stress suite running here'))" >>"$OUT/08.log" 2>&1
   assert_grep "note lands in pill history" "$OUT/08.log" '^true$'
   # history lists this session
   "${CLI[@]}" history "$M" -n 60 >>"$OUT/08.log" 2>&1
@@ -733,6 +733,31 @@ s_issues() {
   "${CLI[@]}" upload chooser '#pick' "$OUT/chooser1.txt" "$OUT/chooser2.txt" --chooser --profile "$P1" >>"$OUT/issue56.log" 2>&1 && bad "single-file chooser must refuse two files" || true
   assert_grep "single-file chooser refuses two files" "$OUT/issue56.log" 'takes a single file'
   "${CLI[@]}" close chooser --profile "$P1" >/dev/null 2>&1
+  # #57: the pill was light DOM in <body> — a body.innerText eval scraped the
+  # bridge's own narration ('🟣 running a script…' was the ONLY text on an
+  # unrendered SPA and came back as the eval result). The pill lives in a
+  # shadow root now: innerText/textContent never cross the boundary.
+  "${CLI[@]}" open "$FX/static.html?x=issue57" --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" snap issue57 --profile "$P1" >/dev/null 2>&1 # the mark puts the pill on
+  "${CLI[@]}" eval issue57 "!!document.getElementById('bridge-banner')" --profile "$P1" >"$OUT/issue57.log" 2>&1
+  assert_grep "pill present on the driven tab" "$OUT/issue57.log" '^true$'
+  "${CLI[@]}" eval issue57 "document.body.innerText.includes('🟣')" --profile "$P1" >>"$OUT/issue57.log" 2>&1
+  assert_grep "body.innerText carries no pill narration" "$OUT/issue57.log" '^false$'
+  "${CLI[@]}" close issue57 --profile "$P1" >/dev/null 2>&1
+  # #58: a re-render that hides-but-keeps the old subtree (leave transitions,
+  # keep-alive caches) left the old ref resolvable — click dispatched into
+  # the husk at 0,0 behind a 'succeeded' verdict. Hidden at resolve = stale;
+  # a still-visible neighbor ref must NOT be misread.
+  "${CLI[@]}" open "$FX/static.html?x=issue58" --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" snap issue58 --profile "$P1" >"$OUT/issue58.log" 2>&1
+  R1=$(grep 'Static button one' "$OUT/issue58.log" | grep -oE '@e[0-9]+')
+  R2=$(grep 'Static button two' "$OUT/issue58.log" | grep -oE '@e[0-9]+')
+  "${CLI[@]}" eval issue58 "document.querySelector('button').style.display='none'; 'hid'" --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" click issue58 "$R1" --profile "$P1" >>"$OUT/issue58.log" 2>&1 && bad "click on a hidden husk must not succeed" || true
+  assert_grep "hidden husk reads as a stale ref" "$OUT/issue58.log" "element not found: $R1 — the page re-rendered since the snap"
+  "${CLI[@]}" click issue58 "$R2" --profile "$P1" >>"$OUT/issue58.log" 2>&1
+  assert_ngrep "a still-visible ref is not misread as stale" "$OUT/issue58.log" "element not found: $R2"
+  "${CLI[@]}" close issue58 --profile "$P1" >/dev/null 2>&1
 }
 
 s_doctor() {
