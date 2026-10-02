@@ -2478,8 +2478,13 @@ const pasteSrc = (target, value, html) => `(async () => {
   if (sel) {
     el = mustQuery(sel);
     el.scrollIntoView({ block: 'center' });
-    el.focus?.();
   }
+  // Same iframe descent as trusted focus (#53): the caret can live in a
+  // same-origin editor iframe while top-frame activeElement is the <iframe>.
+  // Before any focus() — focusing the frame element resets its document's
+  // activeElement to <body>.
+  try { let inner; while (el && el.tagName === 'IFRAME' && el.contentDocument && (inner = el.contentDocument.activeElement)) el = inner; } catch {}
+  if (sel) el.focus?.();
   if (!el || !(el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable))
     throw new Error('no text field focused — pass an @ref|css target or click the field first');
   if (el.tagName === 'INPUT' && ['checkbox', 'radio', 'file'].includes(el.type))
@@ -2495,7 +2500,7 @@ const pasteSrc = (target, value, html) => `(async () => {
   const handled = !el.dispatchEvent(ev);
   if (!handled) {
     if (el.isContentEditable) {
-      document.execCommand(asHtml ? 'insertHTML' : 'insertText', false, text); // deprecated, still the only CE path that fires beforeinput correctly
+      el.ownerDocument.execCommand(asHtml ? 'insertHTML' : 'insertText', false, text); // deprecated, still the only CE path that fires beforeinput correctly
     } else {
       const start = el.selectionStart ?? el.value.length, end = el.selectionEnd ?? start;
       nativeSet(el, el.value.slice(0, start) + plain + el.value.slice(end));
@@ -2691,9 +2696,9 @@ const changedBox = (cmp, bmp) => ({
 
 // Changed-box capture px → viewport-relative CSS coords. measure and --crop
 // both speak viewport-relative, and box.x is an offset into cap's bitmap
-// whose page origin is cap.clip.x. For diff captures the pin follows the
-// CURRENT viewport origin (clip.x === v.pageX, so the subtraction is 0);
-// the plain-capture path still carries a real origin, so the formula stays.
+// whose page origin is cap.clip.x. Viewport captures always frame the CURRENT
+// viewport origin (clip.x === round(v.pageX), so the subtraction is ~0); the
+// formula stays for capture modes with a real origin offset.
 const cssBox = (cap, box) => {
   const k = cap.s * cap.dpr; // capture px → CSS px
   return {
@@ -2778,7 +2783,30 @@ const maxOf = (msg) => {
 const settleFrames = (tabId) =>
   runEval(tabId, 'new Promise((r) => { const t = setTimeout(r, 300); requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(t); r(); })); })').catch(() => {});
 
-async function captureViewport(tabId, msg, reuseClip, forceClip) {
+// Downscale a capture in the SW. Page.captureScreenshot only scales via a
+// captureBeyondViewport clip, and beyond-viewport emulation fires a spurious
+// window resize ON THE PAGE — even at an unchanged, viewport-sized clip
+// (found live: a default shot on a hidden tab resized 1456x844→1456x844;
+// --max 0's plain capture did not). A resize-listening SPA remounts and loses
+// its state (#52). Plain capture + canvas scale perturbs nothing, and
+// waitPixel already proved the plain path byte-stable (5 captures, 1s apart,
+// identical md5).
+async function scaleCapture(b64, s, format, quality) {
+  const bmp = await pngBitmap(b64);
+  try {
+    const oc = new OffscreenCanvas(Math.max(1, Math.round(bmp.width * s)), Math.max(1, Math.round(bmp.height * s)));
+    oc.getContext('2d').drawImage(bmp, 0, 0, oc.width, oc.height);
+    const blob = await oc.convertToBlob({ type: format === 'jpeg' ? 'image/jpeg' : 'image/png', ...(quality != null ? { quality: quality / 100 } : {}) });
+    const buf = new Uint8Array(await blob.arrayBuffer());
+    let bin = '';
+    for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+    return btoa(bin);
+  } finally {
+    bmp.close();
+  }
+}
+
+async function captureViewport(tabId, msg) {
   const params = { format: msg.format === 'jpeg' ? 'jpeg' : 'png' };
   if (params.format === 'jpeg') params.quality = msg.quality ?? 80;
   const m = await chrome.debugger.sendCommand({ tabId }, 'Page.getLayoutMetrics');
@@ -2788,30 +2816,6 @@ async function captureViewport(tabId, msg, reuseClip, forceClip) {
   // Captures render at devicePixelRatio, so budget max/dpr CSS px to keep
   // the OUTPUT long edge <= max.
   const s = Math.min(msg.scale || 1, max / (Math.max(v.clientWidth, v.clientHeight) * dpr));
-  // reuseClip: the --diff/--pixel-change machinery re-pins SIZE+SCALE and
-  // re-captures the CURRENT viewport origin — agents scrollIntoView between
-  // shots, so a page-absolute pin would diff off-screen pixels while the
-  // visible page moved ("no change" on a 100%-changed viewport). The infobar
-  // appearing/vanishing resizes the viewport, and the pinned size is what
-  // covers that. forceClip: the diff machinery takes the clip path even at
-  // s === 1, so the FIRST baseline renders in the same capture mode
-  // (captureBeyondViewport) as every later pinned capture — a plain baseline
-  // vs a beyond-viewport compare renders the scrollbar differently and
-  // reports a phantom changed strip on a static page (found live: 30×407px
-  // right-edge band, two consecutive --diff --max 0 calls, nothing moved).
-  // The origin is ROUNDED to whole CSS px: it's the one unpinned input on
-  // pinned re-captures, and its fractional part drifts when the debugger
-  // infobar's visual-viewport offset settles (variable timing, 0.5-7s after
-  // attach — found live: the flip re-AA'd a fixed header's dark-on-white
-  // bottom edge, a 1280×1px row, and false-fired the wait; channel-sum
-  // tolerance can't absorb a high-contrast edge). Whole-px origins keep
-  // consecutive renders deterministic no matter when the settle lands.
-  const ox = Math.round(v.pageX), oy = Math.round(v.pageY);
-  const clip = reuseClip ? { ...reuseClip, x: ox, y: oy } : { x: ox, y: oy, width: v.clientWidth, height: v.clientHeight, scale: s };
-  if (forceClip || reuseClip || s !== 1) {
-    params.captureBeyondViewport = true;
-    params.clip = clip;
-  }
   // Remove the banner again RIGHT AT the capture: the markTab/banner
   // executeScripts are fire-and-forget and can land mid-capture (a first-ever
   // shot fires markTab from findTab and its injection queues behind grouping
@@ -2822,8 +2826,13 @@ async function captureViewport(tabId, msg, reuseClip, forceClip) {
   // every poll — now every capture does).
   await settleFrames(tabId);
   await removeBannerForCapture(tabId);
+  // Plain capture ONLY (scale happens SW-side, see scaleCapture). A window
+  // resize between diff shots surfaces as diffBmp's size-mismatch re-baseline
+  // — the way waitPixel already handles it — instead of the old size pin,
+  // which only a beyond-viewport clip could honor.
   const res = await chrome.debugger.sendCommand({ tabId }, 'Page.captureScreenshot', params);
-  return { b64: res.data, format: params.format, v, dpr, s: clip.scale, clip };
+  const b64 = s !== 1 ? await scaleCapture(res.data, s, params.format, params.quality) : res.data;
+  return { b64, format: params.format, v, dpr, s, clip: { x: Math.round(v.pageX), y: Math.round(v.pageY), width: v.clientWidth, height: v.clientHeight, scale: s } };
 }
 
 // --- trusted input (--trusted): CDP Input.dispatch* ---------------------------
@@ -2863,12 +2872,22 @@ const trustedPointSrc = (target, coverage, ripple) => `(() => {
 const trustedFocusSrc = (target, key) => `(() => {
   ${DEEPQ}
   const sel = ${JSON.stringify(target || '')}, keyIn = ${JSON.stringify(key || '')};
-  const el = sel ? deepQuery(sel) : (document.activeElement || document.body);
+  let el = sel ? deepQuery(sel) : (document.activeElement || document.body);
   if (sel) {
     if (!el) throw new Error(queryErr(sel));
     el.scrollIntoView({ block: 'center' });
-    el.focus?.();
   }
+  // Apps like Slides/Docs keep the real caret inside a same-origin iframe's
+  // contenteditable while top-frame activeElement is the <iframe> itself —
+  // descend or text keys refuse a field that IS focused (CDP keys already
+  // reach the focused frame; only this guard was wrong, #53). The descent
+  // must come BEFORE any focus(): focusing an <iframe> whose document
+  // already holds the caret resets its activeElement to <body> (verified
+  // live), so the focus lands on the descended field, not the frame element.
+  // Cross-origin frames throw on contentDocument — keep the iframe and let
+  // the check fail.
+  try { let inner; while (el.tagName === 'IFRAME' && el.contentDocument && (inner = el.contentDocument.activeElement)) el = inner; } catch {}
+  if (sel) el.focus?.();
   const parts = keyIn.includes('+') && keyIn !== '+' ? keyIn.split('+') : [];
   const base = parts.length ? parts.pop() : keyIn;
   // A ctrl/alt/meta combo is a shortcut, never text entry — no field needed
@@ -2883,6 +2902,20 @@ const trustedFocusSrc = (target, key) => `(() => {
 // SW-side CDP dispatch. Modifier combos keep press semantics: 'Control+k'
 // sets the modifier bits on the k event, which is what app handlers match.
 const CDP_KEYCODE = { Enter: 13, Tab: 9, Escape: 27, Backspace: 8, Delete: 46, Insert: 45, ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39, Home: 36, End: 35, PageUp: 33, PageDown: 34, ' ': 32, Shift: 16, Control: 17, Alt: 18, Meta: 91, CapsLock: 20 };
+// US-layout [VK, code, shiftBit] for printable punctuation: charCodeAt is NOT
+// a Windows VK ('.' = 46 = VK_DELETE — a keyCode-filtering numeric input ate
+// '.' as Delete and turned 1.62 into 162, #54). Shifted glyphs ride their
+// base key with the shift bit, the way Puppeteer's layout table does.
+const CDP_CHAR = {
+  ' ': [32, 'Space'], '.': [190, 'Period'], ',': [188, 'Comma'], '-': [189, 'Minus'], '/': [191, 'Slash'],
+  ';': [186, 'Semicolon'], '=': [187, 'Equal'], '[': [219, 'BracketLeft'], ']': [221, 'BracketRight'],
+  "'": [222, 'Quote'], '`': [192, 'Backquote'], '\\': [220, 'Backslash'],
+  '!': [49, 'Digit1', 8], '@': [50, 'Digit2', 8], '#': [51, 'Digit3', 8], '$': [52, 'Digit4', 8], '%': [53, 'Digit5', 8],
+  '^': [54, 'Digit6', 8], '&': [55, 'Digit7', 8], '*': [56, 'Digit8', 8], '(': [57, 'Digit9', 8], ')': [48, 'Digit0', 8],
+  '_': [189, 'Minus', 8], '+': [187, 'Equal', 8], ':': [186, 'Semicolon', 8], '<': [188, 'Comma', 8], '>': [190, 'Period', 8],
+  '?': [191, 'Slash', 8], '~': [192, 'Backquote', 8], '{': [219, 'BracketLeft', 8], '}': [221, 'BracketRight', 8],
+  '|': [220, 'Backslash', 8], '"': [222, 'Quote', 8],
+};
 async function cdpKeyEvent(tabId, keyIn) {
   const BITS = { alt: 1, control: 2, meta: 4, shift: 8 };
   const MODS = { Control: 'control', Ctrl: 'control', Shift: 'shift', Alt: 'alt', Meta: 'meta', Cmd: 'meta', Command: 'meta' };
@@ -2899,10 +2932,14 @@ async function cdpKeyEvent(tabId, keyIn) {
   const isChar = key.length === 1;
   // Same typo guard as the synthetic path — a keyCode-0 noop reads as success.
   if (!isChar && !CDP_KEYCODE[key]) throw new Error('unknown key ' + JSON.stringify(key) + ' — named keys: Enter, Tab, Escape, Backspace, Delete, Insert, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, or a single character (space = " ")');
-  const vk = isChar ? (/[a-z]/i.test(key) ? key.toUpperCase().charCodeAt(0) : key.charCodeAt(0)) : CDP_KEYCODE[key] || 0;
+  // Chars no US key produces (accented, CJK, emoji) get vk 0 — IME-style; the
+  // text field still inserts them, and an invented keyCode is the #54 lie again.
+  const chr = isChar ? CDP_CHAR[key] : null;
+  const vk = isChar ? (chr ? chr[0] : /[a-z0-9]/i.test(key) ? key.toUpperCase().charCodeAt(0) : 0) : CDP_KEYCODE[key] || 0;
+  if (chr && chr[2]) bits |= chr[2];
   const base = {
     key,
-    code: isChar ? (/[a-z]/i.test(key) ? 'Key' + key.toUpperCase() : 'Digit' + key) : key,
+    code: isChar ? (chr ? chr[1] : /[a-z]/i.test(key) ? 'Key' + key.toUpperCase() : /[0-9]/.test(key) ? 'Digit' + key : '') : key,
     windowsVirtualKeyCode: vk,
     nativeVirtualKeyCode: vk,
     modifiers: bits,
@@ -3445,13 +3482,20 @@ async function observeDiff(tabId, actionResult, url0) {
     // Navigation verdict: an executeScript on an uncommitted navigation pends
     // FOREVER (open()'s lesson) — wait for the load, then read the NEW page.
     const navVerdict = async (u1) => {
+      // Navigation IS the observable effect: the page-side observer's window
+      // can close before the commit lands (pagehide fires late), leaving its
+      // 'no observable page effect … retry with --trusted' warning on the
+      // result right next to 'navigated to' — an agent following it re-clicks
+      // a link that worked (#55). The URL change proves the action did
+      // something; strip the stale warning.
+      const acted = actionResult.replace(/ — no observable page effect: the app may ignore synthetic \w+ — retry with --trusted/, '');
       await waitForLoad(tabId, 8000, true);
       const wall = await runEval(tabId, WALL_SRC).catch(() => ({}));
-      if (wall.captcha) return `needs_human · ${actionResult} — bot wall: ${wall.captcha} — hand off: wait <match> --human`;
-      if (wall.block) return `blocked · ${actionResult} — ${wall.block}`;
-      if (wall.login) return `needs_human · ${actionResult} — login/2FA wall — hand off: wait <match> --human`;
+      if (wall.captcha) return `needs_human · ${acted} — bot wall: ${wall.captcha} — hand off: wait <match> --human`;
+      if (wall.block) return `blocked · ${acted} — ${wall.block}`;
+      if (wall.login) return `needs_human · ${acted} — login/2FA wall — hand off: wait <match> --human`;
       const snap = await runEval(tabId, SNAP_SRC(null, false, false));
-      return `succeeded · ${actionResult} — navigated to ${u1.slice(0, 60)} — fresh snap (refs are new):\n${snap}`;
+      return `succeeded · ${acted} — navigated to ${u1.slice(0, 60)} — fresh snap (refs are new):\n${snap}`;
     };
     let url1 = await url();
     if (url1 && url0 && url1 !== url0) return await navVerdict(url1);
@@ -3966,7 +4010,63 @@ async function cmdDialog(tab, msg) {
 // is shared), found via CDP querySelector, then untagged. Hidden inputs work
 // — the common "pretty label wrapping a display:none input" pattern is
 // exactly why the descendant search below exists.
+// --chooser: the app creates its input DETACHED and opens the OS picker from
+// a trigger click (Slides' 'Upload from computer') — there is no input in the
+// DOM to target. Intercept the chooser instead: Page.fileChooserOpened hands
+// over the input's backendNodeId, no native dialog ever shown (#56).
+const chooserWaiters = new Map(); // tabId -> { resolve } while an upload --chooser waits
+chrome.debugger.onEvent.addListener((src, method, params) => {
+  if (method !== 'Page.fileChooserOpened') return;
+  const w = chooserWaiters.get(src.tabId);
+  if (!w) return;
+  chooserWaiters.delete(src.tabId);
+  w.resolve(params);
+});
 async function cmdUpload(tab, msg) {
+  if (msg.chooser) {
+    // The OS picker only opens from a real user gesture — a synthetic
+    // el.click() on the trigger is ignored (verified live), so the trigger
+    // click goes through CDP Input like any --trusted click, with the same
+    // visibility preflight (#33: CDP input on a hidden tab fires zero events).
+    const vis = await runEval(tab.id, 'document.visibilityState + "|" + document.hasFocus()').catch(() => null);
+    if (vis === 'hidden|true')
+      throw new Error('tab is hidden while its window has focus — the Chrome window is fully covered by other apps (macOS occlusion) or minimized; activate cannot un-occlude it. Use emulate <match> focus (flips visibilityState), or target the file input directly without --chooser (works on hidden tabs)');
+    if (vis?.startsWith('hidden'))
+      throw new Error('tab is hidden — upload --chooser clicks the trigger with trusted input, which reaches only the foreground tab. activate <match> it first, or target the file input directly without --chooser (works on hidden tabs)');
+    await awaitMark(tab.id);
+    return await actAndVerify(tab.id, msg, async () => {
+      let suppression = null;
+      await withCdp(tab.id, async () => {
+        try {
+          await attachDbg(tab.id);
+          await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.enable');
+          await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.setInterceptFileChooserDialog', { enabled: true });
+          try {
+            const opened = new Promise((resolve, reject) => {
+              const timer = setTimeout(() => {
+                chooserWaiters.delete(tab.id);
+                reject(new Error('no file chooser opened within 5s of clicking ' + msg.target + ' — is that the element that opens the picker?'));
+              }, 5000);
+              chooserWaiters.set(tab.id, { resolve: (p) => { clearTimeout(timer); resolve(p); } });
+            });
+            const p = JSON.parse(await runEval(tab.id, trustedPointSrc(msg.target, true, false)));
+            if (!p.inBanner) suppression = await removeBannerForCapture(tab.id);
+            await cdpMouseClick(tab.id, p.cx, p.cy);
+            const ev = await opened;
+            if (msg.files.length > 1 && ev.mode !== 'selectMultiple') throw new Error('this file chooser takes a single file — pass one');
+            await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.setFileInputFiles', { files: msg.files, backendNodeId: ev.backendNodeId });
+          } finally {
+            await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.setInterceptFileChooserDialog', { enabled: false }).catch(() => {});
+            if (suppression !== null) await restoreBanner(tab.id, suppression);
+          }
+        } finally {
+          await detachDbg(tab.id);
+        }
+      });
+      const names = msg.files.map((f) => f.split('/').pop()).join(', ');
+      return `uploaded ${msg.files.length} file(s) via the file chooser on ${msg.target}: ${names}`;
+    });
+  }
   const TAG = 'data-bridge-upload';
   // The whole body rides actAndVerify so the verdict baseline precedes the
   // CDP mutation (setFileInputFiles fires real input/change events).
@@ -4075,10 +4175,7 @@ async function cmdShot(tab, msg) {
             // thing a canvas-watcher actually wants to look at.
             const prev = shotBaselines.get(tab.id);
             const nav0 = navSeq.get(tab.id) || 0; // commit-time guard below: a mid-capture/diff navigation must not let the OLD document's frame become the NEW one's baseline
-            // --scale/--max cannot apply while a baseline exists (the diff is
-            // pinned to the baseline's frame) — say so instead of a silent no-op.
-            const ignored = prev && (msg.max !== undefined || msg.scale !== undefined) ? ' (--scale/--max ignored — the diff reuses the baseline frame)' : '';
-            const cap = await captureViewport(tab.id, { ...msg, format: 'png' }, prev?.clip, true);
+            const cap = await captureViewport(tab.id, { ...msg, format: 'png' });
             const full = 'data:image/png;base64,' + cap.b64;
             // Commit guards: a release mid-capture (it takes no CDP lock — a
             // supported interleaving) cleared the baselines, a navigation
@@ -4109,12 +4206,12 @@ async function cmdShot(tab, msg) {
             const cmp = await pixelDiff(prev.b64, cap.b64);
             if (cmp.error) {
               const kept = setBase();
-              return { note: 'diff: ' + cmp.error + (kept ? '' : ' — but the baseline was NOT saved (page navigated or tab released mid-diff)') + ignored, data: full };
+              return { note: 'diff: ' + cmp.error + (kept ? '' : ' — but the baseline was NOT saved (page navigated or tab released mid-diff)'), data: full };
             }
             if (!cmp.changed) {
               cmp.bmp.close();
               const kept = setBase();
-              return { note: 'diff: no pixel change since the previous shot' + (kept ? ' (baseline updated)' : ' (page navigated or tab released mid-diff — baseline NOT updated)') + ignored, data: full };
+              return { note: 'diff: no pixel change since the previous shot' + (kept ? ' (baseline updated)' : ' (page navigated or tab released mid-diff — baseline NOT updated)'), data: full };
             }
             const box = changedBox(cmp, cmp.bmp);
             const data = await cropDataUrl(cmp.bmp, box.x, box.y, box.w, box.h);
@@ -4122,7 +4219,7 @@ async function cmdShot(tab, msg) {
             const kept = setBase();
             const { x: cssX, y: cssY } = cssBox(cap, box);
             return {
-              note: `diff: ${cmp.pct}% of pixels changed — the saved file is the changed region (${box.w}×${box.h}px; CSS offset x=${cssX}, y=${cssY} for measure/crop). ` + (kept ? 'Baseline is now THIS shot.' : 'Page navigated or tab released mid-diff — baseline NOT updated.') + ignored,
+              note: `diff: ${cmp.pct}% of pixels changed — the saved file is the changed region (${box.w}×${box.h}px; CSS offset x=${cssX}, y=${cssY} for measure/crop). ` + (kept ? 'Baseline is now THIS shot.' : 'Page navigated or tab released mid-diff — baseline NOT updated.'),
               data,
             };
           }

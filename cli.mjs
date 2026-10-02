@@ -258,9 +258,12 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     prefixed with a VERDICT — succeeded / needs_human / blocked /
                                     uncertain (bot walls named; uncertain means nothing observable
                                     changed — never read it as ok)
-  upload <match> <@ref|css> <file...> [--diff]
+  upload <match> <@ref|css> <file...> [--chooser] [--diff]
                                     set a file input's files (CDP — works on hidden
-                                    inputs; target the input or an element wrapping it)
+                                    inputs; target the input or an element wrapping it).
+                                    --chooser: target the button that OPENS the OS file
+                                    picker — it gets intercepted, no dialog shown (for
+                                    apps whose input exists only at pick time)
   ask <match> <question>            (experimental) answer from page text with Chrome's
                                     built-in Gemini Nano — local, no cloud tokens
   wait <match> <css|--text t|--human|--pixel-change> [--timeout ms]
@@ -854,10 +857,10 @@ async function run(cmdName, args) {
     }
 
     case 'upload': {
-      const rest = args.filter((a) => a !== '--diff');
-      if (!rest[0] || !rest[1] || !rest[2]) fail('usage: upload <match> <@ref|css> <file...> [--diff]');
+      const rest = args.filter((a) => a !== '--diff' && a !== '--chooser');
+      if (!rest[0] || !rest[1] || !rest[2]) fail('usage: upload <match> <@ref|css> <file...> [--chooser] [--diff]');
       const stray = rest.slice(2).find((a) => a.startsWith('--'));
-      if (stray) fail(`unknown flag ${stray} (flags: --diff)`);
+      if (stray) fail(`unknown flag ${stray} (flags: --chooser, --diff)`);
       // Resolve to absolute paths here — Chrome (not this process) opens them,
       // so a relative path would mean nothing on the other side of the WS.
       const files = rest.slice(2).map((f) => {
@@ -870,7 +873,7 @@ async function run(cmdName, args) {
         if (!fs.statSync(p).isFile()) fail(`not a file: ${f}`);
         return p;
       });
-      print(await cmd({ type: 'upload', urlMatch: rest[0], target: rest[1], files, ...(args.includes('--diff') ? { diff: true } : {}) }));
+      print(await cmd({ type: 'upload', urlMatch: rest[0], target: rest[1], files, ...(args.includes('--chooser') ? { chooser: true } : {}), ...(args.includes('--diff') ? { diff: true } : {}) }));
       break;
     }
 

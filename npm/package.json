@@ -1,6 +1,6 @@
 {
   "name": "@siropkin/chrome-bridge",
-  "version": "1.25.2",
+  "version": "1.26.0",
   "description": "Drive your real, logged-in Chrome from any AI agent — installer/launcher for github.com/siropkin/chrome-bridge",
   "keywords": ["chrome", "browser-automation", "ai-agent", "claude-code", "cursor", "web-automation"],
   "license": "MIT",

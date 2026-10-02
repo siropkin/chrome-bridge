@@ -186,7 +186,7 @@ HTTP API 只有一个命令端点:`POST /cmd`,Body 如 `{"type": "snap", "urlMat
 | `type <match> <@ref\|css> <text> [--diff] [--trusted]` · `press <match> <key> [@ref] [--diff] [--trusted]` · `hover <match> <@ref\|css> [--diff] [--trusted]` | 逐字符输入(自动补全 UI)、按键(`Control+k` 组合键可用)、悬停;`--trusted` 走 CDP 输入(isTrusted——Enter 能触发表单提交等浏览器默认行为) |
 | `paste <match> [@ref\|css] [--diff] [--html] [-- <text>]` | 以真实粘贴的语义写入聚焦(或指定)的字段——会回退 `fill` 的富文本编辑器(Quill、Reddit/LinkedIn 编辑器)接受粘贴;不给 `-- <text>` 时读取系统剪贴板。`--html` 发送标记文本(text/html + 剥离标签的纯文本回退)——块编辑器一次粘贴即可解析为原生块 |
 | `scroll <match> <up\|down\|top\|bottom\|@ref\|css> [--diff]` | 滚动——自动找到真正的滚动容器(Linear、Gmail 这类应用外壳滚动的是内部面板,不是窗口) |
-| `upload <match> <@ref\|css> <file...> [--diff]` | 通过 CDP 设置文件输入框的文件——隐藏输入框也可用;目标是输入框或包裹它的元素。只有 `--diff` 选项;未知的 `--flag` 会失败,不会被当作文件 |
+| `upload <match> <@ref\|css> <file...> [--chooser] [--diff]` | 通过 CDP 设置文件输入框的文件——隐藏输入框也可用;目标是输入框或包裹它的元素。`--chooser` 改为以打开系统文件选择框的按钮为目标:选择器被拦截,文件落到应用在点选时才创建的输入框上(Slides 的分离式 input 模式;不弹出对话框)。未知的 `--flag` 会失败,不会被当作文件 |
 | `ask <match> <question>` | *(实验性)* 本地 Gemini Nano 根据页面文本回答——无云端 token,质量仅供预筛 |
 | `wait <match> <css\|--text t\|--human\|--pixel-change> [--timeout ms]` | 等待元素或可见文本出现(MutationObserver 驱动,页面一变即返回;默认 10 秒,上限 60 秒)。`--human` 把标签页交给你——验证码/两步验证/登录墙:小标签提示轮到你了,命令阻塞到你完成操作(默认 2 分钟),然后返回你所做改动的快照 diff。`--pixel-change` 轮询直到像素变化(无障碍树看不到的画布变化) |
 | `eval <match> <js\|-> [--world main\|isolated]` | 在页面中执行 JS;`-` 从 stdin 读取 |
@@ -245,7 +245,7 @@ node cli.mjs unemulate news.ycombinator.com                # 恢复正常
 
 `node test/selftest.mjs`——用模拟扩展做端到端检查(不需要 Chrome);每次 push 由 GitHub Actions 自动运行(Node 18/20/22)。如何提交变更(自测门禁、版本号、标签、风格)见 [AGENTS.md](AGENTS.md) 的 *Developing* 一节。
 
-chrome-bridge 的 npm 入口是受限域安装包 [`@siropkin/chrome-bridge`](https://www.npmjs.com/package/@siropkin/chrome-bridge)——`npx @siropkin/chrome-bridge` 会把本仓库克隆到 `~/.chrome-bridge`、启动服务,然后转发到真正的 CLI。npm 上的裸名 `chrome-bridge` 属于一个 2017 年的无关项目(chrome-pagevars):`npm install chrome-bridge` 装到的不是本项目(`chrome-bridge-mcp`/`chrome-bridge-sdk` 同样无关)。要固定智能体运行的代码,请签出标签——例如 `git checkout v1.25.2`;`git tag -l` 列出最新标签。
+chrome-bridge 的 npm 入口是受限域安装包 [`@siropkin/chrome-bridge`](https://www.npmjs.com/package/@siropkin/chrome-bridge)——`npx @siropkin/chrome-bridge` 会把本仓库克隆到 `~/.chrome-bridge`、启动服务,然后转发到真正的 CLI。npm 上的裸名 `chrome-bridge` 属于一个 2017 年的无关项目(chrome-pagevars):`npm install chrome-bridge` 装到的不是本项目(`chrome-bridge-mcp`/`chrome-bridge-sdk` 同样无关)。要固定智能体运行的代码,请签出标签——例如 `git checkout v1.26.0`;`git tag -l` 列出最新标签。
 
 ## 许可证
 

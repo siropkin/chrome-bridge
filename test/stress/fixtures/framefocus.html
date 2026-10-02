@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>framefocus</title>
+<!-- #54: keyCode-filtering numeric field, Slides-spinbutton style. Only
+     digit VKs + Period/Minus/Comma pass; everything else is eaten — so a
+     '.' arriving as keyCode 46 (VK_DELETE) vanishes and 1.62 reads as 162. -->
+<input id="num">
+<script>
+const ALLOW = new Set([8, 9, 37, 38, 39, 40, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 188, 189, 190]);
+document.getElementById('num').addEventListener('keydown', (e) => {
+  if (!ALLOW.has(e.keyCode)) e.preventDefault();
+});
+</script>
+<!-- #53: caret lives inside a same-origin iframe's contenteditable while the
+     top frame's activeElement is the <iframe> (Slides/Docs editor pattern). -->
+<button id="toeditor">focus editor</button>
+<iframe id="ed" srcdoc="<div id='ce' contenteditable style='min-height:60px;border:1px solid'></div>"></iframe>
+<script>
+document.getElementById('toeditor').addEventListener('click', () => {
+  const ce = document.getElementById('ed').contentDocument.getElementById('ce');
+  ce.focus();
+});
+</script>

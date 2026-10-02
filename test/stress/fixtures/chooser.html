@@ -1,0 +1,22 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>chooser</title>
+<!-- #56: Slides 'Upload from computer' pattern — the file input is created
+     DETACHED at click time and only ever exists to open the OS picker. -->
+<button id="pick">Upload from computer</button>
+<button id="pickmulti">Upload multiple</button>
+<div id="out"></div>
+<script>
+const hook = (id, multiple) =>
+  document.getElementById(id).addEventListener('click', () => {
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    if (multiple) inp.multiple = true;
+    inp.addEventListener('change', () => {
+      document.getElementById('out').textContent = 'got: ' + [...inp.files].map((f) => f.name + ':' + f.size).join(', ');
+    });
+    inp.click();
+  });
+hook('pick', false);
+hook('pickmulti', true);
+</script>

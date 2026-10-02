@@ -241,9 +241,11 @@ s_pixel() {
     const w=d.readUInt32BE(16), h=d.readUInt32BE(20);
     if (w*h>0 && w<1280 && h<1280) console.log('region file: '+w+'x'+h+' — region only'); else { console.log('BAD '+w+'x'+h); process.exit(1); }
   " >>"$OUT/04b.log" 2>&1 && ok "diff shot is the changed region only" || bad "diff shot not a region"
-  # (g) --scale/--max ignored while a baseline exists, WITH a note
+  # (g) --scale/--max CHANGES the frame once a baseline exists (pre-1.26 the
+  # diff frame was pinned and the flag was silently ignored): the captures no
+  # longer match in size, so the diff says so and re-baselines honestly
   "${CLI[@]}" shot change.html "$OUT/c3.png" --diff --max 800 >>"$OUT/04b.log" 2>&1
-  assert_grep "--max ignored with a note while baseline exists" "$OUT/04b.log" '--max ignored'
+  assert_grep "--max with a live baseline re-baselines at the new frame" "$OUT/04b.log" 'viewport size changed between shots'
   # (e) --crop from the diff note lands on the changed content
   # (the FIRST region note — the flip; later --max diffs can emit a tiny
   # sub-noise AA-jitter region near the infobar transition)
@@ -673,6 +675,66 @@ s_trusted() {
 }
 
 # ---------------------------------------------------------------- section 12
+s_issues() {
+  SECTION=issues
+  # #52: shot must not perturb the page — a beyond-viewport clip (the old
+  # default for ANY downscaled shot) fired a spurious window resize on hidden
+  # tabs, and resize-listening SPAs remounted and lost state. Plain capture +
+  # SW downscale fires nothing.
+  "${CLI[@]}" open "$FX/shotreset.html" --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" type shotreset '#q' zzz --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" shot shotreset "$OUT/issue52.png" --profile "$P1" >"$OUT/issue52.log" 2>&1
+  "${CLI[@]}" eval shotreset "JSON.stringify({q: document.getElementById('q').value, log: window.__log})" --profile "$P1" >>"$OUT/issue52.log" 2>&1
+  assert_grep "shot keeps the page's state (no remount)" "$OUT/issue52.log" '"q":"zzz"'
+  assert_ngrep "shot fires no resize/visibility/focus on a hidden tab" "$OUT/issue52.log" 'resize|REMOUNT|visibilitychange'
+  "${CLI[@]}" close shotreset --profile "$P1" >/dev/null 2>&1
+  # #53: trusted type/press + targetless paste descend same-origin iframes —
+  # Slides/Docs keep the caret in an editor iframe while the top frame's
+  # activeElement is the <iframe> itself.
+  # #54: trusted type maps punctuation to real Windows VKs ('.' = 190 Period,
+  # not 46 Delete) — a keyCode-filtering numeric input keeps 1.5-2,3 intact.
+  # loaded over HTTP: file: origins are opaque, the srcdoc iframe's
+  # contentDocument is unreachable there, and the descent must same-origin in
+  "${CLI[@]}" open "$HTTP/framefocus.html" --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" activate framefocus --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" type framefocus '#num' '1.5-2,3' --trusted --profile "$P1" >"$OUT/issue54.log" 2>&1
+  "${CLI[@]}" eval framefocus "document.getElementById('num').value" --profile "$P1" >>"$OUT/issue54.log" 2>&1
+  assert_grep "trusted type: punctuation survives a keyCode filter" "$OUT/issue54.log" '^1.5-2,3$'
+  "${CLI[@]}" eval framefocus "document.getElementById('ed').contentDocument.getElementById('ce').focus(); 'f'" --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" type framefocus '#ed' --trusted --profile "$P1" -- 'hello frame' >"$OUT/issue53.log" 2>&1
+  assert_grep "trusted type descends into a same-origin iframe" "$OUT/issue53.log" 'typed 11 chars into <div contenteditable>'
+  "${CLI[@]}" paste framefocus --profile "$P1" -- ' + pasted' >>"$OUT/issue53.log" 2>&1
+  "${CLI[@]}" press framefocus Backspace --trusted --profile "$P1" >>"$OUT/issue53.log" 2>&1
+  "${CLI[@]}" eval framefocus "document.getElementById('ed').contentDocument.getElementById('ce').innerText" --profile "$P1" >>"$OUT/issue53.log" 2>&1
+  assert_grep "targetless paste + trusted press work inside the iframe" "$OUT/issue53.log" '^hello frame \+ paste$'
+  "${CLI[@]}" close framefocus --profile "$P1" >/dev/null 2>&1
+  # #55: click --diff on a slow-navigating link — the commit outruns the
+  # page-side observer's window, so its noop warning is stale by the time the
+  # nav verdict lands; the verdict must not carry both.
+  "${CLI[@]}" open "$FX/navlink.html" --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" click navlink '#go' --diff --profile "$P1" >"$OUT/issue55.log" 2>&1
+  assert_grep "nav click --diff reports the navigation" "$OUT/issue55.log" 'navigated to http://localhost:9334/api/slow'
+  assert_ngrep "nav click --diff drops the stale noop warning" "$OUT/issue55.log" 'no observable page effect'
+  "${CLI[@]}" close "api/slow" --profile "$P1" >/dev/null 2>&1
+  # #56: upload --chooser intercepts the pick-time file input (the Slides
+  # detached-input pattern) — no OS dialog, files land on the input the app
+  # created at click time. Trusted trigger click → hidden tab refuses first.
+  echo 'chooser one' >"$OUT/chooser1.txt"; echo 'chooser two' >"$OUT/chooser2.txt"
+  "${CLI[@]}" open "$FX/chooser.html" --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" upload chooser '#pick' "$OUT/chooser1.txt" --chooser --profile "$P1" >"$OUT/issue56.log" 2>&1 && bad "chooser upload on a hidden tab must refuse" || true
+  assert_grep "hidden-tab chooser refusal names activate" "$OUT/issue56.log" 'tab is hidden.*activate'
+  "${CLI[@]}" activate chooser --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" upload chooser '#pick' "$OUT/chooser1.txt" --chooser --profile "$P1" >"$OUT/issue56.log" 2>&1
+  assert_grep "chooser upload reports the file" "$OUT/issue56.log" 'uploaded 1 file\(s\) via the file chooser on #pick'
+  "${CLI[@]}" eval chooser "document.getElementById('out').textContent" --profile "$P1" >>"$OUT/issue56.log" 2>&1
+  assert_grep "the pick-time input received the file" "$OUT/issue56.log" '^got: chooser1.txt:'
+  "${CLI[@]}" upload chooser '#pickmulti' "$OUT/chooser1.txt" "$OUT/chooser2.txt" --chooser --profile "$P1" >>"$OUT/issue56.log" 2>&1
+  assert_grep "multi-file chooser takes both files" "$OUT/issue56.log" 'uploaded 2 file\(s\)'
+  "${CLI[@]}" upload chooser '#pick' "$OUT/chooser1.txt" "$OUT/chooser2.txt" --chooser --profile "$P1" >>"$OUT/issue56.log" 2>&1 && bad "single-file chooser must refuse two files" || true
+  assert_grep "single-file chooser refuses two files" "$OUT/issue56.log" 'takes a single file'
+  "${CLI[@]}" close chooser --profile "$P1" >/dev/null 2>&1
+}
+
 s_doctor() {
   SECTION=doctor
   # The residue lifecycle, end to end: drive a tab (marked + 🟣-grouped), then
@@ -705,6 +767,8 @@ cleanup() {
            "stress/fixtures/big.html" "stress/fixtures/rich.html" "stress/fixtures/change.html" \
            "stress/fixtures/fixedheader.html" "stress/fixtures/slowchange.html" "stress/fixtures/net.html" \
            "stress/fixtures/alert.html" "stress/fixtures/csp.html" "stress/fixtures/modal.html" "test/upload.html" \
+           "stress/fixtures/shotreset.html" "9334/fixtures/framefocus.html" "stress/fixtures/navlink.html" \
+           "stress/fixtures/chooser.html" "localhost:9334/api/slow" \
            "localhost:9334/fixtures/iframe.html"; do
     for p in "$P1" "$P2"; do
       [ -z "$p" ] && continue
@@ -719,7 +783,7 @@ cleanup() {
 }
 
 # ---------------------------------------------------------------- main
-ALL="profiles churn interact dialog pixel waits net marks misc edges ids refs type trusted doctor cleanup"
+ALL="profiles churn interact dialog pixel waits net marks misc edges ids refs type trusted issues doctor cleanup"
 SECTIONS=${*:-$ALL}
 cd "$REPO"
 detect_profiles || { echo "FAIL: no connected profile (cli profiles)"; exit 1; }
@@ -732,7 +796,7 @@ for sec in $SECTIONS; do
   case $sec in
     profiles) s_profiles ;; churn) s_churn ;; interact) s_interact ;; dialog) s_dialog ;;
     pixel) s_pixel ;; waits) s_waits ;; net) s_net ;; marks) s_marks ;; misc) s_misc ;;
-    edges) s_edges ;; ids) s_ids ;; refs) s_refs ;; type) s_type ;; trusted) s_trusted ;; doctor) s_doctor ;; cleanup) cleanup ;;
+    edges) s_edges ;; ids) s_ids ;; refs) s_refs ;; type) s_type ;; trusted) s_trusted ;; issues) s_issues ;; doctor) s_doctor ;; cleanup) cleanup ;;
     *) echo "unknown section: $sec" ;;
   esac
 done

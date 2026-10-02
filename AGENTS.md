@@ -51,7 +51,7 @@ The bridge is for pages a plain HTTP request can't handle — interaction (click
 6. `wait <match> --text "Saved"` only when you need something specific without acting. Chain other dependent steps in one `batch` — stdin, one command per line — one process and one shell call instead of several.
 
 7. `shot <match> out.png` only when you need pixels. The long edge is capped at 1280px by default (models downscale bigger images on read anyway) — `--max 0` for native res, `--max 800 --format jpeg` for a cheap glance. Read screenshots in a subagent to keep image tokens out of the main context.
-8. **Always `release <match>` (or `close <match>`) when done. `unemulate` when done emulating (`release` clears any live emulation too, but don't lean on that).** Tabs you only *read* (`snap`/`measure`/`console`/`net`) — `release` them; tabs you *opened* (`open`) — `close` them. The human comes back to a browser full of purple pills and mystery tabs otherwise; leaving either is a bug in your session, not their mess to clean. A human can also click the pill's ⏏ to disconnect your claim on a tab — the feed (`watch`/`history`) shows `⏏ human released a tab via the pill` when that happens, and **the reclaim is enforced: every command on that tab except `release` is refused until a deliberate `mark <match>`** — there is no timed lapse, so don't wait it out (an in-flight step may still finish — a long `type` can keep typing). Ask the human; `mark` only when they actually hand the tab back. The toolbar popup can also release the active tab or ALL agent tabs. If a tab you're driving keeps coming back unmarked, the human took it back: ask, don't re-mark and plow on.
+8. **Always `release <match>` (or `close <match>`) when done — and sweep before you finish, not just between steps. `unemulate` when done emulating (`release` clears any live emulation too, but don't lean on that).** Tabs you only *read* (`snap`/`measure`/`console`/`net`) — `release` them; tabs you *opened* (`open`) — `close` them. The human comes back to a browser full of purple pills and mystery tabs otherwise; leaving either is a bug in your session, not their mess to clean. **The final step of every job is the sweep:** `tabs` shows every tab you still hold (`"driven":true` + `"group":"🟣 Bridge"` in the JSON) — `close` the ones you opened and `release` the rest (`release id:<tabId>` targets one exactly), then re-check `tabs`: zero driven entries means clean. Never end a turn holding a tab. A human can also click the pill's ⏏ to disconnect your claim on a tab — the feed (`watch`/`history`) shows `⏏ human released a tab via the pill` when that happens, and **the reclaim is enforced: every command on that tab except `release` is refused until a deliberate `mark <match>`** — there is no timed lapse, so don't wait it out (an in-flight step may still finish — a long `type` can keep typing). Ask the human; `mark` only when they actually hand the tab back. The toolbar popup can also release the active tab or ALL agent tabs. If a tab you're driving keeps coming back unmarked, the human took it back: ask, don't re-mark and plow on.
 
 ## Commands
 
@@ -133,9 +133,12 @@ paste <match> [@ref|css] [--diff] [--html] [-- <text>]
                                   --html sends the -- text as markup (text/html + a stripped
                                   text/plain fallback) — block editors parse it into native
                                   blocks: a whole article in one paste
-upload <match> <@ref|css> <file...> [--diff]   set a file input's files (CDP; hidden inputs work;
-                                  --diff is the only option — an unknown --flag fails,
-                                  rather than being treated as a file)
+upload <match> <@ref|css> <file...> [--chooser] [--diff]   set a file input's files (CDP; hidden inputs work;
+                                  an unknown --flag fails rather than being treated as
+                                  a file). --chooser targets the button that OPENS the
+                                  OS picker — the chooser is intercepted and the files
+                                  land on the input the app created for it (the
+                                  Slides-style detached-input pattern; no dialog shown)
 press <match> <key> [@ref|css] [--diff] [--trusted]   key press (Enter/Tab/Escape/Backspace/
                                   Delete/Insert/arrows/Home/End/PageUp/PageDown, or one char —
                                   space = " "; unknown names fail loud) on focused or given

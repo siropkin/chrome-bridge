@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>shotreset</title>
+<input id="q" placeholder="Search...">
+<ul id="list"></ul>
+<pre id="log"></pre>
+<script>
+// Repro fixture for #52: holds filter state like the reporter's React SPA and
+// "remounts" (clears it) on the triggers such apps use — visibilitychange to
+// visible, window focus, resize. Every candidate event is logged so a shot
+// against a BACKGROUND tab shows exactly what it provoked.
+window.__log = [];
+const rec = (what) => { window.__log.push(what + '@' + Math.round(performance.now())); document.getElementById('log').textContent = window.__log.join('\n'); };
+const items = ['alpha', 'beta', 'gamma', 'delta'];
+function render() {
+  const q = document.getElementById('q').value;
+  document.getElementById('list').innerHTML = items.filter((i) => i.includes(q)).map((i) => '<li>' + i + '</li>').join('');
+}
+document.getElementById('q').addEventListener('input', render);
+function remount(why) { rec('REMOUNT via ' + why); document.getElementById('q').value = ''; render(); }
+document.addEventListener('visibilitychange', () => { rec('visibilitychange→' + document.visibilityState); if (document.visibilityState === 'visible') remount('visibility'); });
+addEventListener('focus', () => remount('focus'));
+addEventListener('blur', () => rec('blur'));
+addEventListener('resize', () => rec('resize ' + innerWidth + 'x' + innerHeight));
+addEventListener('pagehide', () => rec('pagehide'));
+addEventListener('pageshow', () => rec('pageshow'));
+render();
+</script>
