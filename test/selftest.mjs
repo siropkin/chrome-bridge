@@ -210,6 +210,9 @@ try {
     // in a `snap | grep` pipe otherwise) while stdout carries the tree.
     if (msg.type === 'snap' && msg.scope === 'trunc')
       return respond('tree line A\ntree line B\n… truncated at 300 nodes — scope with: snap <match> <css>');
+    // scope 'empty' answers the empty string the real extension returns on a
+    // still-loading page — cli must fail loud, not print nothing with exit 0 (#60).
+    if (msg.type === 'snap' && msg.scope === 'empty') return respond('');
     if (['snap', 'press', 'type', 'hover', 'net', 'click', 'fill', 'paste', 'navigate', 'scroll', 'ask', 'upload', 'console', 'note', 'measure', 'grid', 'open', 'close', 'mark', 'release', 'activate', 'unemulate', 'wait', 'emulate', 'resize', 'dialog', 'drag', 'clear'].includes(msg.type)) return respond(msg); // echo for flag-parsing checks
     return respond(null);
   });
@@ -300,6 +303,15 @@ try {
     trunc.status === 0 && trunc.stdout.includes('tree line A') && trunc.stderr.includes('truncated at 300 nodes'),
     'cli snap echoes truncation warning to stderr',
     trunc.stdout + trunc.stderr
+  );
+
+  // Empty tree (still-loading page): exit non-zero with guidance — a silent
+  // empty stdout read as "empty page" to scripts (#60).
+  const emptySnap = await cli('snap', 'example.com', 'empty');
+  assert(
+    emptySnap.status !== 0 && emptySnap.stderr.includes('empty tree') && !emptySnap.stdout.trim(),
+    'cli snap on an empty tree fails loud instead of printing nothing',
+    emptySnap.stdout + emptySnap.stderr
   );
 
   const shotMax = await cli('shot', 'example.com', shotPath, '--max', '800');
@@ -414,6 +426,18 @@ try {
   assert(navDiff.status === 0 && navDiff.stdout.includes('"url":"https://example.org/x"') && navDiff.stdout.includes('"diff":true'), 'cli nav --diff', navDiff.stdout + navDiff.stderr);
   const navTypo = await cli('nav', 'example.com', 'https://example.org/x', '--dfif');
   assert(navTypo.status !== 0 && navTypo.stderr.includes('unknown flag --dfif'), 'cli nav rejects an unknown flag before routing', navTypo.stdout + navTypo.stderr);
+
+  // Extra positionals must fail loud — `click <m> "#list" @e3` used to click
+  // #list and silently drop the ref (#59); the same hole ate extras on
+  // close/clear/scroll/drag. press keeps its optional [@ref] (max 3).
+  const clickExtra = await cli('click', 'example.com', '#list', '@e3');
+  assert(clickExtra.status !== 0 && clickExtra.stderr.includes("unexpected extra argument '@e3'"), 'cli click rejects an extra positional instead of dropping it', clickExtra.stdout + clickExtra.stderr);
+  const closeExtra = await cli('close', 'example.com', 'example.org');
+  assert(closeExtra.status !== 0 && closeExtra.stderr.includes('unexpected extra argument'), 'cli close rejects an extra positional', closeExtra.stdout + closeExtra.stderr);
+  const pressExtra = await cli('press', 'example.com', 'Enter', '@e3', 'x');
+  assert(pressExtra.status !== 0 && pressExtra.stderr.includes('unexpected extra argument'), 'cli press rejects a second target', pressExtra.stdout + pressExtra.stderr);
+  const pressOk = await cli('press', 'example.com', 'Enter', '@e3');
+  assert(pressOk.status === 0 && pressOk.stdout.includes('"target":"@e3"'), 'cli press keeps its optional target', pressOk.stdout + pressOk.stderr);
 
   const scrollDiff = await cli('scroll', 'example.com', 'down', '--diff');
   assert(scrollDiff.status === 0 && scrollDiff.stdout.includes('"target":"down"') && scrollDiff.stdout.includes('"diff":true'), 'cli scroll --diff', scrollDiff.stdout + scrollDiff.stderr);

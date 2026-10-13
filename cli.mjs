@@ -153,11 +153,15 @@ function tokenize(line) {
 // hand-copied skeletons had already drifted once (a '--dfif' typo nearly got
 // typed into a real form). `known` flags are removed; the first remaining
 // '--x' at/after the positional slots fails loud instead of becoming data.
-function takeFlags(args, known, minPos, usage) {
+function takeFlags(args, known, minPos, usage, maxPos = minPos) {
   const rest = args.filter((a) => !known.includes(a));
   if (rest.length < minPos) fail(`usage: ${usage}`);
   const stray = rest.slice(minPos).find((a) => a.startsWith('--'));
   if (stray) fail(`unknown flag ${stray} (flags: ${known.join(', ')})`);
+  // Extra positionals used to be silently DROPPED — `click <m> "#list" @e3`
+  // clicked #list and the ref vanished (#59). Acting on the wrong element is
+  // the worst case; fail loud instead.
+  if (rest.length > maxPos) fail(`unexpected extra argument '${rest[maxPos]}' — usage: ${usage}`);
   return rest;
 }
 
@@ -744,6 +748,10 @@ async function run(cmdName, args) {
       const stray = before.find((a) => a.startsWith('--') && !SNAP_FLAGS.includes(a));
       if (stray) fail(`unknown flag ${stray} (flags: --diff, --href, --skeleton, --find "query")`);
       const out = await cmd({ type: 'snap', urlMatch: args[0], scope, diff, href, ...(skeleton ? { skeleton: true } : {}), ...(find ? { find } : {}) });
+      // Empty tree right after `open` printed NOTHING with exit 0 — a script
+      // read that as "empty page" when the truth was "still loading" (#60).
+      if (typeof out === 'string' && !out.trim())
+        fail('empty tree — the page is likely still loading (or has no interactive elements). Retry shortly, or: wait <match> --text <something>');
       print(out);
       // The truncation line sits at the end of the tree — a `snap | grep foo`
       // pipe filters it out and the agent concludes "not found" when the truth
@@ -845,7 +853,7 @@ async function run(cmdName, args) {
     case 'press': {
       // takeFlags scans from slot 2: a stray '--x' there used to slip through
       // as the optional target (the hand-copied scan started one slot late).
-      const rest = takeFlags(args, ['--diff', '--trusted'], 2, 'press <match> <key> [@ref|css] [--diff] [--trusted]');
+      const rest = takeFlags(args, ['--diff', '--trusted'], 2, 'press <match> <key> [@ref|css] [--diff] [--trusted]', 3);
       print(await cmd({ type: 'press', urlMatch: rest[0], key: rest[1], target: rest[2] || null, ...(args.includes('--diff') ? { diff: true } : {}), ...(args.includes('--trusted') ? { trusted: true } : {}) }));
       break;
     }
