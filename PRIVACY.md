@@ -18,8 +18,9 @@ chrome-bridge lets an AI agent or CLI on **your own machine** drive the Chrome b
 
 - `tabs`, `tabGroups` — find the tabs the agent is asked to drive, and group them visually so you can see what's automated.
 - `scripting` — inject the accessibility snapshotter and the purple pill into the pages you point it at.
-- `debugger` — attached only while a CDP command runs (`net`, `shot`, `emulate`, `upload`, `dialog`); Chrome shows its own "debugging this browser" infobar while attached.
+- `debugger` — attached only while a CDP command runs (`net`, `shot`, `emulate`, `upload`, `dialog`, `--trusted` clicks/keys, `wait --pixel-change`, and the `fetch --csrf` cookie read); Chrome shows its own "debugging this browser" infobar while attached.
 - `alarms`, `storage` — keep the service worker alive and hold the local profile id and per-tab driven markers (session-scoped).
+- `clipboardWrite` — the toolbar popup's copy buttons (copy a tab's `id:` reference, copy the agent setup prompt). The extension never reads your clipboard.
 - `<all_urls>` — the agent must be able to act on any page you point it at; nothing is read or touched until a command names the tab.
 
 All of it stays on `127.0.0.1` — no permission is used to talk to anything off your machine.
@@ -31,7 +32,7 @@ Local browser storage only, on your machine:
 - a randomly generated profile id (to tell your Chrome profiles apart in the CLI),
 - per-tab session state: driven markers, emulation and status flags, and the pill's recent-activity narration (short labels describing recent actions, which can include element text or search terms from the page).
 
-All of it lives in session storage and is cleared when the browser closes. No browsing history, credentials, or page content is persisted beyond the browser session.
+All of it lives in session storage and is cleared when the browser closes — except the profile id, which lives in local storage so it survives restarts (it names your profile in the CLI; it is random, not derived from any account). No browsing history, credentials, or page content is persisted beyond the browser session.
 
 The local server also keeps a `server.log` at the repo root: one line per command (timestamp, command, URL fragment, selector) — typed `fill`/`type`/`paste` values and dialog answers are excluded by design, though page text can appear inside error lines. It is truncated to 5MB on server start, readable only by your user account, and deletable anytime. `history --batch` also comments out pasted/typed text, dialog answers, clipboard pastes, and upload paths rather than retaining them for replay (single-line `eval` code is kept verbatim — don't embed secrets in it).
 

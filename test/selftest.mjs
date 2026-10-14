@@ -726,12 +726,18 @@ try {
     // lost-callback hangs, debugger sessions leaked onto later commands).
     assert(bg.split('chrome.debugger.attach(').length === 2, 'ext: one debugger-attach site (the refcount helper)');
     assert(bg.split('chrome.debugger.detach(').length === 2, 'ext: one debugger-detach site (the refcount helper)');
-    assert(bg.split('await attachDbg(').length >= 6 && bg.split('await detachDbg(').length >= 6, 'ext: all 6 CDP call sites refcounted');
+    // Every full-body attach site rides withDbg (queue + attach + try/finally
+    // detach) — the hand-copied attach/try/finally detached even after a
+    // FAILED attach, re-entering the refcount at 0 as a phantom doctor row.
+    // Bare attachDbg/detachDbg remains only where the attach isn't the whole
+    // body: withDbg itself, emulation, net, runEval's CDP fallback.
+    assert(bg.split('await attachDbg(').length === 5 && bg.split('await detachDbg(').length === 6, 'ext: bare attach/detach only in withDbg + the non-full-body sites');
+    assert(bg.split('withDbg(').length === 9, 'ext: all 8 full-body CDP sites ride withDbg (trustedInput, waitPixel, fetch --csrf, fetch fallback, dialog, upload --chooser, upload, shot)');
     // CDP commands serialize per tab — an unemulate racing a sibling's
     // sendCommand tore the shared session mid-flight (5.5% of interleaved
-    // CDP commands in stress). (Wrap sites: upload/net/emulate/unemulate/
-    // shot/dialog/trustedInput/fetch fallback/fetch --csrf cookie read…)
-    assert(bg.split('withCdp(').length === 15, 'ext: CDP handlers serialize per tab (helper + 13 wrap sites — v1.18.13 release-clears emulation behind the lock, v1.24 release detaches a leaked no-emulation refcount, v1.25 fetch --csrf cookie read, v1.26 upload --chooser)');
+    // CDP commands in stress). (Remaining bare withCdp sites: release's
+    // emulation clear + leaked-refcount detach, net, emulate, unemulate.)
+    assert(bg.split('withCdp(').length === 8, 'ext: CDP handlers serialize per tab (helper + withDbg wrapper + 5 bare wrap sites)');
     // open must not await the favicon/banner marking — executeScript sits
     // pending forever on an uncommitted navigation (unreachable URL), which
     // hung open past its 8s cap to the server's 70s timeout. The response
@@ -795,6 +801,13 @@ try {
     assert(
       bg.includes('humanReclaimed') && !bg.includes('RECLAIM_MS') && bg.includes("['mark', 'release'].includes(msg.type)"),
       'pill: ⏏ reclaim is enforced and sticky — findTab refuses re-driving a human-reclaimed tab until mark (no timed lapse)'
+    );
+    // …and it rides storage.session like tabActivity: an SW restart used to
+    // wipe the veto and the agent's next command re-drove the tab the human
+    // had taken back (memory-only humanReclaimed, fixed in v1.26.6).
+    assert(
+      bg.includes('humanReclaimed: Object.fromEntries(humanReclaimed)') && bg.includes("'humanReclaimed', 'swLogs'"),
+      'pill: ⏏ reclaim persists across SW restarts (storage.session write-through + hydration)'
     );
     // v1.24 review batch — the behaviors the fake extension can't execute:
     assert(
@@ -1155,6 +1168,12 @@ try {
   const clearRun = await cli('clear', 'example.com', '@e2', '--diff');
   const actRun = await cli('activate', 'example.com');
   const closeAllRun = await cli('close', 'example.com', '--all');
+  // Flags that landed in cli.mjs without their CLI_LINES mirror and silently
+  // dropped out of replays: emulate dsf=N, paste --html, upload --chooser.
+  const dsfRun = await cli('emulate', 'example.com', '1280', '800', 'dsf=2');
+  const htmlRun = await cli('paste', 'example.com', '--html', '--', '<b>x</b>');
+  fs.writeFileSync('/tmp/chrome-bridge-selftest-upload.txt', 'x');
+  const chooserRun = await cli('upload', 'example.com', '@e5', '--chooser', '/tmp/chrome-bridge-selftest-upload.txt');
   const replayPath = '/tmp/chrome-bridge-selftest-replay.batch';
   const replayExport = await cli('history', '--batch', replayPath);
   const replayScript = fs.readFileSync(replayPath, 'utf8');
@@ -1168,7 +1187,18 @@ try {
     'history --batch replays clear, activate, and close --all (registry drift class)',
     replayExport.stdout + '\n' + replayScript
   );
+  assert(
+    dsfRun.status === 0 &&
+      htmlRun.status === 0 &&
+      chooserRun.status === 0 &&
+      replayScript.includes('emulate example.com 1280 800 dsf=2') &&
+      replayScript.includes('paste example.com --html -- "***"') &&
+      replayScript.includes('upload example.com @e5 "***" --chooser'),
+    'history --batch replays emulate dsf=N, paste --html, upload --chooser (flag mirrors)',
+    dsfRun.stderr + htmlRun.stderr + chooserRun.stderr + '\n' + replayScript
+  );
   fs.unlinkSync(replayPath);
+  fs.unlinkSync('/tmp/chrome-bridge-selftest-upload.txt');
 
   // The journal must NOT leak into the command feed — watch/history stay
   // command-focused (the ring above is the only in-memory surface).

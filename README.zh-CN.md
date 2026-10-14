@@ -11,7 +11,7 @@
 一个小小的 Chrome 扩展(从 [Chrome 应用商店](https://chromewebstore.google.com/detail/chrome-bridge/kmhjlnokjigmnimgjjmiahlinjbcebkg)安装,或解压加载)通过 WebSocket 连接到本地 Node 服务器;任何能执行 shell 命令的工具都能驱动浏览器:
 
 ```bash
-node server.mjs &                        # 启动桥接服务(Node ≥ 18,零依赖)
+node cli.mjs start                       # 启动桥接服务(Node ≥ 18,零依赖)
 node cli.mjs snap localhost:8082         # 紧凑的无障碍树快照,带元素引用
 node cli.mjs click localhost:8082 @e4    # 按引用点击
 node cli.mjs fill localhost:8082 @e2 "hello@example.com"
@@ -196,7 +196,7 @@ HTTP API 只有一个命令端点:`POST /cmd`,Body 如 `{"type": "snap", "urlMat
 | `measure <match> <css>` | 元素位置 + 计算样式,JSON 输出——不看像素也能知道布局真相 |
 | `console <match> [--clear] [--ask [q]]` | 页面 console + 未捕获错误(首次调用时安装钩子);`--ask` 用本地 Gemini Nano 分诊日志——只有结论消耗云端 token |
 | `grid <match>` | 开关 8px 对齐网格覆盖层 |
-| `emulate <match> <w> <h> [mobile|dsf=N]` · `emulate <match> focus` · `unemulate <match>` | 桌面 / 移动设备视图切换——CDP 模拟,无需调整窗口大小;`dsf=N` 固定设备像素比(`dsf=2` = 任意显示器都能截出 retina 级清晰截图);`focus` 让页面相信自己处于焦点状态——依赖焦点的后台标签页任务继续运行(不会渲染被遮挡的窗口)。只接受 `mobile`、`dsf=N` 和 `focus` 三种模式 |
+| `emulate <match> <w> <h> [mobile\|dsf=N]` · `emulate <match> focus` · `unemulate <match>` | 桌面 / 移动设备视图切换——CDP 模拟,无需调整窗口大小;`dsf=N` 固定设备像素比(`dsf=2` = 任意显示器都能截出 retina 级清晰截图);`focus` 让页面相信自己处于焦点状态——依赖焦点的后台标签页任务继续运行(不会渲染被遮挡的窗口)。只接受 `mobile`、`dsf=N` 和 `focus` 三种模式 |
 | `resize <match> <w> <h>` | 调整窗口大小 |
 | `batch` | 从 stdin 逐行读取命令,一个进程跑完整序列;遇错即停 |
 | `mark <match>` · `release <match>` | 添加 / 移除驱动标记(右下角 🟣 标签)+ 标签页分组 |
@@ -245,7 +245,7 @@ node cli.mjs unemulate news.ycombinator.com                # 恢复正常
 
 `node test/selftest.mjs`——用模拟扩展做端到端检查(不需要 Chrome);每次 push 由 GitHub Actions 自动运行(Node 18/20/22)。如何提交变更(自测门禁、版本号、标签、风格)见 [AGENTS.md](AGENTS.md) 的 *Developing* 一节。
 
-chrome-bridge 的 npm 入口是受限域安装包 [`@siropkin/chrome-bridge`](https://www.npmjs.com/package/@siropkin/chrome-bridge)——`npx @siropkin/chrome-bridge` 会把本仓库克隆到 `~/.chrome-bridge`、启动服务,然后转发到真正的 CLI。npm 上的裸名 `chrome-bridge` 属于一个 2017 年的无关项目(chrome-pagevars):`npm install chrome-bridge` 装到的不是本项目(`chrome-bridge-mcp`/`chrome-bridge-sdk` 同样无关)。要固定智能体运行的代码,请签出标签——例如 `git checkout v1.26.0`;`git tag -l` 列出最新标签。
+chrome-bridge 的 npm 入口是受限域安装包 [`@siropkin/chrome-bridge`](https://www.npmjs.com/package/@siropkin/chrome-bridge)——`npx @siropkin/chrome-bridge` 会把本仓库克隆到 `~/.chrome-bridge`、启动服务,然后转发到真正的 CLI。npm 上的裸名 `chrome-bridge` 属于一个 2017 年的无关项目(chrome-pagevars):`npm install chrome-bridge` 装到的不是本项目(`chrome-bridge-mcp`/`chrome-bridge-sdk` 同样无关)。要固定智能体运行的代码,请签出标签——例如 `git checkout v1.26.6`;`git tag -l` 列出最新标签。
 
 ## 许可证
 

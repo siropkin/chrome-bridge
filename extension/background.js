@@ -315,9 +315,10 @@ const drivenTabs = new Set();
 // flag, so an agent can't bypass the gate by releasing). No time-based lapse:
 // a 60s expiry let a polling agent silently re-drive a tab the human took
 // back — the gate now holds until `mark` says the human handed it back.
-// Memory-only like inflight: the ⏏ click itself wakes the worker, so the
-// flag is always set on a live SW; an SW death just ends the gate early (the
-// server heartbeat keeps the worker warm while the bridge runs).
+// Persisted like tabActivity: an SW restart used to wipe the flag and let the
+// agent's next command re-drive a tab the human had taken back — the veto
+// outlived its worker only by luck (the heartbeat keeps the SW warm while the
+// bridge runs, but a crash or an update kills it mid-gate).
 const humanReclaimed = new Map();
 
 // Per-tab bridge state lives in chrome.storage.session: it survives the MV3
@@ -772,7 +773,10 @@ function activityPhrases(msg) {
   if (msg.type === 'wait' && msg.pixel) return { ing: 'watching for pixel changes', done: 'saw pixels change' };
   if (msg.type === 'emulate' && msg.focus) return { ing: 'emulating focus', done: 'emulated focus' };
   let v = ACT_VERBS[msg.type] || [msg.type, msg.type];
-  const detail = msg.target || msg.key || msg.selector || msg.find || msg.text || msg.question || msg.url || '';
+  // dialog's --text answer stays OUT of the pill, mirroring the server's
+  // summarize() redaction — a prompt answer can be a password or a 2FA code,
+  // and the pill is page DOM anyone reading the screen can see.
+  const detail = msg.target || msg.key || msg.selector || msg.find || (msg.type === 'dialog' ? '' : msg.text) || msg.question || msg.url || '';
   if (msg.type === 'snap' && msg.find) v = ['searching page for', 'searched page for'];
   if (msg.type === 'scroll' && detail && !['up', 'down', 'top', 'bottom'].includes(detail)) v = ['scrolling to', 'scrolled to'];
   const cut = (s) => (s.length > 36 ? s.slice(0, 33) + '…' : s);
@@ -1081,6 +1085,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   cdpRefs.delete(tabId); // debugger auto-detaches on close
   cdpQ.delete(tabId);
   emulatedTabs.delete(tabId);
+  emulatedDsf.delete(tabId); // the pin died with the tab (declared below — listeners run post-eval)
   shotBaselines.delete(tabId); // full-png baselines must not outlive their tab
   persist();
 });
@@ -1110,10 +1115,12 @@ function remapTabId(newTabId, oldTabId) {
   cdpRefs.delete(oldTabId);
   cdpQ.delete(oldTabId); // the dead session's pending chain can only wedge the new id (up to 65s)
   emulatedTabs.delete(oldTabId); // the override died with the old renderer — the new id is fresh for the next emulate
+  emulatedDsf.delete(oldTabId); // same lifetime as the override — must not follow the id (stale dpr for shot)
   for (const m of [tabActivity, failedSinceOk, worldCache, shotBaselines, humanReclaimed]) {
     if (m.has(oldTabId)) {
       m.set(newTabId, m.get(oldTabId));
       m.delete(oldTabId);
+      persist(); // a reclaimed tab is NOT driven — the persist below would skip it, and the moved veto would die with the next SW restart
     }
   }
   if (drivenTabs.delete(oldTabId)) {
@@ -1143,6 +1150,7 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
         // The reclaim is enforced, not just narrated: findTab refuses every
         // later command on this tab until a deliberate `mark` re-claim.
         humanReclaimed.set(sender.tab.id, Date.now());
+        persist(); // the veto must survive an SW restart — see the map's comment
         // Tell the agent's feed (watch/history): the human took the tab back.
         // Without this the next command silently re-marks and nobody noticed.
         if (ws && ws.readyState === WebSocket.OPEN)
@@ -1162,12 +1170,13 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
   }
   if (msg?.type === 'release-active' && msg.tabId != null) {
     // The popup's ⏏ is the same human reclaim as the pill's — arm the same
-    // 60s gate, or an agent mid-loop re-marks the tab seconds after the
+    // sticky gate, or an agent mid-loop re-marks the tab seconds after the
     // human stopped it from the one surface that always exists.
     return ready
       .then(() => releaseTab(msg.tabId, { flash: true }))
       .then(() => {
         humanReclaimed.set(msg.tabId, Date.now());
+        persist();
         return { count: drivenTabs.size };
       })
       .catch((e) => ({ error: String(e) }));
@@ -1185,6 +1194,7 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
           humanReclaimed.set(id, Date.now());
           n++;
         }
+        persist(); // one write for the whole sweep
         return { count: n };
       })
       .catch((e) => ({ error: String(e) }));
@@ -1278,6 +1288,11 @@ chrome.debugger.onDetach.addListener((src) => {
     journal('dbg-external-detach', src.tabId);
   }
   emulatedTabs.delete(src.tabId);
+  // The DSF override must die with the session too — otherwise shot's dpr math
+  // keeps reading a pin that no longer applies (stale after an infobar cancel
+  // or a foreign-DevTools detach). Memory-only, so no hydration catch-up
+  // below: nothing of it is restored from storage.session.
+  emulatedDsf.delete(src.tabId);
   // Fired during the hydration window (often the very event that woke the
   // SW): the delete hit the still-empty map, and hydration then resurrects
   // the stale emulatedTabs entry from storage.session — re-apply once
@@ -1373,6 +1388,23 @@ function withCdp(tabId, fn) {
   return timed;
 }
 
+// The common CDP shape: queue, attach, run, detach — with the detach in a
+// finally that only runs when the attach SUCCEEDED. The hand-copied
+// attach/try/finally at every site had the detach run after a FAILED attach
+// too (the attach had already rolled its own share back): the extra detach
+// reached a real chrome.debugger.detach, failed, and re-entered the refcount
+// at 0 — a permanent phantom debugger row in doctor. Site-specific cleanup
+// (restoreBanner, flags) stays in each fn's own try/finally.
+const withDbg = (tabId, fn) =>
+  withCdp(tabId, async () => {
+    await attachDbg(tabId);
+    try {
+      return await fn();
+    } finally {
+      await detachDbg(tabId);
+    }
+  });
+
 // --- Device emulation (CDP) -------------------------------------------------
 // DevTools-device-toolbar behavior without resizing the window. Attaches
 // chrome.debugger (shows the "debugging this browser" infobar while active);
@@ -1396,6 +1428,7 @@ function persist() {
       emulatedTabs: [...emulatedTabs],
       tabStatus: Object.fromEntries(tabStatus),
       tabActivity: Object.fromEntries(tabActivity),
+      humanReclaimed: Object.fromEntries(humanReclaimed),
     })
     .catch(() => {});
 }
@@ -1414,7 +1447,7 @@ const ready = (async () => {
     // hang EVERY command to the server's 70s cap with a "may have run" lie —
     // proceed with empty maps (the fresh-profile path) and say so in swlogs.
     const s = await Promise.race([
-      chrome.storage.session.get(['drivenTabs', 'emulatedTabs', 'tabStatus', 'tabActivity', 'swLogs']),
+      chrome.storage.session.get(['drivenTabs', 'emulatedTabs', 'tabStatus', 'tabActivity', 'humanReclaimed', 'swLogs']),
       new Promise((r) => setTimeout(() => r(null), 5000)),
     ]);
     if (s === null) logLine('storage.session read wedged (5s) — starting with empty state');
@@ -1422,6 +1455,7 @@ const ready = (async () => {
     for (const id of s?.emulatedTabs || []) emulatedTabs.add(id);
     for (const [k, v] of Object.entries(s?.tabStatus || {})) tabStatus.set(Number(k), v);
     for (const [k, v] of Object.entries(s?.tabActivity || {})) tabActivity.set(Number(k), v);
+    for (const [k, v] of Object.entries(s?.humanReclaimed || {})) humanReclaimed.set(Number(k), v);
     // The dead worker's log tail rides along — this worker's own lines (the
     // 'background vX loaded' marker) stay newest at the end.
     swLogs.unshift(...(s?.swLogs || []));
@@ -1438,6 +1472,7 @@ const ready = (async () => {
     for (const id of [...emulatedTabs]) if (!live.has(id)) emulatedTabs.delete(id);
     for (const id of [...tabStatus.keys()]) if (!live.has(id)) tabStatus.delete(id);
     for (const id of [...tabActivity.keys()]) if (!live.has(id)) tabActivity.delete(id);
+    for (const id of [...humanReclaimed.keys()]) if (!live.has(id)) humanReclaimed.delete(id);
   } catch {}
   // A ⏳ tabStatus outlived its worker: the finally that clears it died with
   // the SW, and inflight is memory-only — nothing is running in this fresh
@@ -3044,8 +3079,7 @@ async function trustedInput(tab, msg) {
   // BEFORE the suppression window below, or its injectBanner can arrive
   // mid-dispatch and put the pill back under the coords.
   await awaitMark(tab.id);
-  await withCdp(tab.id, async () => {
-    await attachDbg(tab.id);
+  await withDbg(tab.id, async () => {
     // CDP input hits whatever is topmost at the coords, and the pill is
     // pointer-events:auto with live ✕/⏏ — a trusted click landing on it can
     // self-release the tab behind a false 'clicked' success (the coverage
@@ -3112,7 +3146,6 @@ async function trustedInput(tab, msg) {
     } finally {
       if (typing) await runEval(tab.id, 'window.__bridgeTyping = false').catch(() => {});
       if (suppression !== null) await restoreBanner(tab.id, suppression);
-      await detachDbg(tab.id);
     }
   });
   return res;
@@ -3696,8 +3729,7 @@ async function waitPixel(tab, msg) {
   // static page self-fires) or flicker against each poll's at-capture removal.
   await awaitMark(tab.id);
   const t0 = Date.now(); // after the mark await: a slow first mark must not burn the watch budget
-  return await withCdp(tab.id, async () => {
-    await attachDbg(tab.id);
+  return await withDbg(tab.id, async () => {
     // PLAIN native captures, not the pinned clip: captureBeyondViewport
     // renders are not pixel-stable on background windows (found live — the
     // AA of a fixed header's edge flipped once, persistently, 0.9-7.1s after
@@ -3767,7 +3799,6 @@ async function waitPixel(tab, msg) {
     } finally {
       bmp0?.close();
       await restoreBanner(tab.id, bannered, true);
-      await detachDbg(tab.id);
     }
   });
 }
@@ -3857,7 +3888,10 @@ async function findTab(msg) {
     throw new Error(
       `⚠ the human released this tab via ⏏ at ${new Date(reclaimed).toTimeString().slice(0, 8)} — they took it back. Every command on it is refused until a deliberate re-claim: ask the human, and only if they hand it back — mark <match>`
     );
-  if (msg.type === 'mark') humanReclaimed.delete(matches[0].id);
+  if (msg.type === 'mark') {
+    humanReclaimed.delete(matches[0].id);
+    persist(); // the re-claim must survive an SW restart too — a resurrected veto would refuse commands on a tab the human handed back
+  }
   // Every command resolving here marks the tab, reads included (owner's
   // call: the pill must show on any tab the agent is LOOKING at, not just
   // the ones it changes — a read-only session used to leave the browser
@@ -3895,14 +3929,7 @@ async function cmdFetch(tab, msg) {
   // the in-page fetch below.
   const headers = { ...(msg.headers || {}) };
   if (msg.csrf) {
-    const cookies = await withCdp(tab.id, async () => {
-      await attachDbg(tab.id);
-      try {
-        return await chrome.debugger.sendCommand({ tabId: tab.id }, 'Network.getCookies', { urls: [msg.url] });
-      } finally {
-        await detachDbg(tab.id);
-      }
-    });
+    const cookies = await withDbg(tab.id, () => chrome.debugger.sendCommand({ tabId: tab.id }, 'Network.getCookies', { urls: [msg.url] }));
     const j = (cookies?.cookies || []).find((c) => c.name === 'JSESSIONID');
     if (!j) throw new Error('--csrf: no JSESSIONID cookie reaches ' + new URL(msg.url).host + ' — wrong origin, or the profile is not logged in');
     headers['csrf-token'] = j.value.replace(/^"|"$/g, ''); // the cookie stores the value quoted
@@ -3924,53 +3951,48 @@ async function cmdFetch(tab, msg) {
       throw new Error(
         String(e).replace(/^(Error:\s*)+/, '') + ' — custom headers ride only the in-page fetch; the browser-network fallback cannot carry them'
       );
-    const read = await withCdp(tab.id, async () => {
-      await attachDbg(tab.id);
-      try {
-        // Chrome 152 tightened loadNetworkResource: options.disableCache is
-        // mandatory AND frameId must be provided (stress: the fallback died
-        // on both — 'Failed to deserialize options.disableCache', then
-        // 'Parameter frameId must be provided for frame targets').
-        const tree = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.getFrameTree');
-        const frameId = tree?.frameTree?.frame?.id;
-        const out = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Network.loadNetworkResource', { url: msg.url, frameId, options: { includeCredentials: true, disableCache: false } });
-        const rec = out?.resource || {};
-        if (!rec.success)
-          throw new Error('browser-network read failed (' + (rec.netErrorName || rec.netError || 'unknown') + ') — in-page fetch said: ' + String(e).replace(/^(Error:\s*)+/, '').slice(0, 120));
-        // The body now STREAMS (rec.stream, Chrome 152) instead of riding
-        // rec.content — read it via IO.read or the CLI writes a 0-byte
-        // --out (stress: 200 application/json, 0 KB file).
-        let binary = !!rec.base64Encoded;
-        let body = rec.content ?? '';
-        let truncated = false;
-        if (rec.stream) {
-          let b64 = '', text = '';
-          const t0 = Date.now();
-          for (;;) {
-            const c = await chrome.debugger.sendCommand({ tabId: tab.id }, 'IO.read', { handle: rec.stream });
-            if (c.base64Encoded) { binary = true; b64 += c.data; } else text += c.data || '';
-            if (c.eof) break;
-            // A huge body used to accumulate unbounded — and outlive the
-            // withCdp timeout, which can't cancel this loop from outside.
-            if (b64.length + text.length > BODY_CAP || Date.now() - t0 > 60_000) {
-              truncated = true;
-              break;
-            }
+    const read = await withDbg(tab.id, async () => {
+      // Chrome 152 tightened loadNetworkResource: options.disableCache is
+      // mandatory AND frameId must be provided (stress: the fallback died
+      // on both — 'Failed to deserialize options.disableCache', then
+      // 'Parameter frameId must be provided for frame targets').
+      const tree = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.getFrameTree');
+      const frameId = tree?.frameTree?.frame?.id;
+      const out = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Network.loadNetworkResource', { url: msg.url, frameId, options: { includeCredentials: true, disableCache: false } });
+      const rec = out?.resource || {};
+      if (!rec.success)
+        throw new Error('browser-network read failed (' + (rec.netErrorName || rec.netError || 'unknown') + ') — in-page fetch said: ' + String(e).replace(/^(Error:\s*)+/, '').slice(0, 120));
+      // The body now STREAMS (rec.stream, Chrome 152) instead of riding
+      // rec.content — read it via IO.read or the CLI writes a 0-byte
+      // --out (stress: 200 application/json, 0 KB file).
+      let binary = !!rec.base64Encoded;
+      let body = rec.content ?? '';
+      let truncated = false;
+      if (rec.stream) {
+        let b64 = '', text = '';
+        const t0 = Date.now();
+        for (;;) {
+          const c = await chrome.debugger.sendCommand({ tabId: tab.id }, 'IO.read', { handle: rec.stream });
+          if (c.base64Encoded) { binary = true; b64 += c.data; } else text += c.data || '';
+          if (c.eof) break;
+          // A huge body used to accumulate unbounded — and outlive the
+          // withCdp timeout, which can't cancel this loop from outside.
+          if (b64.length + text.length > BODY_CAP || Date.now() - t0 > 60_000) {
+            truncated = true;
+            break;
           }
-          await chrome.debugger.sendCommand({ tabId: tab.id }, 'IO.close', { handle: rec.stream }).catch(() => {});
-          truncated = truncated || (!binary && text.length > BODY_CAP);
-          body = binary ? b64 : text.slice(0, BODY_CAP);
         }
-        return {
-          status: rec.httpStatusCode ?? rec.statusCode ?? 200,
-          ct: rec.mime || rec.headers?.['Content-Type'] || '',
-          binary,
-          body: binary ? String(body) : String(body).slice(0, BODY_CAP),
-          truncated,
-        };
-      } finally {
-        await detachDbg(tab.id);
+        await chrome.debugger.sendCommand({ tabId: tab.id }, 'IO.close', { handle: rec.stream }).catch(() => {});
+        truncated = truncated || (!binary && text.length > BODY_CAP);
+        body = binary ? b64 : text.slice(0, BODY_CAP);
       }
+      return {
+        status: rec.httpStatusCode ?? rec.statusCode ?? 200,
+        ct: rec.mime || rec.headers?.['Content-Type'] || '',
+        binary,
+        body: binary ? String(body) : String(body).slice(0, BODY_CAP),
+        truncated,
+      };
     });
     return read;
   }
@@ -3987,9 +4009,8 @@ async function cmdDialog(tab, msg) {
   // the box sits on screen. CDP cannot rescue a stuck tab — but NAVIGATION
   // drops the dialog and revives the renderer (verified against a real
   // 40-minute-stuck alert: nav <match> <url> unwedged it instantly).
-  return await withCdp(tab.id, async () => {
+  return await withDbg(tab.id, async () => {
     try {
-      await attachDbg(tab.id);
       await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.handleJavaScriptDialog', {
         accept: msg.accept !== false,
         ...(msg.text ? { promptText: msg.text } : {}),
@@ -4009,8 +4030,6 @@ async function cmdDialog(tab, msg) {
             'Dismiss it by navigating — nav <match> <any url> drops the dialog and revives the tab — or: close <match>'
         );
       throw new Error(errText(e)); // renderer alive → genuinely no dialog — the cause, not the protocol JSON envelope
-    } finally {
-      await detachDbg(tab.id);
     }
     return (msg.accept === false ? 'dismissed' : 'accepted') + ' dialog on tab ' + tab.id;
   });
@@ -4049,31 +4068,26 @@ async function cmdUpload(tab, msg) {
     await awaitMark(tab.id);
     return await actAndVerify(tab.id, msg, async () => {
       let suppression = null;
-      await withCdp(tab.id, async () => {
+      await withDbg(tab.id, async () => {
+        await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.enable');
+        await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.setInterceptFileChooserDialog', { enabled: true });
         try {
-          await attachDbg(tab.id);
-          await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.enable');
-          await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.setInterceptFileChooserDialog', { enabled: true });
-          try {
-            const opened = new Promise((resolve, reject) => {
-              const timer = setTimeout(() => {
-                chooserWaiters.delete(tab.id);
-                reject(new Error('no file chooser opened within 5s of clicking ' + msg.target + ' — is that the element that opens the picker?'));
-              }, 5000);
-              chooserWaiters.set(tab.id, { resolve: (p) => { clearTimeout(timer); resolve(p); } });
-            });
-            const p = JSON.parse(await runEval(tab.id, trustedPointSrc(msg.target, true, false)));
-            if (!p.inBanner) suppression = await removeBannerForCapture(tab.id);
-            await cdpMouseClick(tab.id, p.cx, p.cy);
-            const ev = await opened;
-            if (msg.files.length > 1 && ev.mode !== 'selectMultiple') throw new Error('this file chooser takes a single file — pass one');
-            await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.setFileInputFiles', { files: msg.files, backendNodeId: ev.backendNodeId });
-          } finally {
-            await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.setInterceptFileChooserDialog', { enabled: false }).catch(() => {});
-            if (suppression !== null) await restoreBanner(tab.id, suppression);
-          }
+          const opened = new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+              chooserWaiters.delete(tab.id);
+              reject(new Error('no file chooser opened within 5s of clicking ' + msg.target + ' — is that the element that opens the picker?'));
+            }, 5000);
+            chooserWaiters.set(tab.id, { resolve: (p) => { clearTimeout(timer); resolve(p); } });
+          });
+          const p = JSON.parse(await runEval(tab.id, trustedPointSrc(msg.target, true, false)));
+          if (!p.inBanner) suppression = await removeBannerForCapture(tab.id);
+          await cdpMouseClick(tab.id, p.cx, p.cy);
+          const ev = await opened;
+          if (msg.files.length > 1 && ev.mode !== 'selectMultiple') throw new Error('this file chooser takes a single file — pass one');
+          await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.setFileInputFiles', { files: msg.files, backendNodeId: ev.backendNodeId });
         } finally {
-          await detachDbg(tab.id);
+          await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.setInterceptFileChooserDialog', { enabled: false }).catch(() => {});
+          if (suppression !== null) await restoreBanner(tab.id, suppression);
         }
       });
       const names = msg.files.map((f) => f.split('/').pop()).join(', ');
@@ -4103,19 +4117,14 @@ async function cmdUpload(tab, msg) {
       throw new Error('input has no "multiple" attribute — pass one file');
     }
     try {
-      await withCdp(tab.id, async () => {
-        try {
-          await attachDbg(tab.id);
-          const { root } = await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.getDocument', { depth: 1 });
-          const { nodeId } = await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.querySelector', {
-            nodeId: root.nodeId,
-            selector: `[${TAG}]`,
-          });
-          if (!nodeId) throw new Error('tagged input vanished mid-upload — re-snap and retry');
-          await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.setFileInputFiles', { nodeId, files: msg.files });
-        } finally {
-          await detachDbg(tab.id);
-        }
+      await withDbg(tab.id, async () => {
+        const { root } = await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.getDocument', { depth: 1 });
+        const { nodeId } = await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.querySelector', {
+          nodeId: root.nodeId,
+          selector: `[${TAG}]`,
+        });
+        if (!nodeId) throw new Error('tagged input vanished mid-upload — re-snap and retry');
+        await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.setFileInputFiles', { nodeId, files: msg.files });
       });
     } finally {
       await runEval(tab.id, `document.querySelector('[${TAG}]')?.removeAttribute('${TAG}')`).catch(() => {});
@@ -4136,9 +4145,12 @@ async function cmdShot(tab, msg) {
   // captureScreenshot, baking the pill into the PNG (and, for --diff, into
   // the baseline every later shot compares against).
   await awaitMark(tab.id);
-  return await withCdp(tab.id, async () => {
-    try {
-      await attachDbg(tab.id);
+  // One try covers the CDP capture AND its attach: a failed attach (chrome://,
+  // Web Store) routes to the same captureVisibleTab fallback as a failed
+  // capture — and withDbg's detach then correctly never runs (a detach after a
+  // failed attach was the phantom-doctor-row bug).
+  try {
+    return await withDbg(tab.id, async () => {
       // Every CDP capture below (viewport/crop/full/diff) and even the
       // cdp-less fallback runs banner-free: the pill and its active gradient
       // frame border are bridge UI and must not be in the shot (the band
@@ -4248,43 +4260,41 @@ async function cmdShot(tab, msg) {
       } finally {
         await restoreBanner(tab.id, bannered);
       }
-    } catch (e) {
-      // The human's own DevTools holding this tab is NOT a fallback case: the
-      // captureVisibleTab path ACTIVATES the tab (stealing their view
-      // mid-debugging) and the real cause never reaches the agent. Fail loud.
-      if (/another debugger holds/.test(errText(e))) throw e;
-      // debugger unavailable (chrome:// pages etc.) — fall back to captureVisibleTab
-      // (viewport only, native res — crop/max/scale can't be honored there)
-      console.warn('[bridge] cdp shot failed, falling back (crop/max/scale ignored):', e);
-      // captureVisibleTab grabs the window's ACTIVE tab — must activate first,
-      // otherwise we'd screenshot whatever the user is looking at. Restore the
-      // tab the human WAS on after: stealing their view is the one promise
-      // this path must not break (the CDP path above never activates).
-      // Serialized PER WINDOW: two concurrent fallbacks on different tabs of
-      // one window used to interleave activate→sleep→capture, and A captured
-      // B's tab (stress-review finding) — withCdp is per-tab and can't help.
-      const run = (shotFallbackQ.get(tab.windowId) || Promise.resolve()).then(async () => {
-        const prev = (await chrome.tabs.query({ active: true, windowId: tab.windowId }))[0];
-        await chrome.tabs.update(tab.id, { active: true });
-        try {
-          await new Promise((r) => setTimeout(r, 400));
-          const png = await chrome.tabs.captureVisibleTab(tab.windowId, { format, ...(format === 'jpeg' ? { quality: msg.quality ?? 80 } : {}) });
-          // --diff can't run without CDP — say so instead of silently handing
-          // back a plain shot the agent would read as a completed diff cycle.
-          if (msg.diff) return { note: 'diff skipped — cdp unavailable on this page; this file is a plain fallback shot and the baseline is unchanged', data: png };
-          return png;
-        } finally {
-          if (prev && prev.id !== tab.id) await chrome.tabs.update(prev.id, { active: true }).catch(() => {});
-        }
-      });
-      const tail = run.catch(() => {});
-      shotFallbackQ.set(tab.windowId, tail);
-      tail.then(() => shotFallbackQ.get(tab.windowId) === tail && shotFallbackQ.delete(tab.windowId));
-      return await run;
-    } finally {
-      await detachDbg(tab.id);
-    }
-  });
+    });
+  } catch (e) {
+    // The human's own DevTools holding this tab is NOT a fallback case: the
+    // captureVisibleTab path ACTIVATES the tab (stealing their view
+    // mid-debugging) and the real cause never reaches the agent. Fail loud.
+    if (/another debugger holds/.test(errText(e))) throw e;
+    // debugger unavailable (chrome:// pages etc.) — fall back to captureVisibleTab
+    // (viewport only, native res — crop/max/scale can't be honored there)
+    console.warn('[bridge] cdp shot failed, falling back (crop/max/scale ignored):', e);
+    // captureVisibleTab grabs the window's ACTIVE tab — must activate first,
+    // otherwise we'd screenshot whatever the user is looking at. Restore the
+    // tab the human WAS on after: stealing their view is the one promise
+    // this path must not break (the CDP path above never activates).
+    // Serialized PER WINDOW: two concurrent fallbacks on different tabs of
+    // one window used to interleave activate→sleep→capture, and A captured
+    // B's tab (stress-review finding) — withCdp is per-tab and can't help.
+    const run = (shotFallbackQ.get(tab.windowId) || Promise.resolve()).then(async () => {
+      const prev = (await chrome.tabs.query({ active: true, windowId: tab.windowId }))[0];
+      await chrome.tabs.update(tab.id, { active: true });
+      try {
+        await new Promise((r) => setTimeout(r, 400));
+        const png = await chrome.tabs.captureVisibleTab(tab.windowId, { format, ...(format === 'jpeg' ? { quality: msg.quality ?? 80 } : {}) });
+        // --diff can't run without CDP — say so instead of silently handing
+        // back a plain shot the agent would read as a completed diff cycle.
+        if (msg.diff) return { note: 'diff skipped — cdp unavailable on this page; this file is a plain fallback shot and the baseline is unchanged', data: png };
+        return png;
+      } finally {
+        if (prev && prev.id !== tab.id) await chrome.tabs.update(prev.id, { active: true }).catch(() => {});
+      }
+    });
+    const tail = run.catch(() => {});
+    shotFallbackQ.set(tab.windowId, tail);
+    tail.then(() => shotFallbackQ.get(tab.windowId) === tail && shotFallbackQ.delete(tab.windowId));
+    return await run;
+  }
 }
 
 // Adding a command? SEVEN registries stay in sync (a missing one fails SILENTLY):

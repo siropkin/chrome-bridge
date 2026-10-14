@@ -2,10 +2,11 @@
 #
 # Steps:
 #   1. Verify extension/manifest.json AND package.json versions match the tag
-#   2. Build a clean extension zip (manifest.json at zip root — CWS requirement)
-#   3. Create a GitHub Release: annotated-tag message as the body (it is the
+#   2. Run the self-test — a tag must never ship code the suite fails
+#   3. Build a clean extension zip (manifest.json at zip root — CWS requirement)
+#   4. Create a GitHub Release: annotated-tag message as the body (it is the
 #      release record — there is no CHANGELOG), commit notes appended, zip attached
-#   4. (Optional) Upload to the Chrome Web Store as a draft
+#   5. (Optional) Upload to the Chrome Web Store as a draft
 #
 # To enable Chrome Web Store auto-upload, set repository variable
 # CHROME_PUBLISH=true and add four secrets:
@@ -52,6 +53,11 @@ jobs:
             exit 1
           fi
           echo "VERSION=$TAG" >> "$GITHUB_ENV"
+
+      # Hermetic (spawns its own server on a test port, fake extension — no
+      # Chrome needed). The zip, the release and the CWS draft all wait on it.
+      - name: Self-test
+        run: node test/selftest.mjs
 
       - name: Build extension zip
         run: |

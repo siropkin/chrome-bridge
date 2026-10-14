@@ -173,7 +173,6 @@ eval <match> <js|-> [--world main|isolated]     '-' reads JS from stdin; output 
                                   50K chars (truncation note names the remedy) — return less;
                                   top-level const/let are call-scoped: re-runs never collide
                                   (set globals via window.x)
-                                  (select narrower, slice in-page) or fetch --out the data
 shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full] [--diff]
                                   --max caps the long edge (default 1280, 0 = native res);
                                   --diff compares against the previous --diff shot of the tab —
@@ -313,7 +312,7 @@ Before driving a site you'll revisit, check `<repo>/recipes/<domain>.md` — a f
 
 ## Gotchas
 
-- `eval` runs in the ISOLATED world, falls back to MAIN, then to CDP (CSP-exempt). `console` uses MAIN automatically. In the CDP fallback, top-level `const`/`let` bindings persist across calls — wrap multi-statement snippets in an IIFE or the second run dies with "already declared".
+- `eval` runs in the ISOLATED world, falls back to MAIN, then to CDP (CSP-exempt). `console` uses MAIN automatically.
 - Synthetic events are *untrusted*: canvas-heavy apps (e.g. Figma) ignore them, and `press Enter` reaches JS listeners but doesn't trigger browser defaults (form submit) — click the submit button instead. `--trusted` on click/press/type/hover/drag routes through CDP `Input.dispatch*` (isTrusted=true, so canvas tools take it and Enter submits) — it attaches the debugger while the synthetic path never does, so it stays opt-in. Trusted input requires the tab in the FOREGROUND: on a hidden tab CDP dispatch fires zero page events (and would read stale coordinates), so the bridge refuses — `activate <match>` first, or drop `--trusted` (synthetic works fine on hidden tabs). If `activate` warns the tab is STILL hidden, the Chrome window is occluded (fully covered — macOS then reports it hidden even focused) or minimized: activation can't help, `emulate <match> focus` flips visibilityState to visible and trusted input works.
 - A page's JS dialog (alert/confirm/prompt) blocks the tab — every eval, snap and synthetic key wedges to the 70s timeout. On current Chrome, CDP can only answer a dialog that opened while a debugger session was already attached (`net`/`shot`/`emulate` running); a dialog popped on an unattached tab is unreachable over CDP — the verified rescue is `nav <match> <url>` (navigation drops the dialog and revives the renderer; beforeunload is not an issue either). If every command on a tab starts timing out, suspect a stuck dialog.
 - A timeout **after dispatch** means the extension may have acted before its reply was lost. Do not blindly retry a click, fill, upload, navigation, or other non-idempotent command: inspect the tab or `history` first. A timeout **before dispatch** explicitly means it did not run.

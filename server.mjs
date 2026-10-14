@@ -402,13 +402,13 @@ const CLI_LINES = {
   type: (m) => `type ${shellq(m.urlMatch)} ${shellq(m.target)}${m.trusted ? ' --trusted' : ''}${D(m)} -- "***"`,
   // A clipboard-mode replay would read whatever sensitive content happens to
   // be on the clipboard later. Treat BOTH paste modes as non-replayable.
-  paste: (m) => `paste ${shellq(m.urlMatch)}${m.target ? ' ' + shellq(m.target) : ''}${D(m)} -- "***"`,
+  paste: (m) => `paste ${shellq(m.urlMatch)}${m.target ? ' ' + shellq(m.target) : ''}${m.html ? ' --html' : ''}${D(m)} -- "***"`,
   press: (m) => `press ${shellq(m.urlMatch)} ${shellq(m.key)}${m.target ? ' ' + shellq(m.target) : ''}${m.trusted ? ' --trusted' : ''}${D(m)}`,
   hover: (m) => `hover ${shellq(m.urlMatch)} ${shellq(m.target)}${m.trusted ? ' --trusted' : ''}${D(m)}`,
   scroll: (m) => `scroll ${shellq(m.urlMatch)} ${shellq(m.target)}${D(m)}`,
   // Absolute paths and filenames are local sensitive data; never preserve
   // them in a durable replay file.
-  upload: (m) => `upload ${shellq(m.urlMatch)} ${shellq(m.target)} "***"${D(m)}`,
+  upload: (m) => `upload ${shellq(m.urlMatch)} ${shellq(m.target)} "***"${m.chooser ? ' --chooser' : ''}${D(m)}`,
   // --csrf replays honestly (the token is derived extension-side per run —
   // that's its point). --header VALUES are redacted like fill values: a
   // csrf-token or Authorization header is the same class of secret, and the
@@ -451,7 +451,12 @@ const CLI_LINES = {
   console: (m) => `console ${shellq(m.urlMatch)}${m.clear ? ' --clear' : ''}${m.ask ? (m.ask === true ? ' --ask' : ' --ask ' + shellq(m.ask)) : ''}`,
   grid: (m) => `grid ${shellq(m.urlMatch)}`,
   note: (m) => `note ${shellq(m.urlMatch)} ${shellq(m.text)}`,
-  emulate: (m) => (m.focus ? `emulate ${shellq(m.urlMatch)} focus` : `emulate ${shellq(m.urlMatch)} ${m.width} ${m.height}${m.mobile ? ' mobile' : ''}`),
+  // dsf=N is guarded so a raw /cmd caller's {"dsf":"2"} (or a focus/mobile
+  // emulate, which carries no dsf) keeps the formatter total.
+  emulate: (m) =>
+    m.focus
+      ? `emulate ${shellq(m.urlMatch)} focus`
+      : `emulate ${shellq(m.urlMatch)} ${m.width} ${m.height}${m.mobile ? ' mobile' : ''}${Number.isFinite(m.dsf) ? ' dsf=' + m.dsf : ''}`,
   resize: (m) => `resize ${shellq(m.urlMatch)} ${m.width} ${m.height}`,
 };
 // `watch` keys its `since` cursor on actSeq, which resets on restart — the

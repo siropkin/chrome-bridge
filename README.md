@@ -15,7 +15,7 @@ Let **any AI agent** drive the Chrome you're already using — your existing Chr
 A tiny Chrome extension (from the [Chrome Web Store](https://chromewebstore.google.com/detail/chrome-bridge/kmhjlnokjigmnimgjjmiahlinjbcebkg), or load the unpacked folder) connects over WebSocket to a local Node server; anything that can run a shell command can drive the browser:
 
 ```bash
-node server.mjs &                        # start the bridge (Node ≥ 18, no deps)
+node cli.mjs start                       # start the bridge (Node ≥ 18, no deps)
 node cli.mjs snap localhost:8082         # compact a11y snapshot with element refs
 node cli.mjs click localhost:8082 @e4    # click by ref
 node cli.mjs fill localhost:8082 @e2 "hello@example.com"
@@ -209,15 +209,15 @@ You're handing an agent your logged-in browser — the design assumes you want t
 | `scroll <match> <up\|down\|top\|bottom\|@ref\|css> [--diff]` | Scroll — finds the real scroller on app-shell pages (Linear, Gmail) that scroll an inner panel, not the window |
 | `upload <match> <@ref\|css> <file...> [--chooser] [--diff]` | Set a file input's files via CDP — works on hidden inputs; target the input or an element wrapping it. `--chooser` instead targets the button that opens the OS picker: the chooser is intercepted and the files land on the input the app creates at pick time (the Slides detached-input pattern; no dialog shown). An unknown `--flag` fails instead of being treated as a file |
 | `ask <match> <question>` | *(experimental)* Local Gemini Nano answers from page text — no cloud tokens, pre-filter quality |
-| `wait <match> [css\|--text t\|--human\|--pixel-change] [--timeout ms]` | Wait for element or visible text — MutationObserver-driven, resolves as soon as the page changes (timeout default 10s, max 60s). `--human` hands the tab to you — CAPTCHA/2FA/login walls: the pill says it's your turn, the command blocks until you act (default 2 min), then returns the snap-diff of what you did. `--pixel-change` polls until pixels move (canvas changes the tree can't see) |
-| `eval <match> <js\|-> [--world main|isolated]` | Run JS in the page; `-` reads from stdin |
+| `wait <match> <css\|--text t\|--human\|--pixel-change> [--timeout ms]` | Wait for element or visible text — MutationObserver-driven, resolves as soon as the page changes (timeout default 10s, max 60s). `--human` hands the tab to you — CAPTCHA/2FA/login walls: the pill says it's your turn, the command blocks until you act (default 2 min), then returns the snap-diff of what you did. `--pixel-change` polls until pixels move (canvas changes the tree can't see) |
+| `eval <match> <js\|-> [--world main\|isolated]` | Run JS in the page; `-` reads from stdin |
 | `shot <match> <out> [--max px] [--scale N] [--format jpeg] [--quality N] [--crop x,y,w,h] [--full] [--diff]` | Screenshot via CDP. Long edge capped at `--max` px (default 1280, `0` = native res) — models downscale big images on read anyway, so native res buys file size, not detail. `--full` = whole page height. `--diff` compares against the previous `--diff` shot (pinned to the baseline's size/scale, current scroll position — it watches what the agent sees) and saves only the changed region — canvas/pixel changes the a11y tree can't see |
 | `net <match> [--dur ms] [--filter s] [--body s] [--ws] [--har out.har]` | Capture network traffic via CDP (≤30s per run) — one compact line per request, each naming its initiator (`⟵ api-client.js:88`); `--ws` also captures WebSocket frames (`→` sent / `←` received — chat/streaming apps); `--body s` appends matching JSON/text response bodies; `--har out.har` saves the capture as a shareable HAR 1.2 (opens in DevTools/Burp) — it carries full headers incl. cookies/tokens, so it's written owner-only (0600): treat it as a secret |
 | `fetch <match> <url> [--out file] [--keep] [--header "k: v"]... [--csrf]` | In-page fetch riding the logged-in session — login-walled JSON/feeds answer it without `eval` plumbing; binary responses need `--out`, text prints capped at 50K chars (`--out` gets the full body); no matching tab → a scratch tab on the target origin is opened, fetched, closed (`--keep` leaves it for follow-ups); `--header` adds request headers for session APIs that check them; `--csrf` attaches the JSESSIONID cookie as `csrf-token` |
 | `measure <match> <css>` | Bounding rect + computed styles as JSON — layout truth without pixels |
 | `console <match> [--clear] [--ask [q]]` | Page console + uncaught errors (hook installs on first call); `--ask` triages the log with local Gemini Nano — only the verdict costs cloud tokens |
 | `grid <match>` | Toggle an 8px alignment grid overlay |
-| `emulate <match> <w> <h> [mobile|dsf=N]` · `emulate <match> focus` · `unemulate <match>` | Switch between desktop and mobile device views — CDP emulation, no window resize; `dsf=N` pins the device scale factor (`dsf=2` = retina-crisp screenshots on any display); `focus` makes the page believe it's focused — focus-gated background-tab work keeps running (does not render an occluded window). `mobile`, `dsf=N` and `focus` are the only modes |
+| `emulate <match> <w> <h> [mobile\|dsf=N]` · `emulate <match> focus` · `unemulate <match>` | Switch between desktop and mobile device views — CDP emulation, no window resize; `dsf=N` pins the device scale factor (`dsf=2` = retina-crisp screenshots on any display); `focus` makes the page believe it's focused — focus-gated background-tab work keeps running (does not render an occluded window). `mobile`, `dsf=N` and `focus` are the only modes |
 | `resize <match> <w> <h>` | Resize the window |
 | `batch` | Run commands from stdin, one per line — one process for a whole sequence; stops on the first error |
 | `mark <match>` · `release <match>` | Add/remove the driven-tab corner tag + 🟣 tab group; `release` also clears device emulation — the tab is fully the human's again |
@@ -274,7 +274,7 @@ node cli.mjs unemulate news.ycombinator.com                # back to normal
 
 `node test/selftest.mjs` — end-to-end check with a fake extension (no Chrome needed); runs on every push via GitHub Actions (Node 18/20/22). How to land changes (selftest gate, version bump, tags, style): see *Developing* in [AGENTS.md](AGENTS.md).
 
-chrome-bridge's npm entry is the scoped installer [`@siropkin/chrome-bridge`](https://www.npmjs.com/package/@siropkin/chrome-bridge) — `npx @siropkin/chrome-bridge` clones this repo into `~/.chrome-bridge`, starts the server, then forwards to the real CLI. The bare `chrome-bridge` npm name belongs to an unrelated 2017 package (chrome-pagevars): `npm install chrome-bridge` is NOT this project (neither are `chrome-bridge-mcp`/`chrome-bridge-sdk`). To pin what an agent will run, check out a tag — e.g. `git checkout v1.26.0`; `git tag -l` lists the latest.
+chrome-bridge's npm entry is the scoped installer [`@siropkin/chrome-bridge`](https://www.npmjs.com/package/@siropkin/chrome-bridge) — `npx @siropkin/chrome-bridge` clones this repo into `~/.chrome-bridge`, starts the server, then forwards to the real CLI. The bare `chrome-bridge` npm name belongs to an unrelated 2017 package (chrome-pagevars): `npm install chrome-bridge` is NOT this project (neither are `chrome-bridge-mcp`/`chrome-bridge-sdk`). To pin what an agent will run, check out a tag — e.g. `git checkout v1.26.6`; `git tag -l` lists the latest.
 
 ## License
 
