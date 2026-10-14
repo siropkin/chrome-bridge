@@ -227,11 +227,13 @@ swlogs                            service-worker console tail (errors/warnings)
 extreload                         reload the extension from disk — picks up code changes
                                   without the chrome://extensions click (the stale-version
                                   health warning's fix)
-emulate <match> <w> <h> [mobile]  CDP device view (no window resize); 'emulate <match> focus'
-                                  makes the page believe it's focused — focus-gated work (pages
-                                  pausing on blur) keeps running in a background tab; mobile/focus
-                                  are the only modes; it does
-                                  NOT render an occluded window
+emulate <match> <w> <h> [mobile|dsf=N]   CDP device view (no window resize); dsf=N pins the
+                                  device scale factor (dsf=2 = retina captures on any
+                                  display — shot --max <w> then downsamples to exact px);
+                                  'emulate <match> focus' makes the page believe it's focused —
+                                  focus-gated work (pages pausing on blur) keeps running in a
+                                  background tab; mobile/dsf=N/focus are the only modes;
+                                  it does NOT render an occluded window
 unemulate <match>                 clear emulation + detach debugger
 resize <match> <w> <h>            resize the window
 health                            server + extension status

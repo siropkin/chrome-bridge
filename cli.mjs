@@ -341,9 +341,12 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
   extreload                         reload the extension from disk — picks up code changes
                                     without the chrome://extensions click (the stale-version
                                     health warning's fix)
-  emulate <match> <w> <h> [mobile]  CDP device view (no window resize); 'focus' instead of
-                                    <w> <h> emulates page focus (focus-gated work keeps running
-                                    in a background tab — does NOT render an occluded window)
+  emulate <match> <w> <h> [mobile|dsf=N]   CDP device view (no window resize); dsf=N pins the
+                                    device scale factor (dsf=2 = retina captures on any
+                                    display — shot --max <w> then downsamples to exact px);
+                                    'focus' instead of <w> <h> emulates page focus
+                                    (focus-gated work keeps running in a background tab —
+                                    does NOT render an occluded window)
   unemulate <match>                 clear emulation + detach debugger
   resize <match> <w> <h>            resize the window
   health                            server + extension status
@@ -1159,13 +1162,17 @@ async function run(cmdName, args) {
         print(await cmd({ type: 'emulate', urlMatch: args[0], focus: true }));
         break;
       }
-      if (!args[0] || !args[1] || !args[2]) fail(`usage: ${cmdName} <match> <w> <h>${cmdName === 'emulate' ? ' [mobile]|focus' : ''}`);
-      if ((cmdName === 'emulate' && args.length > 4) || (cmdName === 'resize' && args.length > 3) || (cmdName === 'emulate' && args[3] && args[3] !== 'mobile'))
-        fail(`usage: ${cmdName} <match> <w> <h>${cmdName === 'emulate' ? ' [mobile]|focus' : ''}`);
+      if (!args[0] || !args[1] || !args[2]) fail(`usage: ${cmdName} <match> <w> <h>${cmdName === 'emulate' ? ' [mobile|dsf=N]|focus' : ''}`);
+      if ((cmdName === 'emulate' && args.length > 4) || (cmdName === 'resize' && args.length > 3) || (cmdName === 'emulate' && args[3] && args[3] !== 'mobile' && !args[3].startsWith('dsf=')))
+        fail(`usage: ${cmdName} <match> <w> <h>${cmdName === 'emulate' ? ' [mobile|dsf=N]|focus' : ''}`);
       const w = Number(args[1]);
       const h = Number(args[2]);
       if (!Number.isFinite(w) || !Number.isFinite(h) || w < 1 || h < 1) fail(`${cmdName} needs numeric <w> <h>`);
-      print(await cmd({ type: cmdName, urlMatch: args[0], width: w, height: h, ...(cmdName === 'emulate' ? { mobile: args[3] === 'mobile' } : {}) }));
+      // dsf=N pins the device scale factor (retina captures without a retina
+      // window); mobile already implies dsf 2 extension-side.
+      const dsf = cmdName === 'emulate' && args[3]?.startsWith('dsf=') ? Number(args[3].slice(4)) : undefined;
+      if (dsf !== undefined && (!Number.isFinite(dsf) || dsf < 0.1 || dsf > 4)) fail('emulate dsf must be 0.1–4');
+      print(await cmd({ type: cmdName, urlMatch: args[0], width: w, height: h, ...(cmdName === 'emulate' ? { mobile: args[3] === 'mobile', ...(dsf !== undefined ? { dsf } : {}) } : {}) }));
       break;
     }
 

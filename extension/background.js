@@ -1380,6 +1380,7 @@ function withCdp(tabId, fn) {
 const MOBILE_UA =
   'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
 const emulatedTabs = new Set();
+const emulatedDsf = new Map(); // tabId -> live DSF override — shot's dpr math (see setEmulation)
 
 // --- Boot hydration (storage.session -> in-memory maps) ------------------------
 // Declared DOWN HERE on purpose: the IIFE touches tabActivity, groupTab,
@@ -1494,7 +1495,7 @@ const ready = (async () => {
 })();
 
 
-async function setEmulation(tabId, { width, height, mobile, focus }) {
+async function setEmulation(tabId, { width, height, mobile, focus, dsf }) {
   // The emulation share in cdpRefs is owned by emulatedTabs membership, not by
   // each call — re-emulating a tab (resize the device) must not take a second
   // share, or N emulates + one unemulate would leave the debugger attached and
@@ -1525,8 +1526,14 @@ async function setEmulation(tabId, { width, height, mobile, focus }) {
     await chrome.debugger.sendCommand(
       { tabId },
       'Emulation.setDeviceMetricsOverride',
-      { width, height, deviceScaleFactor: mobile ? 2 : 1, mobile: !!mobile }
+      { width, height, deviceScaleFactor: dsf || (mobile ? 2 : 1), mobile: !!mobile }
     );
+    // getLayoutMetrics reports a 1:1 visualViewport ratio under a DSF override
+    // (found live: dsf=2 captures came out native-size, --max never
+    // downsampling) — shot's dpr math consults this instead. Not persisted:
+    // an SW restart forgets it and shot merely under-downsamples, never
+    // miscrops.
+    emulatedDsf.set(tabId, dsf || (mobile ? 2 : 1));
     await chrome.debugger.sendCommand(
       { tabId },
       'Emulation.setTouchEmulationEnabled',
@@ -1572,6 +1579,7 @@ async function clearEmulation(tabId) {
     logLine('emulation clear ' + tabId + ' FAILED: ' + String(e).slice(0, 80));
   }
   emulatedTabs.delete(tabId);
+  emulatedDsf.delete(tabId);
   persist();
   await detachDbg(tabId);
 }
@@ -2813,7 +2821,7 @@ async function captureViewport(tabId, msg) {
   if (params.format === 'jpeg') params.quality = msg.quality ?? 80;
   const m = await chrome.debugger.sendCommand({ tabId }, 'Page.getLayoutMetrics');
   const v = m.cssVisualViewport;
-  const dpr = dprOf(m);
+  const dpr = emulatedDsf.get(tabId) || dprOf(m);
   const max = maxOf(msg);
   // Captures render at devicePixelRatio, so budget max/dpr CSS px to keep
   // the OUTPUT long edge <= max.
@@ -4151,7 +4159,7 @@ async function cmdShot(tab, msg) {
           // Full page: render beyond the viewport, clip to the CSS content size.
           const m = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.getLayoutMetrics');
           const c = m.cssContentSize;
-          dpr = dprOf(m);
+          dpr = emulatedDsf.get(tab.id) || dprOf(m);
           params.captureBeyondViewport = true;
           // Floor at the viewport: a transient/mid-load metrics read can report
           // content narrower than the visible page (#24 captured a 127px-wide
@@ -4167,7 +4175,7 @@ async function cmdShot(tab, msg) {
           // between captures.
           const m = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.getLayoutMetrics');
           const v = m.cssVisualViewport;
-          dpr = dprOf(m);
+          dpr = emulatedDsf.get(tab.id) || dprOf(m);
           params.captureBeyondViewport = true;
           params.clip = { x: Math.round(msg.crop[0] + v.pageX), y: Math.round(msg.crop[1] + v.pageY), width: msg.crop[2], height: msg.crop[3], scale: cap(msg.crop[2], msg.crop[3]) };
         } else {

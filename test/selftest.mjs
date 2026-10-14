@@ -636,6 +636,10 @@ try {
   assert(emu.status === 0 && emu.stdout.includes('"width":375') && emu.stdout.includes('"mobile":true'), 'cli emulate wire shape', emu.stdout + emu.stderr);
   const emuExtra = await cli('emulate', 'example.com', '375', '667', 'tablet');
   assert(emuExtra.status !== 0 && emuExtra.stderr.includes('usage: emulate'), 'cli emulate rejects an unknown mode instead of ignoring it', emuExtra.stdout + emuExtra.stderr);
+  const emuDsf = await cli('emulate', 'example.com', '1280', '800', 'dsf=2');
+  assert(emuDsf.status === 0 && emuDsf.stdout.includes('"dsf":2') && !emuDsf.stdout.includes('"mobile":true'), 'cli emulate dsf=N wire shape', emuDsf.stdout + emuDsf.stderr);
+  const emuBadDsf = await cli('emulate', 'example.com', '1280', '800', 'dsf=abc');
+  assert(emuBadDsf.status !== 0 && (emuBadDsf.stderr.includes('usage: emulate') || emuBadDsf.stderr.includes('dsf')), 'cli emulate rejects a non-numeric dsf', emuBadDsf.stdout + emuBadDsf.stderr);
   const rsz = await cli('resize', 'example.com', '800', '600');
   assert(rsz.status === 0 && rsz.stdout.includes('"width":800') && rsz.stdout.includes('"height":600'), 'cli resize wire shape', rsz.stdout + rsz.stderr);
   const opn = await cli('open', 'https://example.org/');

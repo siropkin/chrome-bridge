@@ -45,5 +45,5 @@ Developer Tools (or Productivity — Developer Tools is the honest fit)
 
 ## Notes for the console
 
-- Screenshots: regenerate from docs/store/*.html when the popup/pill UI changes (screenshot-1-pill.png, screenshot-2-history.png; add a popup screenshot once v1.21.0+ is live).
+- Screenshots: regenerate from docs/store/*.html when the popup/pill UI changes (screenshot-1-pill.png, screenshot-2-history.png; add a popup screenshot once v1.21.0+ is live). The mocks are pinned to their exact target canvas (body is NxM px, content top-left-anchored), so any viewport works: serve the repo root, `emulate <match> <w> <h> dsf=2`, `shot <match> <out> --max <w>` — the dsf=2 raster downsamples to exact px; a plain 1x capture (a small window, a 1x external display) reads soft. Crop paths don't compose with emulation — emulate the exact size, don't crop.
 - The single-purpose statement and permission justifications already filed cover the existing permission set; clipboardWrite (since v1.19.0) is for the popup's user-clicked Copy button — nothing is read.

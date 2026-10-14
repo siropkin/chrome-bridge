@@ -196,7 +196,7 @@ HTTP API 只有一个命令端点:`POST /cmd`,Body 如 `{"type": "snap", "urlMat
 | `measure <match> <css>` | 元素位置 + 计算样式,JSON 输出——不看像素也能知道布局真相 |
 | `console <match> [--clear] [--ask [q]]` | 页面 console + 未捕获错误(首次调用时安装钩子);`--ask` 用本地 Gemini Nano 分诊日志——只有结论消耗云端 token |
 | `grid <match>` | 开关 8px 对齐网格覆盖层 |
-| `emulate <match> <w> <h> [mobile]` · `emulate <match> focus` · `unemulate <match>` | 桌面 / 移动设备视图切换——CDP 模拟,无需调整窗口大小;`focus` 让页面相信自己处于焦点状态——依赖焦点的后台标签页任务继续运行(不会渲染被遮挡的窗口)。只接受 `mobile` 和 `focus` 两种模式 |
+| `emulate <match> <w> <h> [mobile|dsf=N]` · `emulate <match> focus` · `unemulate <match>` | 桌面 / 移动设备视图切换——CDP 模拟,无需调整窗口大小;`dsf=N` 固定设备像素比(`dsf=2` = 任意显示器都能截出 retina 级清晰截图);`focus` 让页面相信自己处于焦点状态——依赖焦点的后台标签页任务继续运行(不会渲染被遮挡的窗口)。只接受 `mobile`、`dsf=N` 和 `focus` 三种模式 |
 | `resize <match> <w> <h>` | 调整窗口大小 |
 | `batch` | 从 stdin 逐行读取命令,一个进程跑完整序列;遇错即停 |
 | `mark <match>` · `release <match>` | 添加 / 移除驱动标记(右下角 🟣 标签)+ 标签页分组 |

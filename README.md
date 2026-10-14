@@ -217,7 +217,7 @@ You're handing an agent your logged-in browser — the design assumes you want t
 | `measure <match> <css>` | Bounding rect + computed styles as JSON — layout truth without pixels |
 | `console <match> [--clear] [--ask [q]]` | Page console + uncaught errors (hook installs on first call); `--ask` triages the log with local Gemini Nano — only the verdict costs cloud tokens |
 | `grid <match>` | Toggle an 8px alignment grid overlay |
-| `emulate <match> <w> <h> [mobile]` · `emulate <match> focus` · `unemulate <match>` | Switch between desktop and mobile device views — CDP emulation, no window resize; `focus` makes the page believe it's focused — focus-gated background-tab work keeps running (does not render an occluded window). `mobile` and `focus` are the only modes |
+| `emulate <match> <w> <h> [mobile|dsf=N]` · `emulate <match> focus` · `unemulate <match>` | Switch between desktop and mobile device views — CDP emulation, no window resize; `dsf=N` pins the device scale factor (`dsf=2` = retina-crisp screenshots on any display); `focus` makes the page believe it's focused — focus-gated background-tab work keeps running (does not render an occluded window). `mobile`, `dsf=N` and `focus` are the only modes |
 | `resize <match> <w> <h>` | Resize the window |
 | `batch` | Run commands from stdin, one per line — one process for a whole sequence; stops on the first error |
 | `mark <match>` · `release <match>` | Add/remove the driven-tab corner tag + 🟣 tab group; `release` also clears device emulation — the tab is fully the human's again |

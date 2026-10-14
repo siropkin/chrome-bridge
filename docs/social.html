@@ -1,7 +1,8 @@
 <!doctype html>
 <!-- Source for docs/social.png (1280x640 GitHub social preview).
-     Render: open this file in Chrome, `cli.mjs release <match>` (hides the real marker — the page mocks it),
-     `cli.mjs emulate <match> 1280 640`, `cli.mjs shot <match> docs/social.png --max 0` -->
+     Render: serve the repo root (python3 -m http.server 8931), open /docs/social.html,
+     `cli.mjs emulate <match> 1280 640 dsf=2`, `cli.mjs shot <match> docs/social.png --max 1280`.
+     dsf=2 + --max = retina raster downsampled to exact px — plain 1x captures read soft. -->
 <html>
 <head>
 <meta charset="utf-8">
@@ -16,7 +17,7 @@
   }
   .banner {
     position: absolute; bottom: 72px; right: 24px;
-    background: #7c3aed; color: #fff;
+    background: linear-gradient(135deg,#7c3aed,#4f46e5,#0e7490); color: #fff;
     font-size: 18px; padding: 4px 14px; border-radius: 12px;
     opacity: 0.9;
   }
