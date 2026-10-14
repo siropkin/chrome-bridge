@@ -4265,7 +4265,13 @@ async function cmdShot(tab, msg) {
     // The human's own DevTools holding this tab is NOT a fallback case: the
     // captureVisibleTab path ACTIVATES the tab (stealing their view
     // mid-debugging) and the real cause never reaches the agent. Fail loud.
-    if (/another debugger holds/.test(errText(e))) throw e;
+    // Same for every permanent unscriptable wall (chrome://, Web Store, an
+    // unattachable target): captureVisibleTab can never shoot what CDP was
+    // refused on, so the fallback is a doomed capture that ACTIVATES the tab
+    // AND its error masks the real one — #61: the masked error then missed
+    // #37's unmark regex and left a pill-less marked tab behind. Rethrowing
+    // the real error matches #37's regex, so the fresh mark is released.
+    if (/another debugger holds|Cannot access a chrome|Cannot attach|extensions gallery/i.test(errText(e))) throw e;
     // debugger unavailable (chrome:// pages etc.) — fall back to captureVisibleTab
     // (viewport only, native res — crop/max/scale can't be honored there)
     console.warn('[bridge] cdp shot failed, falling back (crop/max/scale ignored):', e);
