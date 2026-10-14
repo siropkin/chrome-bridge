@@ -301,7 +301,7 @@ chrome.alarms.onAlarm.addListener(() => {
 });
 
 // --- Driven-tab marking -----------------------------------------------------
-// Tabs the bridge touches get a purple frame + corner tag in-page and a
+// Tabs the bridge touches get a gradient frame + corner tag in-page and a
 // shared "🟣 Bridge" tab group, so the user can see at a glance what's being
 // driven. `release` undoes all of it.
 const drivenTabs = new Set();
@@ -365,12 +365,20 @@ function injectBanner(respectHide) {
   const d = document.createElement('div');
   d.id = 'bridge-banner';
   d.dataset.v = chrome.runtime.getManifest().version; // load tag — handlers die with their worker, see the rebuild above
-  // The viewport frame starts transparent: it lights up purple only while a
-  // command is in flight (pillInject toggles it) — a peripheral "the agent is
-  // acting RIGHT NOW" signal — while the pill carries identity + history and
-  // idle tabs stay clean. pointer-events: none, covers nothing. The border
-  // transition keeps the on/off from snapping at command boundaries.
-  d.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;border:3px solid transparent;border-radius:2px;transition:border-color .15s ease';
+  // The viewport frame starts invisible: it lights up only while a command is
+  // in flight (pillInject toggles opacity) — a peripheral "the agent is acting
+  // RIGHT NOW" signal — while the pill carries identity + history and idle
+  // tabs stay clean. pointer-events: none, covers nothing. The frame is four
+  // gradient edge-stripes (a CSS border can't hold a gradient, and
+  // border-image can't transition — the opacity fade keeps the on/off from
+  // snapping at command boundaries); the stops chain violet→indigo→cyan
+  // continuously around the perimeter, matching the pill's own gradient.
+  d.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;opacity:0;transition:opacity .15s ease;' +
+    'background:' +
+    'linear-gradient(90deg,#7c3aed,#4f46e5,#0e7490) 0 0/100% 3px no-repeat,' +
+    'linear-gradient(180deg,#0e7490,#4f46e5,#7c3aed) 100% 0/3px 100% no-repeat,' +
+    'linear-gradient(90deg,#0e7490,#4f46e5,#7c3aed) 0 100%/100% 3px no-repeat,' +
+    'linear-gradient(180deg,#7c3aed,#4f46e5,#0e7490) 0 0/3px 100% no-repeat';
   // The pill lives in a shadow root, not the light DOM: innerText/textContent
   // never cross a shadow boundary, so `document.body.innerText` (eval, agent
   // scripts) stops scraping the pill's own narration — on an unrendered page
@@ -382,11 +390,13 @@ function injectBanner(respectHide) {
   // is isTrusted, not DOM obscurity. Bonus: page CSS resets can't clobber us.
   const shadow = d.attachShadow({ mode: 'open' });
   const pill = document.createElement('div');
-  // #9333ea over the old #a855f7: white 12px text passes WCAG AA (5.4:1, was
-  // 3.96:1) — the pill's whole job is being read at a glance. system-ui matches
-  // the OS face (SF/Segoe) next to native Chrome UI.
+  // The gradient stops stay dark enough that white 12px text keeps passing
+  // WCAG AA (violet #7c3aed ≈ 6.6:1, indigo #4f46e5 ≈ 6.9:1, cyan #0e7490 ≈
+  // 5.2:1 — a lighter cyan would drop under 4.5:1) — the pill's whole job is
+  // being read at a glance. system-ui matches the OS face (SF/Segoe) next to
+  // native Chrome UI.
   pill.style.cssText =
-    'position:fixed;bottom:8px;right:8px;background:#9333ea;color:#fff;font:12px system-ui,sans-serif;padding:3px 10px;border-radius:11px;pointer-events:auto;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.4);user-select:none;display:flex;align-items:center;gap:6px';
+    'position:fixed;bottom:8px;right:8px;background:linear-gradient(135deg,#7c3aed,#4f46e5,#0e7490);color:#fff;font:12px system-ui,sans-serif;padding:3px 10px;border-radius:11px;pointer-events:auto;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.4);user-select:none;display:flex;align-items:center;gap:6px';
   // The pill is the product's trust surface — make it reachable and announced
   // for keyboard/screen-reader users (this tool's own pitch is an a11y tree).
   // role=GROUP, not button: the ⏏/✕ spans are role=button children, and a
@@ -515,7 +525,7 @@ function flashReleased() {
   const pill = banner?.shadowRoot?.querySelector('div');
   if (!pill) return;
   banner.dataset.fading = '1';
-  banner.style.borderColor = 'transparent';
+  banner.style.opacity = '0';
   // Honest about in-flight work: a synthetic type loop already dispatched
   // page-side keeps running to its end — the README says so, the pill must
   // not claim otherwise at the exact moment it matters.
@@ -548,7 +558,7 @@ function pillInject(label, lines, target, active) {
   if (!banner) return document.documentElement.dataset.bridgeHide === '1' ? 'hid' : 'gone';
   const pill = banner.shadowRoot?.querySelector('div');
   if (!pill) return;
-  banner.style.borderColor = active ? 'rgba(147,51,234,.75)' : 'transparent';
+  banner.style.opacity = active ? '1' : '0';
   // Every @eN — in the current label AND the 30-line history ring — resolves
   // to the element's own name: the ring is the human-readable record, and raw
   // refs are agent-speak. Refs live in this world's window.__bridgeRefs (they
@@ -911,7 +921,7 @@ function markTab(tabId) {
   // it — this is the one marker that works everywhere (chrome.action needs
   // no injection). Survives navigations, cleared in releaseTab.
   chrome.action.setBadgeText({ tabId, text: '•' }).catch(() => {});
-  chrome.action.setBadgeBackgroundColor({ tabId, color: '#9333ea' }).catch(() => {});
+  chrome.action.setBadgeBackgroundColor({ tabId, color: '#7c3aed' }).catch(() => {}); // solid-only API — the gradient's violet anchor
   const p = (async () => {
     await groupTab(tabId);
     if (!drivenTabs.has(tabId)) return; // a release landed mid-mark — don't resurrect the pill
@@ -1450,7 +1460,7 @@ const ready = (async () => {
     chrome.scripting
       .executeScript({ target: { tabId: id }, func: injectBanner, args: [true] })
       // Then reset the label — restoreBanner's two-call pattern: the dead
-      // worker's last pillInject left the IN-FLIGHT label up with the purple
+      // worker's last pillInject left the IN-FLIGHT label up with the gradient
       // frame lit ('clicking "Submit"… 14s', or a dead handoff's '🙋 your
       // turn'), and injectBanner early-returns on the same-version banner —
       // without this reset the "agent is acting RIGHT NOW" signal stays lit
@@ -2064,7 +2074,7 @@ const CURSOR_SRC = `
     if (ripple) {
       const r = document.createElement('div');
       r.style.cssText =
-        'position:absolute;left:-14px;top:-14px;width:28px;height:28px;border:3px solid rgba(147,51,234,.9);border-radius:50%;animation:bridge-ripple .6s ease-out forwards';
+        'position:absolute;left:-14px;top:-14px;width:28px;height:28px;border:3px solid rgba(124,58,237,.9);border-radius:50%;animation:bridge-ripple .6s ease-out forwards';
       c.appendChild(r);
     }
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -2074,7 +2084,7 @@ const CURSOR_SRC = `
     svg.style.filter = 'drop-shadow(0 1px 1px rgba(0,0,0,.4))';
     const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     p.setAttribute('d', 'M3 1v16l3.9-3.7 2.3 5.5 2.8-1.2-2.4-5.4 5.6-.6z');
-    p.setAttribute('fill', '#9333ea');
+    p.setAttribute('fill', '#7c3aed');
     p.setAttribute('stroke', '#fff');
     p.setAttribute('stroke-width', '1.3');
     svg.appendChild(p);
@@ -2703,7 +2713,7 @@ const cssBox = (cap, box) => {
 // page DOM at inset:0 (z-index max) and poisons captures three ways, all found
 // live: the pill's elapsed-seconds label changes pixels every second (a
 // wait --pixel-change on a marked static tab self-triggered from its own
-// pill); the ACTIVE purple border renders as a phantom full-width band in
+// pill); the ACTIVE gradient border renders as a phantom full-width band in
 // captureBeyondViewport frames whose clip starts below the viewport top
 // (crop/full/diff — a 1280×24 strip on a static page); and visibility:hidden
 // does NOT keep it out of those frames (the wait fired with the banner
@@ -4122,7 +4132,7 @@ async function cmdShot(tab, msg) {
     try {
       await attachDbg(tab.id);
       // Every CDP capture below (viewport/crop/full/diff) and even the
-      // cdp-less fallback runs banner-free: the pill and its active purple
+      // cdp-less fallback runs banner-free: the pill and its active gradient
       // frame border are bridge UI and must not be in the shot (the band
       // artifact, the self-triggering pill — see removeBannerForCapture).
       const bannered = await removeBannerForCapture(tab.id);

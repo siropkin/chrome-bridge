@@ -844,7 +844,7 @@ try {
     // Driven tabs wear a toolbar badge too: on non-injectable pages (chrome://,
     // Web Store, PDF) pill, group and favicon ALL fail — the badge is the one
     // marker that works everywhere.
-    assert(bg.includes('setBadgeText') && bg.includes("color: '#9333ea'"), 'ext: driven tabs wear a toolbar badge (the everywhere-marker)');
+    assert(bg.includes('setBadgeText') && bg.includes("color: '#7c3aed'"), 'ext: driven tabs wear a toolbar badge (the everywhere-marker)');
     assert(bg.includes("msg.type === 'note' ? 4000 : 800"), 'pill: a note holds its label ~4s — a ~100ms note command must not flash unseen');
     assert(bg.includes("replace(/^(Error:\\s*)+/, '')"), 'pill history: doubled Error: nesting deduped (the feed fix 756df17, third surface)');
     // Tab-match confusion: a lookalike URL path (evil.com/github.com matches
