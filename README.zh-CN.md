@@ -108,19 +108,38 @@ git clone https://github.com/siropkin/chrome-bridge && cd chrome-bridge && ./ins
 
 这就是全部集成工作。`AGENTS.md` 是一份自包含的操作手册——命令、配方、注意事项——任何能读文件或联网的智能体都能阅读。有联网能力的智能体可以直接从 GitHub 读取:`https://raw.githubusercontent.com/siropkin/chrome-bridge/master/AGENTS.md`。
 
+如果它对你有用,请在 [Chrome 应用商店留个 ★ 评价](https://chromewebstore.google.com/detail/chrome-bridge/kmhjlnokjigmnimgjjmiahlinjbcebkg)——新扩展能不能被商店展示给别人,全看最初这几个评价。
+
 ## 人类始终掌控
 
 被桥接驱动的标签页会在右下角显示 🟣 小标签(点击查看完整操作历史;✕ 可隐藏,下次导航前不再显示;⏏ 可断开智能体对该标签页的控制)并加入 🟣 标签页分组,你随时知道哪些页面正在被自动化——只读命令(`snap`、`measure`、`console`)同样会打上标签:智能体**正在查看**的标签页也会戴标签,而不只是它修改过的。小标签实时播报智能体正在做什么(`🟣 taking screenshot…`、`🟣 reading page…`,长命令会显示已耗时秒数),历史面板列出最近的操作并自动滚动到最新一行;空闲时显示 `🟣 AI idle`(连续失败后显示 `⚠ N failed since last ok`,桥接服务器不可达时显示 `⚠ bridge offline`);命令执行期间,紫→青渐变边框亮起,标签页 favicon 显示 ⏳(完成 ✅,失败 ✗,✗ 会保留到下一条命令),点击/悬停处会闪现紫色指针标记智能体的操作位置。`release`(或 `close`)即可全部还原。⏏ 是人类的安全出口:一次可信点击即可完全收回桥接对该标签页的控制——标记、分组、设备模拟全部清除,无需 CLI(合成的页面点击无法伪造它),**而且是强制执行的:桥接会拒绝智能体对该标签页的任何后续命令,直到智能体用 `mark` 显式重新接管**——没有可以被等待耗过的时限(智能体会被提示先询问你;正在执行的一步可能仍会完成)。无法显示小标签的标签页(chrome://、应用商店、PDF)会在工具栏按钮上显示紫色圆点。工具栏弹窗还提供一键控制:释放*当前*标签页,或一次性释放*所有*智能体标签页。
 
 ![🟣 小标签正在播报被驱动的标签页,操作历史面板已展开](docs/store/screenshot-1-pill.png)
 
-## 为什么不用 Playwright(或 playwright-mcp)?
+## chrome-bridge 对比 Playwright 和 playwright-mcp
 
-Playwright 驱动的是它自己启动的浏览器——一个独立的 Playwright 管理的配置,不是你已登录的那个 Chrome,所以智能体每次都是未登录状态(挂载模式存在——`--remote-debugging-port` 重启,或 playwright-mcp 的扩展模式——但都需要手动开启;playwright-mcp 现在也为编程智能体提供了 CLI)。chrome-bridge 驱动的是你正在使用的 Chrome,而且这是唯一模式。它借鉴了 Playwright 最好的两个设计(带元素引用的无障碍树快照、基于引用的操作),同时省掉了 40 MB 的依赖和独立配置。
+如果你在找一个能复用现有 Chrome 会话的 Playwright 替代:Playwright 驱动的是它自己启动的浏览器——一个独立的 Playwright 管理的配置,不是你已登录的那个 Chrome,所以智能体每次都是未登录状态(挂载模式存在——`--remote-debugging-port` 重启,或 playwright-mcp 的扩展模式——但都需要手动开启;playwright-mcp 现在也为编程智能体提供了 CLI)。chrome-bridge 驱动的是你正在使用的 Chrome,而且这是唯一模式。它借鉴了 Playwright 最好的两个设计(带元素引用的无障碍树快照、基于引用的操作),同时省掉了 40 MB 的依赖和独立配置。
 
-## 为什么不选 MCP 浏览器桥?
+## chrome-bridge 对比 MCP 浏览器桥、Chrome DevTools MCP 和 Claude for Chrome
 
-MCP 桥(mcp-chrome、BrowserMCP)要求客户端支持 MCP,还需要配置长期运行的 MCP 服务器(playwriter 也提供 CLI,但仍要启动/挂载一个浏览器实例)。Chrome DevTools MCP 的免 MCP CLI 能挂载到你的真实配置(`--autoConnect`,Chrome 144+)——但那是一个可选开关,而且它的卖点是 DevTools 深度(性能 trace、调试),不是极简。chrome-bridge 的真实浏览器模式就是*唯一*模式,客户端是任何能执行 shell 命令的工具:一个普通 CLI 加一个命令端点(`POST /cmd`)——智能体侧无需安装、无需配置——同样的命令也可以用在脚本、cron 任务或你自己的终端里。
+MCP 桥(mcp-chrome、BrowserMCP)要求客户端支持 MCP,还需要配置长期运行的 MCP 服务器(playwriter 也提供 CLI,但仍要启动/挂载一个浏览器实例)。Chrome DevTools MCP 的免 MCP CLI 能挂载到你的真实配置(`--autoConnect`,Chrome 144+)——但那是一个可选开关,而且它的卖点是 DevTools 深度(性能 trace、调试),不是极简。Claude for Chrome 是 Anthropic 的官方扩展——只能在 Claude 应用里用,靠截图驱动;chrome-bridge 对任何智能体开放(Claude Code、Cursor、Qwen、GLM、你自己的循环),用省 token 的无障碍树读页面。Browserbase 之类的云端浏览器农场没有你的任何登录态;chrome-bridge 在本地运行,而且已登录。chrome-bridge 的真实浏览器模式就是*唯一*模式,客户端是任何能执行 shell 命令的工具:一个普通 CLI 加一个命令端点(`POST /cmd`)——智能体侧无需安装、无需配置——同样的命令也可以用在脚本、cron 任务或你自己的终端里。
+
+## 对比一览
+
+这是一份指南,不是排名——下面每个工具都有真材实料。2026-09-12 依据各工具自己的文档核对;"—" 表示官方未声明该能力,请自行验证你在意的点。
+
+| | chrome-bridge | playwright-mcp | Chrome DevTools MCP | Browser MCP / mcp-chrome | Claude for Chrome |
+|---|---|---|---|---|---|
+| 驱动你真实登录的 Chrome | 唯一模式 | 需手动开启(扩展 / 调试端口挂载) | 需手动开启(`--autoConnect`,Chrome 144+) | 不能——启动自己的浏览器 | 能,但只能在 Claude 应用里 |
+| 需要支持 MCP 的客户端和服务器配置 | 不需要 | 需要 | 可选(自带 CLI) | 需要 | 不适用 |
+| 任何能跑 shell 命令的智能体都能用 | 能 | 限 MCP 客户端 | 限 MCP 客户端 | 限 MCP 客户端 | 仅限 Claude 应用 |
+| 运行中可观看、可否决 | 🟣 小标签实时播报、操作历史、一键断开(强制执行) | — | — | — | — |
+
+## Chrome 136 破坏了复制(或复用)Chrome 配置的老办法
+
+从 Chrome 136(2025 年 5 月)起,自动化*你自己*浏览器的经典办法全部失效:当 `--remote-debugging-port` 指向默认 user-data-dir 时 Chrome 会静默拒绝,Playwright/Puppeteer 再也挂不上你的日常配置;把配置目录复制到别处又会弄坏登录态——cookie 报 "Failed to decrypt"、配置被锁,或者提示 "Chrome is already in use"。常见的 workaround 是单独建一个 `--user-data-dir` 手动登录一次:一个登录态需要你维护的第二配置,而 Google 账号对全新配置尤其挑剔。
+
+chrome-bridge 绕开了这整个问题:扩展直接住在你正在运行的 Chrome 里、你已经登录的配置里——不需要远程调试端口,不需要 user-data-dir,不需要重启浏览器,不需要复制配置。你的会话直接可用,而基于 CDP 挂载日常配置的那条路从 136 起就没了。
 
 ## 安装细节
 
@@ -236,6 +255,14 @@ node cli.mjs unemulate news.ycombinator.com                # 恢复正常
 4. 只有需要像素时才 `shot`,且尽量便宜:`--max 800 --format jpeg`,或 `--crop` 到组件区域。
 5. 布局问题("这个居中了吗?")相信 `measure` 的数字,而不是肉眼。
 6. 有依赖关系的步骤用 `batch` 串起来——`printf 'click m @e4\nwait m --text "Saved"\nsnap m --diff\n' | node cli.mjs batch`,整个序列只占一个进程、一次 shell 调用。
+
+## 人们用它做什么
+
+- "每天早上看一眼我的仪表盘,把变化丢进 Slack"——cron 启动的智能体在已登录的标签页里跑检查;万一撞上登录墙,`wait --human` 会把标签页交回给你两分钟。
+- 从 CSV 填 CMS,不用重新登录——智能体搭你已经打开的后台标签页的便车。
+- 用你真实登录的会话回答 Stack Overflow 问题——复现发生在你的浏览器里,而不是一个干净的配置。
+- 对照 Figma 审查 staging 构建——在真实 URL 上跑 design-eye 流程,连网格叠加都在。
+- 任何干净浏览器会撞墙、而你的真实浏览器不会的地方:SSO、反爬墙、VPN 后面的内部仪表盘。
 
 ## 设计走查
 

@@ -21,6 +21,8 @@
   #status { min-height: 15px; margin-top: 6px; color: #5b21b6; font-size: 12px; }
   .hint { margin-top: 6px; color: #6b5f85; font-size: 11px; } /* AA on white — #8a7ca8 was 3.8:1 */
   .divider { border-top: 1px solid #ede9fe; margin: 10px 0; }
+  #rate { display: block; margin-top: 8px; text-align: center; color: #7c3aed; font-size: 11px; text-decoration: none; }
+  #rate:hover { text-decoration: underline; }
 </style>
 <div id="bridge-status" role="status"><span class="dot"></span><span id="status-text">checking…</span></div>
 <div id="title">…</div>
@@ -36,4 +38,5 @@
 <button id="setup">Copy setup prompt for your AI agent</button>
 <div class="hint">Paste it to your agent (Claude, Cursor, …) — it installs and verifies everything itself.</div>
 <div id="status" role="status"></div>
+<a id="rate" href="https://chromewebstore.google.com/detail/chrome-bridge/kmhjlnokjigmnimgjjmiahlinjbcebkg" target="_blank" rel="noopener">★ Rate it on the Chrome Web Store</a>
 <script src="popup.js"></script>
