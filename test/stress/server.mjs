@@ -26,7 +26,9 @@ const server = http.createServer((req, res) => {
     }, 800);
     return;
   }
-  const rel = (req.url.replace(/^\/+/, '') || 'static.html').replace(/^fixtures\//, '');
+  // Strip the query — the suite's ?x=… tab disambiguators are URL decoration,
+  // not path (file:// ignores them; without this every ?x= URL 404'd in CI).
+  const rel = (req.url.split('?')[0].replace(/^\/+/, '') || 'static.html').replace(/^fixtures\//, '');
   const file = path.join(FIXTURES, rel);
   if (!file.startsWith(FIXTURES) || !fs.existsSync(file)) { res.writeHead(404, cors); return res.end('nope'); }
   res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'text/plain' });
