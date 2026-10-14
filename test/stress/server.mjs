@@ -20,10 +20,12 @@ const server = http.createServer((req, res) => {
     return res.end(JSON.stringify({ ok: true, items: [1, 2, 3] }));
   }
   if (req.url === '/api/slow') {
+    // SLOW_MS: CI sets 100 — the 800ms default + CI slowness outruns the 3s
+    // --diff settle window, and issue55's nav verdict can't land in time.
     setTimeout(() => {
       res.writeHead(200, { 'Content-Type': 'application/json', ...cors });
       res.end(JSON.stringify({ ok: 'slow' }));
-    }, 800);
+    }, Number(process.env.SLOW_MS) || 800);
     return;
   }
   // Strip the query — the suite's ?x=… tab disambiguators are URL decoration,

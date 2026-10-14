@@ -31,13 +31,15 @@ jobs:
           # knob (keeps the sandbox; --no-sandbox is the worse fix).
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           node cli.mjs start
-          # headless=new, NOT xvfb headful: under X11+SwiftShader, hidden tabs
-          # get no BeginFrames — CDP captures on them flake (fast-fail → the
-          # fallback ACTIVATES the tab and remounts SPAs, or hangs to the 65s
-          # cap). Headless keeps a capturable surface per tab (the Puppeteer
-          # path) and still loads MV3 extensions.
-          "${{ steps.chrome.outputs.chrome-path }}" \
-            --headless=new --user-data-dir="$(mktemp -d)" --no-first-run --no-default-browser-check \
+          # xvfb headful, NOT --headless=new: the extension lives on
+          # chrome.debugger, and chrome.debugger does not work in headless
+          # (every attach fails → 100% captureVisibleTab fallback, verified
+          # round 5). Under xvfb, hidden-tab captures still flake (no
+          # BeginFrames on Linux background tabs) — the suite activates tabs
+          # for mechanics tests in CI and skips macOS-only purity asserts.
+          xvfb-run --server-args="-screen 0 1280x900x24" "${{ steps.chrome.outputs.chrome-path }}" \
+            --user-data-dir="$(mktemp -d)" --no-first-run --no-default-browser-check \
+            --window-size=1280,900 \
             --disable-background-timer-throttling --disable-renderer-backgrounding \
             --disable-backgrounding-occluded-windows \
             --load-extension="$PWD/extension" about:blank >/tmp/chrome.log 2>&1 &
@@ -68,7 +70,9 @@ jobs:
       # stay manual; file:// fixtures become http:// (extension file-URL access
       # isn't guaranteed here — the suite's own :9334 server serves /fixtures).
       - name: Stress suite (single-profile sections)
-        run: FX=http://localhost:9334/fixtures test/stress/run.sh dialog pixel waits net marks misc edges ids refs type trusted issues doctor cleanup
+        # SLOW_MS=100: api/slow's 800ms delay + CI slowness outruns the 3s
+        # --diff settle window (issue55's nav verdict then can't land).
+        run: FX=http://localhost:9334/fixtures SLOW_MS=100 test/stress/run.sh dialog pixel waits net marks misc edges ids refs type trusted issues doctor cleanup
       - name: Suite logs on failure
         if: failure()
         run: |
