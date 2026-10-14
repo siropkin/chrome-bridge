@@ -31,8 +31,13 @@ jobs:
           # knob (keeps the sandbox; --no-sandbox is the worse fix).
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           node cli.mjs start
-          xvfb-run --server-args="-screen 0 1280x900x24" "${{ steps.chrome.outputs.chrome-path }}" \
-            --user-data-dir="$(mktemp -d)" --no-first-run --no-default-browser-check \
+          # headless=new, NOT xvfb headful: under X11+SwiftShader, hidden tabs
+          # get no BeginFrames — CDP captures on them flake (fast-fail → the
+          # fallback ACTIVATES the tab and remounts SPAs, or hangs to the 65s
+          # cap). Headless keeps a capturable surface per tab (the Puppeteer
+          # path) and still loads MV3 extensions.
+          "${{ steps.chrome.outputs.chrome-path }}" \
+            --headless=new --user-data-dir="$(mktemp -d)" --no-first-run --no-default-browser-check \
             --disable-background-timer-throttling --disable-renderer-backgrounding \
             --disable-backgrounding-occluded-windows \
             --load-extension="$PWD/extension" about:blank >/tmp/chrome.log 2>&1 &
