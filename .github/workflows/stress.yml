@@ -33,6 +33,8 @@ jobs:
           node cli.mjs start
           xvfb-run --server-args="-screen 0 1280x900x24" "${{ steps.chrome.outputs.chrome-path }}" \
             --user-data-dir="$(mktemp -d)" --no-first-run --no-default-browser-check \
+            --disable-background-timer-throttling --disable-renderer-backgrounding \
+            --disable-backgrounding-occluded-windows \
             --load-extension="$PWD/extension" about:blank >/tmp/chrome.log 2>&1 &
       - name: Wait for the extension seat (90s cap)
         run: |
@@ -43,6 +45,20 @@ jobs:
           node cli.mjs health || true
           echo "--- chrome log tail:"; tail -20 /tmp/chrome.log
           exit 1
+      # Ground truth about the CI page environment in one shot (Linux hidden
+      # tabs differ from macOS: rAF/BeginFrame gaps, timer throttling) — when
+      # the suite goes red, THIS output says whether the gap is environmental.
+      - name: Probe the CI page environment
+        continue-on-error: true
+        run: |
+          ( node test/stress/server.mjs &>/dev/null & ); sleep 1
+          node cli.mjs open http://localhost:9334/fixtures/editor.html || true
+          sleep 2
+          node cli.mjs eval editor.html "JSON.stringify({rs:document.readyState, vis:document.visibilityState, plain:!!document.getElementById('plain'), focus:document.hasFocus()})" || true
+          node cli.mjs eval editor.html "Promise.race([new Promise(r=>requestAnimationFrame(()=>r('raf fired'))), new Promise(r=>setTimeout(()=>r('raf silent for 2s'),2000))])" || true
+          node cli.mjs eval editor.html "new Promise(r=>{const t0=Date.now();setTimeout(()=>r('1s timer took '+(Date.now()-t0)+'ms'),1000)})" || true
+          node cli.mjs shot editor.html /tmp/probe.png || true
+          node cli.mjs close editor.html || true
       # Two-profile sections (profiles/churn/interact) need a second Chrome and
       # stay manual; file:// fixtures become http:// (extension file-URL access
       # isn't guaranteed here — the suite's own :9334 server serves /fixtures).

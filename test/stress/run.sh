@@ -266,7 +266,11 @@ s_pixel() {
   "${CLI[@]}" wait fixedheader.html --pixel-change --timeout 3000 >"$OUT/04c.log" 2>&1 && bad "static page must not fire" || true
   t1=$(date +%s%N)
   if grep -q 'timeout after' "$OUT/04c.log"; then ok "fixed-header page times out honestly"; else bad "pixel wait error text"; fi
-  [ $(( (t1 - t0) / 100000000 )) -le 45 ] && ok "timeout fires fast (~$(( (t1 - t0) / 1000000 ))ms for 3000ms budget)" || bad "timeout did not fail fast"
+  # Wall bound, not pacing: since v1.24 every poll is a banner-free CDP
+  # capture (pill removed + restored per shot), so the poll in flight when
+  # the budget expires adds up to ~2s under suite load (measured 5.0s for a
+  # 3s budget). 8s still catches a wedged wait (the 70s server cap).
+  [ $(( (t1 - t0) / 100000000 )) -le 80 ] && ok "timeout fires fast (~$(( (t1 - t0) / 1000000 ))ms for 3000ms budget)" || bad "timeout did not fail fast"
   # (d) real change ~3s must fire with the region
   "${CLI[@]}" open "$FX/slowchange.html" --profile "$P1" >/dev/null
   ( sleep 0.5 && "${CLI[@]}" click slowchange.html '#arm' >/dev/null 2>&1 ) &
@@ -770,7 +774,15 @@ s_doctor() {
   "${CLI[@]}" tabs "x=doctor" | grep -q '"group":"🟣 Bridge"' && ok "tab grouped while driven" || bad "driven tab not grouped"
   "${CLI[@]}" extreload --profile "$P1" >/dev/null 2>&1
   need2 && "${CLI[@]}" extreload --profile "$P2" >/dev/null 2>&1 # keep both profiles on this code — a stale seat answers doctor with an error row
-  sleep 5 # reconnect + hydration + the boot reap
+  # reconnect + hydration + the boot reap — poll, don't sleep: a cold CI
+  # profile takes far longer than 5s, and the ngrep asserts below PASS
+  # vacuously on "extension not connected" output (the blind spot this closes)
+  for _ in $(seq 1 10); do
+    "${CLI[@]}" health 2>/dev/null | grep -q '"extension":true' && break
+    sleep 3
+  done
+  "${CLI[@]}" health 2>/dev/null | grep -q '"extension":true' || bad "extension reconnected after extreload"
+  sleep 2 # hydration + reap trail the seat
   "${CLI[@]}" tabs "x=doctor" >"$OUT/doctor-1.log" 2>&1
   assert_ngrep "boot reaps the dead-session group membership" "$OUT/doctor-1.log" '🟣 Bridge'
   assert_ngrep "boot reap clears driven state" "$OUT/doctor-1.log" '"driven":true'
