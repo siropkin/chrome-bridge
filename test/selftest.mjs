@@ -5,6 +5,7 @@ import net from 'node:net';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import { join } from 'node:path';
 
 const PORT = 9871;
 const ROOT = new URL('..', import.meta.url).pathname;
@@ -223,6 +224,27 @@ try {
   {
     const hv = JSON.parse(h.stdout);
     assert(hv.profiles?.length === 1 && hv.profiles[0].id === 'alpha-test' && hv.profiles[0].v === MANIFEST_V, 'health reports connected profiles + versions from the WS handshake', h.stdout);
+    // `<repo>` discovery: a running server names the checkout it runs from —
+    // the agent asks the bridge instead of guessing ~/chrome-bridge vs npm.
+    assert(typeof hv.repo === 'string' && fs.existsSync(join(hv.repo, 'cli.mjs')), 'health names the repo it runs from (repo field)', h.stdout);
+  }
+
+  // Stale-skill warning: a copied (non-symlink) ~/.claude/skills/chrome-bridge
+  // whose SKILL.md differs from the repo's goes stale on every pull — health
+  // warns on stderr (exit code unchanged); a symlinked install tracks the
+  // repo and stays quiet.
+  {
+    const home = fs.mkdtempSync('/tmp/chrome-bridge-selftest-home-');
+    const sdir = join(home, '.claude', 'skills', 'chrome-bridge');
+    fs.mkdirSync(sdir, { recursive: true });
+    fs.writeFileSync(join(sdir, 'SKILL.md'), 'a stale copied skill');
+    const stale = await cliRaw(['health'], null, { HOME: home });
+    assert(stale.status === 0 && stale.stderr.includes('the installed Claude Code skill'), 'health: a stale copied skill warns on stderr', stale.stderr);
+    fs.rmSync(sdir, { recursive: true, force: true });
+    fs.symlinkSync(`${ROOT}.claude/skills/chrome-bridge`, sdir);
+    const linked = await cliRaw(['health'], null, { HOME: home });
+    assert(linked.status === 0 && !linked.stderr.includes('the installed Claude Code skill'), 'health: a symlinked skill stays quiet', linked.stderr);
+    fs.rmSync(home, { recursive: true, force: true });
   }
 
   // WS control frames must not kill the server: the close/ping handlers once

@@ -646,6 +646,9 @@ const server = http.createServer((req, res) => {
         ok: true,
         extension: !![...seats.values()].find((s) => s.socket && !s.socket.destroyed),
         profiles: [...seats.entries()].map(([pid, s]) => ({ id: pid, v: s.v, ...(s.name ? { name: s.name } : {}), ...(s.install ? { install: s.install } : {}) })),
+        // Where this server runs FROM — an agent's `<repo>` discovery: ask the
+        // live bridge instead of guessing ~/chrome-bridge vs an npm install.
+        repo: fileURLToPath(new URL('.', import.meta.url)),
       })
     );
     return;

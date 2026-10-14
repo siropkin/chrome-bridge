@@ -7,8 +7,8 @@ npx @siropkin/chrome-bridge          # install + start, print next steps
 npx @siropkin/chrome-bridge health   # then it IS the CLI — args forward to it
 ```
 
-What it does: clones the repo into `~/.chrome-bridge` (override with `CHROME_BRIDGE_HOME`), freshens it with a best-effort `git pull`, starts the local server (127.0.0.1:9333), then forwards your args to the real CLI. The Chrome half is the [Chrome Web Store extension](https://chromewebstore.google.com/detail/chrome-bridge/kmhjlnokjigmnimgjjmiahlinjbcebkg) (or load `~/.chrome-bridge/extension` unpacked).
+What it does: clones the repo into `~/.chrome-bridge` (override with `CHROME_BRIDGE_HOME`), starts the local server (127.0.0.1:9333), then forwards your args to the real CLI. A bare `npx @siropkin/chrome-bridge` (no args) also freshens the checkout with a best-effort `git pull` — forwarded commands never pull, so a running server and its CLI can't silently drift apart mid-session. The Chrome half is the [Chrome Web Store extension](https://chromewebstore.google.com/detail/chrome-bridge/kmhjlnokjigmnimgjjmiahlinjbcebkg) (or load `~/.chrome-bridge/extension` unpacked).
 
-This package is intentionally thin — the npm version can lag the repo harmlessly since the CLI refreshes itself from git. The canonical source, docs, and issue tracker are the GitHub repo.
+This package is intentionally thin — the npm version can lag the repo harmlessly since the install refreshes itself from git. The canonical source, docs, and issue tracker are the GitHub repo.
 
 **Not to be confused with** the bare [`chrome-bridge`](https://www.npmjs.com/package/chrome-bridge) package — an unrelated 2017 project (chrome-pagevars) that happens to hold the name. Also unrelated: `chrome-bridge-mcp`, `chrome-bridge-sdk`, `codex-chrome-bridge`.

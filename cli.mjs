@@ -4,6 +4,8 @@
 import fs from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 // Port 9333 is hardcoded in FOUR places: extension/background.js (WS_URL —
 // the extension can't read BRIDGE_PORT), server.mjs, extension/popup.js, here. Change all four.
@@ -416,6 +418,23 @@ async function run(cmdName, args) {
             }
           }
         }
+        // Same drift class for the installed Claude Code skill: a `cp -r`
+        // copy goes stale on every repo update (health is the natural place
+        // to notice — it already warns on the stale extension). A symlinked
+        // install tracks the repo, so it stays quiet. Local files only, and
+        // a warn never changes the exit code.
+        try {
+          const skillDir = join(homedir(), '.claude', 'skills', 'chrome-bridge');
+          const repoSkill = fileURLToPath(new URL('./.claude/skills/chrome-bridge', import.meta.url));
+          if (
+            !fs.lstatSync(skillDir, { throwIfNoEntry: false })?.isSymbolicLink() &&
+            fs.existsSync(join(skillDir, 'SKILL.md')) &&
+            fs.readFileSync(join(skillDir, 'SKILL.md'), 'utf8') !== fs.readFileSync(join(repoSkill, 'SKILL.md'), 'utf8')
+          )
+            console.error(
+              `⚠ the installed Claude Code skill at ${skillDir} differs from the repo's (a copied install goes stale) — re-install as a symlink: rm -rf ~/.claude/skills/chrome-bridge && ln -s ${repoSkill} ~/.claude/skills/chrome-bridge`
+            );
+        } catch {}
       } catch {
         fail('bridge server not running — start it: node cli.mjs start');
       }

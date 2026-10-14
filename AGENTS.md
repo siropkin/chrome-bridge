@@ -10,7 +10,7 @@ node <repo>/cli.mjs <command> …
 
 ## Preflight
 
-`node <repo>/cli.mjs health` → `{"ok":true,"extension":true}` (exit 0; a disconnected extension prints its JSON too but exits 1, so `health && …` preflights work)
+`node <repo>/cli.mjs health` → `{"ok":true,"extension":true}` (exit 0; a disconnected extension prints its JSON too but exits 1, so `health && …` preflights work). Don't know `<repo>`? A running server names it: `curl -s 127.0.0.1:9333/health` → the `repo` field; else try `~/chrome-bridge`, `~/.chrome-bridge` (npm install), then ask.
 
 - `bridge server not running` → run `node <repo>/cli.mjs start` (spawns it detached and waits briefly for a loaded extension to reconnect)
 - `extension not connected` → tell the user to load/reload `<repo>/extension/` at `chrome://extensions` (Developer mode → Load unpacked). You cannot click that button yourself.

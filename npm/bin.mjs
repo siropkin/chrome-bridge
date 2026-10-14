@@ -12,6 +12,7 @@ import { join } from 'node:path';
 const DIR = process.env.CHROME_BRIDGE_HOME || join(homedir(), '.chrome-bridge');
 const REPO = 'https://github.com/siropkin/chrome-bridge';
 const cli = join(DIR, 'cli.mjs');
+const args = process.argv.slice(2);
 
 const run = (cmd, args, opts = {}) => {
   const r = spawnSync(cmd, args, { stdio: 'inherit', ...opts });
@@ -28,16 +29,18 @@ if (!existsSync(cli)) {
     console.error(`chrome-bridge: git clone failed — install git, or clone by hand: git clone ${REPO}`);
     process.exit(1);
   }
-} else {
-  // Best-effort freshen — a pull failure (offline, pinned tag, dirty tree)
-  // never blocks the CLI, so its noise goes nowhere too.
+} else if (!args.length) {
+  // Best-effort freshen on a BARE `npx @siropkin/chrome-bridge` only: a pull
+  // on every forwarded command costs a network round trip, and a silent
+  // update can pair a brand-new CLI with a long-running old server. A pull
+  // failure (offline, pinned tag, dirty tree) never blocks the CLI, so its
+  // noise goes nowhere too.
   run('git', ['-C', DIR, 'pull', '--ff-only', '--quiet'], { stdio: 'ignore' });
 }
 
 // The server start is a no-op when one is already up (any checkout, port 9333).
 if (run(process.execPath, [cli, 'start']) !== 0) process.exit(1);
 
-const args = process.argv.slice(2);
 if (args.length) process.exit(run(process.execPath, [cli, ...args]));
 
 console.log(`

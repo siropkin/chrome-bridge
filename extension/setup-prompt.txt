@@ -1,11 +1,13 @@
 Set up chrome-bridge so you can drive this Chrome browser yourself. Work through every step in order, verify each one, and if a step fails, stop and tell me plainly what failed.
 
 1. Check Node.js ≥ 18: `node --version`. If missing, install it (macOS: `brew install node`; Windows: from nodejs.org; Linux: your package manager).
-2. Download the bridge into a stable home (replace it wholesale if it exists):
-   rm -rf ~/chrome-bridge && curl -L https://github.com/siropkin/chrome-bridge/archive/refs/heads/master.tar.gz | tar xz -C ~ && mv ~/chrome-bridge-master ~/chrome-bridge
+2. Put the bridge into a stable home (~/chrome-bridge) — WITHOUT wiping what is already there:
+   - If ~/chrome-bridge/cli.mjs exists, update it: git -C ~/chrome-bridge pull --ff-only. If the pull fails or the directory is not a git checkout, keep the existing copy as is and say so in your final report. Never delete it — it may be someone's checkout with their own commits (e.g. recipes).
+   - Else if git is available: git clone https://github.com/siropkin/chrome-bridge.git ~/chrome-bridge
+   - Else (no git): curl -L https://github.com/siropkin/chrome-bridge/archive/refs/heads/master.tar.gz | tar xz -C ~ && mv ~/chrome-bridge-master ~/chrome-bridge — only into a fresh ~/chrome-bridge; if a directory already exists there, stop and tell me instead of replacing it.
 3. Start the bridge server: node ~/chrome-bridge/cli.mjs start
 4. Gate: node ~/chrome-bridge/cli.mjs health — the reply must contain "extension":true. If it says false, ask me to toggle the chrome-bridge extension off and on at chrome://extensions, wait a few seconds, and retry. Do not continue until this passes. If health warns that versions differ, note it for the final report but continue.
-5. Read ~/chrome-bridge/AGENTS.md in full — it is your operating manual for the bridge (every command, the safety rules, the conventions). Follow it from now on. If you support persistent skills/instructions (for example Claude Code skills), install ~/chrome-bridge/.claude/skills/chrome-bridge/SKILL.md into yours.
+5. Read ~/chrome-bridge/AGENTS.md in full — it is your operating manual for the bridge (every command, the safety rules, the conventions). Follow it from now on. If you support persistent skills/instructions (for example Claude Code skills), install ~/chrome-bridge/.claude/skills/chrome-bridge into yours AS A SYMLINK so it never goes stale on updates: rm -rf ~/.claude/skills/chrome-bridge && mkdir -p ~/.claude/skills && ln -s ~/chrome-bridge/.claude/skills/chrome-bridge ~/.claude/skills/chrome-bridge (if symlinks don't work — e.g. Windows without Developer Mode — copy the folder instead, and re-copy it after every bridge update).
 6. Dry run, leaving no trace:
    a. node ~/chrome-bridge/cli.mjs tabs — list my open tabs.
    b. node ~/chrome-bridge/cli.mjs open https://example.com — the reply includes the new tab's id.
