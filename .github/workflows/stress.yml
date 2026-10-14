@@ -15,6 +15,11 @@ jobs:
     runs-on: ubuntu-latest
     # A wedged suite ≠ hours of runner time; a healthy run is ~10 min.
     timeout-minutes: 25
+    env:
+      # api/slow's 800ms + CI slowness outruns the 3s --diff settle window
+      # (issue55's nav verdict can't land). Job-level: whichever step starts
+      # the fixture server, the knob reaches it.
+      SLOW_MS: 100
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -70,9 +75,7 @@ jobs:
       # stay manual; file:// fixtures become http:// (extension file-URL access
       # isn't guaranteed here — the suite's own :9334 server serves /fixtures).
       - name: Stress suite (single-profile sections)
-        # SLOW_MS=100: api/slow's 800ms delay + CI slowness outruns the 3s
-        # --diff settle window (issue55's nav verdict then can't land).
-        run: FX=http://localhost:9334/fixtures SLOW_MS=100 test/stress/run.sh dialog pixel waits net marks misc edges ids refs type trusted issues doctor cleanup
+        run: FX=http://localhost:9334/fixtures test/stress/run.sh dialog pixel waits net marks misc edges ids refs type trusted issues doctor cleanup
       - name: Suite logs on failure
         if: failure()
         run: |
