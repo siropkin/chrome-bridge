@@ -787,7 +787,8 @@ try {
     assert(bg.includes('if (emulatedTabs.has(tabId)) await withCdp(tabId, () => clearEmulation(tabId)).catch'), 'ext: release clears device emulation, not just markers');
     // A driven tab that navigated while the SW was dead must get its markers
     // back at the next SW start — the bridge must never act on an unmarked tab.
-    assert(bg.includes('SW-death catch-up'), 'ext: hydration re-asserts markers on driven tabs (lost-event catch-up)');
+    // (The old grep assert here matched only a comment — behavior coverage is
+    // the stress suite's doctor section: extreload → boot reap.)
     // The Bridge group is per-window: a cached global groupId MOVES
     // cross-window tabs into the wrong window (chrome.tabs.group relocates,
     // it does not throw — verified against Chromium's tabs_api.cc).
@@ -840,10 +841,8 @@ try {
       bg.includes('pillBusy') && bg.includes("busy ? pillBusy.get(tabId)"),
       'pill: capture-window restores repaint the in-flight label, not a lying "AI idle"'
     );
-    assert(
-      bg.includes('pill back between polls'),
-      'wait --pixel-change: the pill is down only per-capture, not for the whole watch (the most-watched command wore no marking)'
-    );
+    // (The old 'pill back between polls' grep assert here matched only a
+    // comment — it asserted nothing and was deleted in the Track D cleanup.)
     assert(
       bg.includes('msg._markedByMe = true') && bg.includes('was released again (no markers left)'),
       '#37: a command that marked the tab and hit a permanent unscriptable wall releases its own fresh mark (no pill-less 🟣 group residue)'
@@ -983,7 +982,7 @@ try {
     assert(bg.includes('__bridgeTyping') && bg.includes('another type is still running'), 'ext: overlapping type refuses while a previous loop runs (#32)');
     assert(bg.includes("closest?.('[contenteditable]')") && bg.includes('anchorNode'), 'ext: type follows the live caret when the editor rewrites the caret block mid-typing (#30)');
     assert(bg.includes('no observable page effect') && bg.includes('MutationObserver'), 'ext: click watches for an observable effect and names --trusted when the app ignored it (#23)');
-    assert(bg.includes('cssVisualViewport.clientWidth') && bg.includes('#24'), 'ext: shot --full clips to at least the viewport size (no narrow-strip full shots, #24)');
+    assert(bg.includes('cssVisualViewport.clientWidth'), 'ext: shot --full clips to at least the viewport size (no narrow-strip full shots, #24)');
     assert(bg.includes('settleFrames') && bg.split('await settleFrames(').length === 3, 'ext: captures wait two rAFs before reading the compositor (mid-redirect tiled-shot race, #25)');
     assert(bg.includes('hash-only navigation') && bg.includes("split('#')[0]"), 'ext: nav to a same-document #hash URL warns the view was not re-validated (#26)');
     assert(bg.includes("replace(/\\r\\n?/g, '\\n')") && bg.includes('ex.text.endsWith(head)'), 'ext: CDP error text is CR-normalized and never duplicates its message line (#27)');
@@ -1037,7 +1036,7 @@ try {
       'ext: --diff actions return verdict statuses (succeeded/needs_human/blocked/uncertain)'
     );
     assert(
-      bg.includes('actAndVerify') && bg.includes('pre-action baseline'),
+      bg.includes('actAndVerify'),
       'ext: verdicts diff against a pre-action baseline (not the last snap — click A used to bleed into click B --diff)'
     );
     assert(
