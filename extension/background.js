@@ -651,7 +651,11 @@ const errText = (e) => {
 };
 const wrapErr = (err) => {
   const s = errText(err);
-  if (/No tab with id|The frame was removed/i.test(s)) return 'the tab was closed (or navigated) mid-command — run tabs to re-find it';
+  // Case-SENSITIVE on Chrome's raw shape ("No tab with id: 123."): findTab's
+  // own curated "no tab with id:… — re-copy it from the toolbar popup" must
+  // survive untouched (the /i version ate it — surfaced in single-profile CI,
+  // where commands skip the server's multi-profile probe and hit this path).
+  if (/No tab with id: \d|The frame was removed/.test(s)) return 'the tab was closed (or navigated) mid-command — run tabs to re-find it';
   if (/Cannot access contents of/i.test(s)) return 'that page is off-limits to extensions (chrome://, Web Store, PDF) — pick another tab';
   // runEval already names the wedge case (http tab with a dead debugger);
   // what lands here is a tab genuinely ON another extension's page.
