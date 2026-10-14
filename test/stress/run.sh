@@ -14,7 +14,7 @@ REPO=$(cd "$(dirname "$0")/../.." && pwd)
 S="$REPO/test/stress"
 OUT="$S/out"; mkdir -p "$OUT"
 CLI=(node "$REPO/cli.mjs")
-FX="file://$S/fixtures"
+FX=${FX:-"file://$S/fixtures"} # CI sets FX=http://localhost:9334/fixtures (file-URL extension access isn't guaranteed headless)
 HTTP=http://localhost:9334/fixtures
 PASS=0; FAIL=0; SECTION="?"
 
@@ -787,21 +787,27 @@ cleanup() {
   # close every tab this suite opened, on BOTH profiles. --all: a broad fixture
   # match hits several same-profile tabs and the refusal would break a
   # one-at-a-time loop on the first try; the explicit plural close drains them.
-  local m p rc=0
-  for m in "stress/fixtures/static.html" "stress/fixtures/counter.html" \
-           "stress/fixtures/big.html" "stress/fixtures/rich.html" "stress/fixtures/change.html" \
-           "stress/fixtures/fixedheader.html" "stress/fixtures/slowchange.html" "stress/fixtures/net.html" \
-           "stress/fixtures/alert.html" "stress/fixtures/csp.html" "stress/fixtures/modal.html" "test/upload.html" \
-           "stress/fixtures/shotreset.html" "9334/fixtures/framefocus.html" "stress/fixtures/navlink.html" \
-           "stress/fixtures/chooser.html" "localhost:9334/api/slow" \
-           "localhost:9334/fixtures/iframe.html"; do
-    for p in "$P1" "$P2"; do
-      [ -z "$p" ] && continue
-      "${CLI[@]}" close "$m" --all --profile "$p" >/dev/null 2>&1 || true # no matches left = fine
+  # Every fixture basename is closed under BOTH roots — FX decides where the
+  # tabs actually landed (local file:// vs the CI :9334 server).
+  local m p base rc=0
+  for m in static.html counter.html big.html rich.html change.html \
+           fixedheader.html slowchange.html net.html alert.html csp.html modal.html \
+           shotreset.html navlink.html chooser.html framefocus.html iframe.html; do
+    for base in "stress/fixtures" "9334/fixtures"; do
+      for p in "$P1" "$P2"; do
+        [ -z "$p" ] && continue
+        "${CLI[@]}" close "$base/$m" --all --profile "$p" >/dev/null 2>&1 || true # no matches left = fine
+      done
     done
   done
-  "${CLI[@]}" tabs "stress/fixtures" >"$OUT/leftover.log" 2>&1
-  if grep -q 'stress/fixtures' "$OUT/leftover.log"; then
+  for m in "test/upload.html" "localhost:9334/api/slow"; do
+    for p in "$P1" "$P2"; do
+      [ -z "$p" ] && continue
+      "${CLI[@]}" close "$m" --all --profile "$p" >/dev/null 2>&1 || true
+    done
+  done
+  "${CLI[@]}" tabs "fixtures" >"$OUT/leftover.log" 2>&1
+  if grep -qE 'stress/fixtures|9334/fixtures' "$OUT/leftover.log"; then
     bad "leftover test tabs (see out/leftover.log)"; rc=1
   else ok "zero leftover fixture tabs"; fi
   if grep -q 'test/upload.html' "$OUT/leftover.log"; then bad "leftover upload tab"; else ok "upload tab closed"; fi

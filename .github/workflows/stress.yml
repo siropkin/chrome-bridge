@@ -1,0 +1,51 @@
+# Real-extension stress suite in CI — the only automated gate that runs the
+# ACTUAL extension (the selftest's fake echoes commands back; most issues are
+# ext: issues). Chrome for Testing + xvfb: branded Chrome 137+ ignores
+# --load-extension, CfT still honors it, and the pixel/dialog/trusted
+# sections need a real rendering window.
+# Called from test.yml (pushes/PRs) and release.yml (tag gate) — one
+# definition, so the two call sites can't drift.
+name: stress
+
+on:
+  workflow_call:
+
+jobs:
+  stress:
+    runs-on: ubuntu-latest
+    # A wedged suite ≠ hours of runner time; a healthy run is ~10 min.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: browser-actions/setup-chrome@v2
+        id: chrome
+        with:
+          install-dependencies: true
+      - name: Bridge up, Chrome launched with the extension
+        run: |
+          node cli.mjs start
+          xvfb-run --server-args="-screen 0 1280x900x24" "${{ steps.chrome.outputs.chrome-path }}" \
+            --user-data-dir="$(mktemp -d)" --no-first-run --no-default-browser-check \
+            --load-extension="$PWD/extension" about:blank >/tmp/chrome.log 2>&1 &
+      - name: Wait for the extension seat (90s cap)
+        run: |
+          for i in $(seq 1 30); do
+            node cli.mjs health 2>/dev/null | grep -q '"extension":true' && exit 0
+            sleep 3
+          done
+          node cli.mjs health || true
+          echo "--- chrome log tail:"; tail -20 /tmp/chrome.log
+          exit 1
+      # Two-profile sections (profiles/churn/interact) need a second Chrome and
+      # stay manual; file:// fixtures become http:// (extension file-URL access
+      # isn't guaranteed here — the suite's own :9334 server serves /fixtures).
+      - name: Stress suite (single-profile sections)
+        run: FX=http://localhost:9334/fixtures test/stress/run.sh dialog pixel waits net marks misc edges ids refs type trusted issues doctor cleanup
+      - name: Suite logs on failure
+        if: failure()
+        run: |
+          for f in test/stress/out/*; do echo "=== $f"; tail -40 "$f"; done
+          echo "=== chrome log"; tail -50 /tmp/chrome.log

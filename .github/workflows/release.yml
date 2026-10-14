@@ -37,7 +37,12 @@ permissions:
   contents: write
 
 jobs:
+  # A tag never ships code the real-extension suite fails (the selftest's fake
+  # extension can't catch ext: bugs — #61-class issues are found here).
+  stress:
+    uses: ./.github/workflows/stress.yml
   release:
+    needs: stress
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
