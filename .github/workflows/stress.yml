@@ -26,6 +26,10 @@ jobs:
           install-dependencies: true
       - name: Bridge up, Chrome launched with the extension
         run: |
+          # Ubuntu 23.10+ AppArmor blocks unprivileged user namespaces →
+          # Chrome's zygote dies with "No usable sandbox!". The documented
+          # knob (keeps the sandbox; --no-sandbox is the worse fix).
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           node cli.mjs start
           xvfb-run --server-args="-screen 0 1280x900x24" "${{ steps.chrome.outputs.chrome-path }}" \
             --user-data-dir="$(mktemp -d)" --no-first-run --no-default-browser-check \
@@ -47,5 +51,5 @@ jobs:
       - name: Suite logs on failure
         if: failure()
         run: |
-          for f in test/stress/out/*; do echo "=== $f"; tail -40 "$f"; done
+          for f in test/stress/out/*; do [ -e "$f" ] || continue; echo "=== $f"; tail -40 "$f"; done
           echo "=== chrome log"; tail -50 /tmp/chrome.log
