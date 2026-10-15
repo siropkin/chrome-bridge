@@ -1,7 +1,11 @@
 # Chrome Web Store listing — canonical copy
 
 Paste-ready text for the Chrome Web Store console (no API for these fields — copy by hand).
-Keep in sync with README.md's pitch sections. Last synced: 2026-09-12 (control-story pass: search head terms in the short description, the a11y-tree/token-efficiency and human-control stories in the body).
+Keep in sync with README.md's pitch sections. Last synced: 2026-10-15 (title gains search head terms — the bare "Chrome Bridge" ties a same-titled rival and store search never surfaced us; the disproved "order of magnitude fewer tokens" claim removed).
+
+## Title (= manifest `name`, ships with the extension — not a console field)
+
+Chrome Bridge - AI Agent Browser Automation
 
 ## Short description (max 132 chars)
 
@@ -22,7 +26,7 @@ The agent does the rest itself: downloads the tiny zero-dependency bridge, start
 WHAT YOU GET
 
 • Your agent can read pages, click, fill forms, navigate, screenshot, capture network traffic — in YOUR logged-in browser.
-• AI-first under the hood: the agent reads pages as an accessibility tree instead of screenshots — an order of magnitude fewer tokens per look — and every command is a one-line shell call any agent can run.
+• AI-first under the hood: the agent reads pages as a compact accessibility tree it can narrow to one region or diff against its last look, instead of re-reading screenshots, and every command is a one-line shell call any agent can run.
 • Full local control: everything runs on 127.0.0.1, nothing leaves your machine. No cloud relay, no account, no telemetry.
 • Built for the human watching: every tab the agent touches wears a 🟣 pill narrating each action in real time, joins a 🟣 tab group, and shows status in the favicon; every action lands in a history you can review; one trusted click on ⏏ rejects the agent from that tab.
 • Point the agent at an exact tab: the toolbar popup copies a tab reference (id:…) that pins every command to that tab.
