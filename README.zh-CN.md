@@ -4,44 +4,28 @@
 
 [![MIT 许可证](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Node ≥ 18](https://img.shields.io/badge/node-%E2%89%A5%2018-339933)](https://nodejs.org) [![零依赖](https://img.shields.io/badge/dependencies-0-brightgreen)](package.json)
 
-让**任何 AI 智能体**驱动你正在使用的 Chrome——你已打开的标签页、已登录的会话和 SSO。Playwright 系工具驱动的是它们自己启动的浏览器、自己管理的配置;MCP 桥需要客户端支持 MCP 并配置服务器。chrome-bridge 两者都不需要:它驱动的就是你已登录的那个 Chrome——而且这是唯一模式——一个小小的扩展,一个零依赖的 Node CLI。被智能体操作的标签页还会戴上 🟣 小标签,实时播报它正在做什么。
+让**任何 AI 智能体**驱动你正在使用的 Chrome:你真实的、已登录的配置,包括已打开的标签页、cookie 和 SSO。只需一个小扩展加一个零依赖的 Node CLI。任何能执行 shell 命令的工具都能用它,不需要另起浏览器,也不需要配置 MCP 服务器。智能体触碰的每个标签页都会戴上 🟣 小标签,显示它正在做什么。
 
 ![被驱动标签页的动态演示——🟣 小标签实时播报每一步操作,命令执行时亮起紫色边框,点击处有指针闪烁](docs/demo.gif)
 
-一个小小的 Chrome 扩展(从 [Chrome 应用商店](https://chromewebstore.google.com/detail/chrome-bridge/kmhjlnokjigmnimgjjmiahlinjbcebkg)安装,或解压加载)通过 WebSocket 连接到本地 Node 服务器;任何能执行 shell 命令的工具都能驱动浏览器:
-
-```bash
-node cli.mjs start                       # 启动桥接服务(Node ≥ 18,零依赖)
-node cli.mjs snap localhost:8082         # 紧凑的无障碍树快照,带元素引用
-node cli.mjs click localhost:8082 @e4    # 按引用点击
-node cli.mjs fill localhost:8082 @e2 "hello@example.com"
-node cli.mjs shot localhost:8082 out.png --max 800 --format jpeg
-```
-
-`snap` 的输出长这样——整个页面变成一棵紧凑的文本树,你可以直接操作其中的引用:
-
-```
-table "Hacker News new | past | comments | ask | show | jobs | submit" @e1
-  link "Hacker News" @e5
-  link "new" @e6
-  link "submit" @e12
-  link "login" @e13
-table "1. Playa Phone (playaphone.com) 122 points by cutoff 1 hour…" @e14
-  link "Playa Phone" @e16
-  link "41 comments" @e21
-```
-
-默认不输出链接 URL(在我们的实测中它们占快照 token 的大头——你点击的是 `@eN` 引用,而不是 URL);无名称的链接仍保留 URL,`snap --href` 可恢复全部。
-
-一次真实运行,已对 GitHub 线上验证:[recipes/github.com.md](recipes/github.com.md)——用 CLI 设置仓库的社交预览图,含全部坑点(og:image 验证、is-default 误报、net/upload 调试器冲突)。
+**[从 Chrome 应用商店安装](https://chromewebstore.google.com/detail/chrome-bridge/kmhjlnokjigmnimgjjmiahlinjbcebkg)**,或 `git clone` 本仓库后加载解压的扩展文件夹。
 
 ## 快速开始
 
-需要 macOS/Linux(或 Windows 上的 Git Bash)、Chrome ≥ 117(ask / `snap --find` / `console --ask` 另需 Chrome ≥ 138 的内置 Nano 模型)和 Node ≥ 18。
+需要 macOS 或 Linux(Windows 上用 Git Bash)、Chrome ≥ 117 和 Node ≥ 18。
 
-**Chrome 应用商店(最简单)。** 安装 [Chrome Bridge](https://chromewebstore.google.com/detail/chrome-bridge/kmhjlnokjigmnimgjjmiahlinjbcebkg),点击工具栏上的扩展按钮,再点 **Copy setup prompt for your AI agent**——把这段文字粘贴给你的智能体(Claude Code、Cursor……),剩下的事它自己会做完:下载桥接器、启动服务、验证连接、做一次不留痕迹的试运行,然后向你汇报。弹窗上的圆点会告诉你桥接器何时就绪(● bridge ready)。
+**Chrome 应用商店(最简单)。** 安装扩展,点击工具栏按钮,选择 **Copy setup prompt for your AI agent**,把这段提示粘贴给你的智能体(Claude Code、Cursor……)。智能体会下载桥接器、启动服务、检查连接并向你汇报。完成后弹窗会显示 ● bridge ready。
 
-**从源码安装(一次粘贴,一次点击)。** 把下面这段粘贴进你的 AI 智能体(Claude Code、Cursor、Qwen、GLM……)——它会克隆仓库、启动桥接服务、装好自己的接入端(Claude Code 的 skill,或写入其他智能体指令文件里的一行话),并在恰当时刻请你完成 Chrome 不允许脚本代劳的那一次点击:
+**从源码安装。** 告诉你的智能体:
+
+```text
+read https://raw.githubusercontent.com/siropkin/chrome-bridge/master/docs/agent-setup.md and do what it says
+```
+
+它会克隆仓库、启动桥接服务并装好自己的接入端。然后它会请你完成 Chrome 不允许脚本代劳的那一步:打开 `chrome://extensions`,开启开发者模式,点击**加载已解压的扩展程序**,选择 `extension/` 文件夹。如果你是从应用商店安装的,跳过这一步。两份都加载的话,每条命令都会要求 `--profile`。
+
+<details>
+<summary>智能体打不开网址?改为粘贴这段提示</summary>
 
 ````text
 Set up chrome-bridge — the bridge that lets you drive my real, logged-in Chrome — and install your end of it. Do every step yourself and tell me the result of each. The only thing I do is the one-time extension load in Chrome (step 3).
@@ -94,39 +78,67 @@ Set up chrome-bridge — the bridge that lets you drive my real, logged-in Chrom
 5. Tell me the bridge is up. From the next session your integration auto-loads; in this one, read `<repo>/AGENTS.md` when a browser task comes up.
 ````
 
-那一手动步骤(智能体提出请求时):`chrome://extensions` → 开发者模式 → **加载已解压的扩展程序** → 选择 `extension/` 文件夹(Chrome 要求必须手动点击,脚本无法代劳)。无论哪种方式,验证:`node cli.mjs health` → `{"ok":true,"extension":true}`。
+</details>
 
-有联网能力的智能体可以省去复制粘贴:告诉它 `read https://raw.githubusercontent.com/siropkin/chrome-bridge/master/docs/agent-setup.md and do what it says`。
-
-想自己动手?手动路径:
+**手动安装。**
 
 ```bash
 git clone https://github.com/siropkin/chrome-bridge && cd chrome-bridge && ./install.sh
 ```
 
-`install.sh` 会启动服务器并打开 `chrome://extensions`(macOS;Linux 请自行打开);然后按上面方式加载扩展,细节见[安装细节](#安装细节)。从 Chrome 应用商店安装了 Chrome Bridge?跳过"加载已解压的扩展程序"这一步——商店版会自动连接;再加载解压版会创建第二个配置席位,每条命令都会要求 `--profile`。
+按上面的方法加载 `extension/` 文件夹,然后让你的智能体去读 [AGENTS.md](AGENTS.md)——完整的操作手册。
 
-这就是全部集成工作。`AGENTS.md` 是一份自包含的操作手册——命令、配方、注意事项——任何能读文件或联网的智能体都能阅读。有联网能力的智能体可以直接从 GitHub 读取:`https://raw.githubusercontent.com/siropkin/chrome-bridge/master/AGENTS.md`。
+验证:`node cli.mjs health` 应输出 `{"ok":true,"extension":true}`。在智能体发出第一条命令之前,Chrome 里不会有任何变化,这是正常的。想让智能体操作某个确定的标签页,在工具栏弹窗里点 **Copy tab reference**,把得到的 `id:…` 粘贴给它。
 
-如果它对你有用,请在 [Chrome 应用商店留个 ★ 评价](https://chromewebstore.google.com/detail/chrome-bridge/kmhjlnokjigmnimgjjmiahlinjbcebkg)——新扩展能不能被商店展示给别人,全看最初这几个评价。
+如果 chrome-bridge 对你有用,请在 [Chrome 应用商店留个 ★ 评价](https://chromewebstore.google.com/detail/chrome-bridge/kmhjlnokjigmnimgjjmiahlinjbcebkg),帮助更多人找到它。
 
-## 人类始终掌控
+## 工作原理
 
-被桥接驱动的标签页会在右下角显示 🟣 小标签(点击查看完整操作历史;✕ 可隐藏,下次导航前不再显示;⏏ 可断开智能体对该标签页的控制)并加入 🟣 标签页分组,你随时知道哪些页面正在被自动化——只读命令(`snap`、`measure`、`console`)同样会打上标签:智能体**正在查看**的标签页也会戴标签,而不只是它修改过的。小标签实时播报智能体正在做什么(`🟣 taking screenshot…`、`🟣 reading page…`,长命令会显示已耗时秒数),历史面板列出最近的操作并自动滚动到最新一行;空闲时显示 `🟣 AI idle`(连续失败后显示 `⚠ N failed since last ok`,桥接服务器不可达时显示 `⚠ bridge offline`);命令执行期间,紫→青渐变边框亮起,标签页 favicon 显示 ⏳(完成 ✅,失败 ✗,✗ 会保留到下一条命令),点击/悬停处会闪现紫色指针标记智能体的操作位置。`release`(或 `close`)即可全部还原。⏏ 是人类的安全出口:一次可信点击即可完全收回桥接对该标签页的控制——标记、分组、设备模拟全部清除,无需 CLI(合成的页面点击无法伪造它),**而且是强制执行的:桥接会拒绝智能体对该标签页的任何后续命令,直到智能体用 `mark` 显式重新接管**——没有可以被等待耗过的时限(智能体会被提示先询问你;正在执行的一步可能仍会完成)。无法显示小标签的标签页(chrome://、应用商店、PDF)会在工具栏按钮上显示紫色圆点。工具栏弹窗还提供一键控制:释放*当前*标签页,或一次性释放*所有*智能体标签页。
+扩展连接到 `127.0.0.1:9333` 上的一个本地小服务器。智能体通过 CLI 驱动它:
+
+```bash
+node cli.mjs snap localhost:8082         # 页面变成一棵带元素引用的紧凑树
+node cli.mjs click localhost:8082 @e4    # 按引用点击
+node cli.mjs fill localhost:8082 @e2 "hello@example.com"
+node cli.mjs shot localhost:8082 out.png # 截图,只在需要像素时用
+```
+
+`snap` 把页面变成一棵简短的文本树。它的 token 开销比截图低约 10 倍,智能体直接操作其中的 `@e` 引用:
+
+```
+table "Hacker News new | past | comments | ask | show | jobs | submit" @e1
+  link "Hacker News" @e5
+  link "new" @e6
+  link "submit" @e12
+table "1. Playa Phone (playaphone.com) 122 points by cutoff 1 hour…" @e14
+  link "Playa Phone" @e16
+  link "41 comments" @e21
+```
+
+自己写智能体循环?可以跳过 CLI,直接向 `POST http://127.0.0.1:9333/cmd` 发送 JSON,例如 `{"type": "snap", "urlMatch": "…"}`。
+
+## 人们用它做什么
+
+- "每天早上看一眼我的仪表盘,把变化发到 Slack。"cron 启动的智能体直接用已登录的标签页。遇到登录墙时,`wait --human` 会把标签页交给你。
+- 从 CSV 填写 CMS,不用重新登录。
+- 对照 Figma 设计稿检查 staging 构建。[design-eye.md](design-eye.md) 是检查清单,还有 8px 对齐网格叠加层。
+- 不调整窗口大小就能看页面的移动端视图:`emulate <tab> 390 844 mobile`。
+- 任何全新浏览器会卡住、而你的浏览器不会的场景:SSO、机器人检测、VPN 后面的内部仪表盘。
+
+一次在 GitHub 上实测的真实运行:[recipes/github.com.md](recipes/github.com.md) 设置仓库的社交预览图。
+
+## 你始终掌控
+
+- **智能体触碰的每个标签页都戴 🟣 小标签**,只读的标签页也不例外。小标签显示当前正在做什么(`🟣 taking screenshot…`),并保留历史操作记录。被驱动的标签页还会加入 🟣 标签页分组,页面无法伪造它。
+- **小标签上的 ⏏ 会断开智能体对该标签页的控制。** 这是强制执行的:在智能体用 `mark` 重新接管之前,桥接会拒绝它对该标签页的所有命令,而且智能体被要求先征得你的同意。
+- **工具栏弹窗可以释放当前标签页,或一次释放所有智能体标签页。**
+- **`node cli.mjs watch`** 在终端里实时显示每条命令。
 
 ![🟣 小标签正在播报被驱动的标签页,操作历史面板已展开](docs/store/screenshot-1-pill.png)
 
-## chrome-bridge 对比 Playwright 和 playwright-mcp
-
-如果你在找一个能复用现有 Chrome 会话的 Playwright 替代:Playwright 驱动的是它自己启动的浏览器——一个独立的 Playwright 管理的配置,不是你已登录的那个 Chrome,所以智能体每次都是未登录状态(挂载模式存在——`--remote-debugging-port` 重启,或 playwright-mcp 的扩展模式——但都需要手动开启;playwright-mcp 现在也为编程智能体提供了 CLI)。chrome-bridge 驱动的是你正在使用的 Chrome,而且这是唯一模式。它借鉴了 Playwright 最好的两个设计(带元素引用的无障碍树快照、基于引用的操作),同时省掉了 40 MB 的依赖和独立配置。
-
-## chrome-bridge 对比 MCP 浏览器桥、Chrome DevTools MCP 和 Claude for Chrome
-
-MCP 桥(mcp-chrome、BrowserMCP)要求客户端支持 MCP,还需要配置长期运行的 MCP 服务器(playwriter 也提供 CLI,但仍要启动/挂载一个浏览器实例)。Chrome DevTools MCP 的免 MCP CLI 能挂载到你的真实配置(`--autoConnect`,Chrome 144+)——但那是一个可选开关,而且它的卖点是 DevTools 深度(性能 trace、调试),不是极简。Claude for Chrome 是 Anthropic 的官方扩展——只能在 Claude 应用里用,靠截图驱动;chrome-bridge 对任何智能体开放(Claude Code、Cursor、Qwen、GLM、你自己的循环),用省 token 的无障碍树读页面。Browserbase 之类的云端浏览器农场没有你的任何登录态;chrome-bridge 在本地运行,而且已登录。chrome-bridge 的真实浏览器模式就是*唯一*模式,客户端是任何能执行 shell 命令的工具:一个普通 CLI 加一个命令端点(`POST /cmd`)——智能体侧无需安装、无需配置——同样的命令也可以用在脚本、cron 任务或你自己的终端里。
-
 ## 对比一览
 
-这是一份指南,不是排名——下面每个工具都有真材实料。2026-09-12 依据各工具自己的文档核对;"—" 表示官方未声明该能力,请自行验证你在意的点。
+2026-09-12 依据各工具自己的文档核对。"—" 表示该工具未列出此能力。
 
 | | chrome-bridge | playwright-mcp | Chrome DevTools MCP | Browser MCP / mcp-chrome | Claude for Chrome |
 |---|---|---|---|---|---|
@@ -135,146 +147,70 @@ MCP 桥(mcp-chrome、BrowserMCP)要求客户端支持 MCP,还需要配置长期�
 | 任何能跑 shell 命令的智能体都能用 | 能 | 限 MCP 客户端 | 限 MCP 客户端 | 限 MCP 客户端 | 仅限 Claude 应用 |
 | 运行中可观看、可否决 | 🟣 小标签实时播报、操作历史、一键断开(强制执行) | — | — | — | — |
 
-## Chrome 136 破坏了复制(或复用)Chrome 配置的老办法
+### chrome-bridge 对比 Playwright 和 playwright-mcp
 
-从 Chrome 136(2025 年 5 月)起,自动化*你自己*浏览器的经典办法全部失效:当 `--remote-debugging-port` 指向默认 user-data-dir 时 Chrome 会静默拒绝,Playwright/Puppeteer 再也挂不上你的日常配置;把配置目录复制到别处又会弄坏登录态——cookie 报 "Failed to decrypt"、配置被锁,或者提示 "Chrome is already in use"。常见的 workaround 是单独建一个 `--user-data-dir` 手动登录一次:一个登录态需要你维护的第二配置,而 Google 账号对全新配置尤其挑剔。
+Playwright 驱动的是它自己启动的浏览器和自己的配置,所以智能体每次都从未登录状态开始。挂载到你自己的 Chrome 是可以的,但需要手动开启。chrome-bridge 借鉴了 Playwright 最好的设计——带元素引用的无障碍树快照——同时省掉了 40 MB 的依赖。
 
-chrome-bridge 绕开了这整个问题:扩展直接住在你正在运行的 Chrome 里、你已经登录的配置里——不需要远程调试端口,不需要 user-data-dir,不需要重启浏览器,不需要复制配置。你的会话直接可用,而基于 CDP 挂载日常配置的那条路从 136 起就没了。
+### chrome-bridge 对比 MCP 浏览器桥、Chrome DevTools MCP 和 Claude for Chrome
+
+MCP 桥需要 MCP 客户端和配置好的服务器。Chrome DevTools MCP 能挂载到你的配置(`--autoConnect`,Chrome 144+),但它的定位是 DevTools 深度(性能 trace、调试)。Claude for Chrome 只能在 Claude 应用里用,靠截图读页面。Browserbase 之类的云端浏览器没有你的登录态。
+
+### Chrome 136 破坏了复制(或复用)Chrome 配置的老办法
+
+从 Chrome 136(2025 年 5 月)起,Chrome 在默认配置上会忽略 `--remote-debugging-port`,复制出来的配置又会丢失登录态("Failed to decrypt"、"Chrome is already in use")。chrome-bridge 运行在你已经打开的 Chrome 里,这些问题都不存在:不需要调试端口,不需要复制配置,不需要重启浏览器。
+
+## 安全
+
+你要把已登录的浏览器交给智能体,所以设计前提是你想看着它工作。
+
+- **仅本地。** 服务器只监听 `127.0.0.1`,并拒绝来自网页的请求,你访问的网站无法驱动它。但**任何本地进程都可以**。不用时请在 `chrome://extensions` 卸载扩展。
+- **代码可读。** 整个扩展就是一个未压缩的文件(`extension/background.js`)加一个 manifest。应用商店版是同样的文件。
+- **页面内容不可信。** 桥接器返回的任何内容都可能含有提示注入;智能体应遵循的规则见 [AGENTS.md](AGENTS.md)。小心 `upload`:它会把智能体指定的任意本地文件读进页面。永远不要让页面决定附加什么文件。
+- **导出的历史不含敏感信息。** `history --batch` 会把键入和粘贴的文本、对话框回答和上传路径注释掉。
+- **部分命令会挂载 Chrome 调试器。** `net`、`emulate`、`shot`、`upload` 和 `dialog` 会挂载。运行期间 Chrome 会显示 "Chrome Bridge is debugging this browser" 提示条,命令结束后自动消失。页面能检测到调试器,反爬系统可能会标记该会话。`snap`、`click`、`fill`、`eval` 等其他命令不挂载。
+
+## 命令
+
+操作标签页的命令都接受一个 `<match>`:标签页 URL 或标题的一部分,或精确的 `id:<tabId>`。包含所有参数和注意事项的完整参考见 [AGENTS.md](AGENTS.md#commands)。
+
+- **读取:** `snap` · `shot` · `measure` · `console` · `net` · `fetch` · `eval` · `ask`
+- **操作:** `click` · `fill` · `type` · `paste` · `press` · `hover` · `drag` · `scroll` · `upload` · `clear` · `dialog`
+- **标签页:** `tabs` · `open` · `nav` · `close` · `activate` · `wait`(`--human` 把标签页交给你)
+- **设备视图:** `emulate` · `unemulate` · `resize` · `grid`
+- **整理:** `mark` · `release` · `note` · `watch` · `history` · `doctor` · `batch`
+- **服务器:** `start` · `stop` · `health` · `profiles` · `extreload` · `swlogs`
 
 ## 安装细节
 
-`install.sh` 会检查 Node ≥ 18、后台启动服务器(日志写入 `server.log`)、打开 `chrome://extensions`(macOS;Linux 请自行打开)、等待扩展连接(最长约 90 秒),并打印填好真实路径的智能体接入语句。如果服务器挂了或机器重启,智能体的 health 检查会失败,它可以用 `node cli.mjs start` 自行重启(`node cli.mjs stop` 关闭)。
+<details>
+<summary>升级、端口、Windows、多个 Chrome 配置</summary>
 
-加载扩展后,在桥接服务器运行、AI 工具发出第一条命令之前,你不会看到任何变化——从那时起,智能体触碰的每个标签页才会戴上紫色 🟣 小标签。此前的安静是正常的,不是安装失败。唯一从一开始就属于你的部分是工具栏按钮:它的弹窗会复制当前标签页的 `id:<tabId>` 引用——把它粘贴给你的智能体("处理标签页 id:…"),任何命令的 `<match>` 都会精确指向那个标签页,无需猜测 URL(浏览器重启后 id 会失效——重新复制即可)。
-
-**升级**:执行 `git pull` 后要重启服务器——它运行的仍是启动时的代码,而且 health 检查依然通过,没有别的东西会提醒你。同时用 `node cli.mjs extreload` 重新加载扩展(服务工作线程也是旧代码——加载的扩展版本和仓库不一致时,`node cli.mjs health` 会打印警告):
+**升级。** `git pull` 之后要重启服务器并重新加载扩展。旧服务器会继续运行旧代码,而且 `health` 依然通过,没有别的东西会提醒你:
 
 ```bash
 node cli.mjs stop && node cli.mjs start
 node cli.mjs extreload
 ```
 
-**端口**:桥接器固定使用 127.0.0.1:9333。`BRIDGE_PORT` 可以移动服务器和 CLI(安装器强制要求 9333)——但扩展始终拨打 9333;如果必须换端口,需要同时修改 `extension/background.js`。服务器起不来且 `server.log` 显示 `EADDRINUSE` → 9333 被别的进程占用:用 `lsof -i :9333` 找到它(常常是另一个检出里的旧服务器——`node <那个仓库>/cli.mjs stop` 即可释放)。
+加载的扩展比仓库旧时,`health` 会发出警告。
 
-**Windows**:`install.sh` 是 bash(macOS/Linux,或 Git Bash)。桥接器本身是纯 Node——任何平台都能在终端里运行 `node server.mjs`,所有 `cli.mjs` 命令都是跨平台的。
+**服务器停了。** 服务器挂掉或机器重启后,智能体的 health 检查会失败,智能体会用 `node cli.mjs start` 自行重启。
 
-**多个 Chrome 配置**:扩展可以同时加载在多个配置中——每个配置保持独立连接,智能体可以并行驱动它们。命令会自动路由到唯一拥有匹配标签页的配置;当多个配置都有匹配时**拒绝执行**,要求智能体用 `--profile <id 或 name>` 指明(`cli.mjs profiles` 同时列出两者)——智能体绝不会在你以为操作工作浏览器时悄悄点进个人浏览器。每个配置还有一个稳定的短名字(`birch`、`oak` 等),`--profile` 直接接受该名字,显示在 `watch` 输出和标签里——对正在观看的人类来说,uuid 前缀毫无意义。
+**端口。** 所有组件都用 `127.0.0.1:9333`。`BRIDGE_PORT` 可以移动服务器和 CLI,但扩展始终连接 9333,所以还得修改 `extension/background.js`。`server.log` 显示 `EADDRINUSE` 说明 9333 被别的进程占用:用 `lsof -i :9333` 找到它。常常是另一个检出里的旧服务器,`node <那个仓库>/cli.mjs stop` 即可释放。
 
-## 支持任何 AI 智能体——不限于 Claude
+**Windows。** `install.sh` 需要 bash(Git Bash 可以)。桥接器本身是纯 Node,`node server.mjs` 和所有 `cli.mjs` 命令在任何平台都能用。
 
-桥接器就是一个普通的本地 CLI + HTTP 接口,设计上与具体 harness 无关:
+**多个 Chrome 配置。** 在每个配置里加载扩展即可,智能体可以并行驱动它们。如果多个配置里都有匹配的标签页,命令会被拒绝,直到智能体用 `--profile <name>` 指明(`cli.mjs profiles` 会列出它们)。这样智能体绝不会在你以为操作工作浏览器时点进个人浏览器。不要在同一个配置里同时加载应用商店版和解压版,桥接器同样会拒绝并提示你移除其中一个。
 
-| 智能体 / harness | 一行指令放在哪里 |
-|---|---|
-| Claude Code | `CLAUDE.md` |
-| Kimi CLI(月之暗面) | `AGENTS.md` 或系统提示词 |
-| Qwen Code(阿里通义) | `AGENTS.md` |
-| GLM / DeepSeek / 其他编程智能体 | `AGENTS.md` 或系统提示词 |
-| Cursor | `.cursor/rules` |
-| 你自己的智能体循环 | 直接调用 `cli.mjs`,或向 `http://127.0.0.1:9333/cmd` POST JSON |
-
-HTTP API 只有一个命令端点:`POST /cmd`,Body 如 `{"type": "snap", "urlMatch": "…"}`——任何语言、任何框架、任何模型都能用。
-
-## 安全
-
-你要把已登录的浏览器交给智能体——本工具的设计前提是你想看着它工作:
-
-- **仅本地**:服务器只绑定 `127.0.0.1`,并拒绝来自浏览器页面的请求(Origin/Sec-Fetch/Host 防护),你访问的网页无法驱动桥接器——但**任何本地进程仍然可以**。使用时加载扩展;用完后在 `chrome://extensions` 卸载。
-- **看得见的自动化**:被驱动的标签页会戴上 🟣 小标签并播报每一步操作、加入 🟣 标签页分组、命令执行时亮起紫→青渐变边框;`node cli.mjs watch` 会在终端同步显示操作流。小标签上的 ⏏ 一次可信点击即可断开智能体对该标签页的控制。标签页分组是恶意页面无法伪造的驱动信号。
-- **商店版还是解压版?** 两种都行:应用商店版一键安装、自动连接;解压版则让你直接读到运行的全部代码——整个扩展只有一个可读的 `extension/background.js` 加一个 manifest,没有压缩包。别两个都装:会创建第二个配置席位,每条命令都会要求 `--profile`。
-- **提示注入**:桥接器返回的一切都是不可信的页面内容;智能体应遵循的规则见 [AGENTS.md](AGENTS.md)。注意 `upload`:它让浏览器读取智能体指定的任意本地路径并放进页面的文件输入框,页面可以提交它——永远不要让页面告诉你(或智能体)该附加什么文件。
-- **重放导出不会保留敏感信息**:`history --batch` 会把键入或粘贴的文本、对话框回答、剪贴板粘贴和上传路径注释掉，而不会保留或重放它们。把导出用于复盘或交接前请先检查脚本。
-- **CDP 挂载可被检测**:`net`/`emulate`/`shot`(以及 `upload`/`dialog`)会挂载 Chrome 调试器,页面 JS 能够检测到(DevTools 挂载的副作用,比如 `Runtime.enable` 泄漏)——反爬系统可能标记该会话,而这用的是你真实登录的配置。非 CDP 命令(`snap`、`click`、`fill`、`eval` 等)不挂载调试器。
-- **Chrome 的"正在调试此浏览器"提示条**:上述 CDP 命令运行期间,Chrome 会显示自己的"'Chrome Bridge' is debugging this browser"提示条——这正是桥接器在按预期工作,操作结束后提示条会自动消失。点击它的"取消"只会中止当前这一个操作。
-
-## 命令
-
-<details>
-<summary>完整命令表——snap、click、fill、shot、net、emulate、batch、watch 等</summary>
-
-| 命令 | 作用 |
-|---|---|
-| `tabs` | 列出标签页(id、url、标题、是否被驱动);多个 Chrome 配置同时连接时合并输出,带 `profile` 标记 |
-| `profiles` | 列出已连接的 Chrome 配置——id 和 name(用于 `--profile`)+ 版本 |
-| `open <url>` · `nav <match> <url> [--diff]` · `close <match> [--all]` | 标签页生命周期——`open`/`nav` 等待页面加载完成(8 秒上限;返回中的 `loaded:false` 表示超时触发时页面仍在加载——`snap`/`eval`/`wait --text` 对已加载部分照常可用)。`nav` 只接受所示参数和 `--diff`;拼写错误会在路由前失败。`close --all` 关闭所有匹配项——这是处理任何 `<match>` 都无法区分的相同 URL 标签页的办法 |
-| `snap <match> [css\|@ref] [--diff] [--href] [--skeleton] [--find "nl"]` | 无障碍树快照,带 `@eN` 引用——**便宜,优先于截图使用**。可限定子树(CSS 或 `@ref`)、与上一次快照对比,`--href` 输出全部链接 URL。`--skeleton` 用于密集页面:深度受限的地图,被裁剪的子树显示 `… N inside`(钻取:`snap <match> @ref`),不再无声错过 300 节点截断。`--find "取消按钮"` 由本地 Gemini Nano 挑出匹配行(~2 秒,无云端 token)——是待验证的候选清单,不是绝对正确。`*` 前缀标记上次快照后新增的元素 |
-| `click <match> <@ref\|css> [--dbl] [--diff] [--trusted]` | 点击(自动滚动到可见位置,完整 pointer/mouse 事件序列,遮挡检测);`--dbl` 双击;`--trusted` 走 CDP Input(isTrusted=true,画布类应用如 Figma 接受) |
-| `drag <match> <@ref\|css> <@ref\|css> [--diff] [--trusted]` | 把一个元素拖到另一个上(合成指针序列;`--trusted` 走 CDP Input——isTrusted,且触发传统 HTML5 dragstart/drop) |
-| `dialog <match> accept\|dismiss [--text s]` | 通过 CDP 应答 JS 对话框——仅当对话框在调试器会话期间(net/shot/…)打开时可达;若在未挂载的标签页上卡死则无法应答:用 `nav <match> <url>` 恢复(导航会丢弃对话框)。`--text` 必须带应答内容 |
-| `fill <match> <@ref\|css> <value> [--diff]` | 设置输入框的值——React 安全(原生 setter + input/change 事件);原生 `<select>` 按选项值或标签匹配 |
-| `clear <match> <@ref\|css> [--diff]` | 清空输入框/textarea/contenteditable——合成全选+退格失效时的路径(Editor.js 这类自持模型的编辑器) |
-| `activate <match>` | 把后台标签页带到前台(可信 CDP 输入需要它——隐藏标签页上事件不会触发) |
-| `type <match> <@ref\|css> <text> [--diff] [--trusted]` · `press <match> <key> [@ref] [--diff] [--trusted]` · `hover <match> <@ref\|css> [--diff] [--trusted]` | 逐字符输入(自动补全 UI)、按键(`Control+k` 组合键可用)、悬停;`--trusted` 走 CDP 输入(isTrusted——Enter 能触发表单提交等浏览器默认行为) |
-| `paste <match> [@ref\|css] [--diff] [--html] [-- <text>]` | 以真实粘贴的语义写入聚焦(或指定)的字段——会回退 `fill` 的富文本编辑器(Quill、Reddit/LinkedIn 编辑器)接受粘贴;不给 `-- <text>` 时读取系统剪贴板。`--html` 发送标记文本(text/html + 剥离标签的纯文本回退)——块编辑器一次粘贴即可解析为原生块 |
-| `scroll <match> <up\|down\|top\|bottom\|@ref\|css> [--diff]` | 滚动——自动找到真正的滚动容器(Linear、Gmail 这类应用外壳滚动的是内部面板,不是窗口) |
-| `upload <match> <@ref\|css> <file...> [--chooser] [--diff]` | 通过 CDP 设置文件输入框的文件——隐藏输入框也可用;目标是输入框或包裹它的元素。`--chooser` 改为以打开系统文件选择框的按钮为目标:选择器被拦截,文件落到应用在点选时才创建的输入框上(Slides 的分离式 input 模式;不弹出对话框)。未知的 `--flag` 会失败,不会被当作文件 |
-| `ask <match> <question>` | *(实验性)* 本地 Gemini Nano 根据页面文本回答——无云端 token,质量仅供预筛 |
-| `wait <match> <css\|--text t\|--human\|--pixel-change> [--timeout ms]` | 等待元素或可见文本出现(MutationObserver 驱动,页面一变即返回;默认 10 秒,上限 60 秒)。`--human` 把标签页交给你——验证码/两步验证/登录墙:小标签提示轮到你了,命令阻塞到你完成操作(默认 2 分钟),然后返回你所做改动的快照 diff。`--pixel-change` 轮询直到像素变化(无障碍树看不到的画布变化) |
-| `eval <match> <js\|-> [--world main\|isolated]` | 在页面中执行 JS;`-` 从 stdin 读取 |
-| `shot <match> <out> [--max px] [--scale N] [--format jpeg] [--quality N] [--crop x,y,w,h] [--full] [--diff]` | CDP 截图。长边默认限制为 `--max` 1280px(`0` = 原始分辨率)——模型读取大图时本来就会缩小,原图只增加文件体积不增加细节。`--full` = 整页高度。`--diff` 与上一次 `--diff` 截图对比(固定基线的尺寸/缩放,跟随当前滚动位置——对比的是智能体当前看到的画面),只保存变化的区域——无障碍树看不到的画布/像素变化 |
-| `net <match> [--dur ms] [--filter s] [--body s] [--ws] [--har out.har]` | CDP 网络抓包(单次 ≤30 秒)——每个请求一行紧凑输出,并标注发起者(`⟵ api-client.js:88`);`--ws` 同时抓取 WebSocket 帧(`→` 发送 / `←` 接收——聊天/流式应用);`--body s` 附加匹配的 JSON/文本响应体;`--har out.har` 把抓包存为可分享的 HAR 1.2(DevTools/Burp 可打开)——它携带完整请求/响应头(含 cookies/令牌),以仅所有者可读(0600)写入:请当作机密对待 |
-| `fetch <match> <url> [--out file] [--keep] [--header "k: v"]... [--csrf]` | 在页面内发 fetch,复用登录会话——需要登录的 JSON/信息源直接可取,无需 eval 拼接;二进制响应必须 `--out`,文本打印截断在 5 万字符(`--out` 保存完整内容);没有匹配标签页时会在目标源打开一个临时标签页,取完即关(`--keep` 则保留以便续取);`--header` 为检查请求头的会话 API 附加请求头;`--csrf` 自动把 JSESSIONID Cookie 作为 `csrf-token` 请求头 |
-| `measure <match> <css>` | 元素位置 + 计算样式,JSON 输出——不看像素也能知道布局真相 |
-| `console <match> [--clear] [--ask [q]]` | 页面 console + 未捕获错误(首次调用时安装钩子);`--ask` 用本地 Gemini Nano 分诊日志——只有结论消耗云端 token |
-| `grid <match>` | 开关 8px 对齐网格覆盖层 |
-| `emulate <match> <w> <h> [mobile\|dsf=N]` · `emulate <match> focus` · `unemulate <match>` | 桌面 / 移动设备视图切换——CDP 模拟,无需调整窗口大小;`dsf=N` 固定设备像素比(`dsf=2` = 任意显示器都能截出 retina 级清晰截图);`focus` 让页面相信自己处于焦点状态——依赖焦点的后台标签页任务继续运行(不会渲染被遮挡的窗口)。只接受 `mobile`、`dsf=N` 和 `focus` 三种模式 |
-| `resize <match> <w> <h>` | 调整窗口大小 |
-| `batch` | 从 stdin 逐行读取命令,一个进程跑完整序列;遇错即停 |
-| `mark <match>` · `release <match>` | 添加 / 移除驱动标记(右下角 🟣 标签)+ 标签页分组 |
-| `note <match> <text>` | 向人类播报——文本显示在被驱动标签页的小标签及其历史中(小标签本来就显示*做了什么*;note 补充*为什么*) |
-| `watch` | 终端里实时显示桥接器的每条命令——小标签的孪生。在智能体会话旁边运行,跟着看;Ctrl-C 退出 |
-| `doctor [--fix]` | 浏览器卫生清扫:找出仍带着桥接标记(🟣 分组、状态 favicon、设备模拟、调试器)但桥接器已不再跟踪的标签页——每行附带该标签页最近的生命周期事件,"为什么这个标签页还被标记着?"从此有答案。`--fix` 会释放每个残留标签页并清理失效的内部记忆(正在被驱动的标签页绝不动)。标记变更也会以 `[tab]` 行记入 `server.log`;扩展重启时会自动清理已死会话留下的残留标记 |
-| `history [match] [-n N] [--batch out]` | 本机上桥接器已经执行过的命令(服务端环形缓冲,最近 300 条)——按 match 过滤、取最新 N 条;`--batch out` 导出为可重放的 batch 脚本(失败的命令已注释掉;键入/粘贴文本、对话框回答、剪贴板粘贴和上传路径都会打码，绝不导出)。用于事后排查和会话交接 |
-| `swlogs` | 服务工作线程控制台日志尾部(错误/警告) |
-| `extreload` | 从磁盘重新加载扩展——不用点 chrome://extensions 就能加载新代码(即 health 版本过期警告的修复办法) |
-| `start` · `stop` | 服务器生命周期——`start` 在服务器未运行时分离启动(智能体可以自愈挂掉的服务器) |
-
-`<match>` 是标签页 URL 或标题的子串，并且必须在所选配置文件中唯一标识一个标签页。匹配多个时，命令会在标记或执行任何操作前拒绝执行——请用更长的匹配重试。引用在重复 `snap` 之间保持稳定(只要 role+name 不变,元素就保持它的 `@eN`),但导航后失效——`nav` 之后请重新 `snap`。`snap` 会遍历开放的 shadow root(其中的元素带引用、可直接点击/填写),CSS 选择器也能穿透开放的 shadow root。
-
-命令在**已派发后**超时，表示扩展可能已执行操作但回复丢失：重试点击、填写、上传、导航等非幂等操作前，请先检查标签页或 `history`。在**派发前**超时则明确表示命令没有运行。
+**AI 功能。** `ask`、`snap --find` 和 `console --ask` 使用 Chrome 内置的 Gemini Nano,需要 Chrome ≥ 138。
 
 </details>
 
-## 桌面与移动设备模拟
-
-无需调整窗口大小,即可把任何标签页在桌面和移动设备视图之间切换——与 DevTools 设备工具栏相同的机制(CDP 指标 + 触摸 + 移动端 UA):
-
-```bash
-node cli.mjs emulate news.ycombinator.com 390 844 mobile   # iPhone 尺寸视图,触摸 + 移动端 UA
-node cli.mjs emulate news.ycombinator.com 1440 900         # 桌面尺寸视图
-node cli.mjs unemulate news.ycombinator.com                # 恢复正常
-```
-
-![被驱动标签页的移动端模拟](docs/mobile.png)
-
-## 省 token 的智能体工作流
-
-1. **先 `snap`**——文本树的 token 开销比截图低大约一个数量级,而且通常已经能回答问题。
-2. 保持小巧:`snap <match> "dialog"` 限定子树;操作之后用 `snap --diff` 只返回变化的部分(引用跨快照保持稳定)。
-3. **操作 + 观察合为一次调用**:`click <match> @e4 --diff` 执行点击、等待 DOM 安静(3 秒上限),然后在同一结果里附上本次动作效果的差异,并带一个**判定**——`succeeded` / `needs_human`(指出具体机器人墙)/ `blocked`(限流)/ `uncertain`(无可观察变化——绝不要当成成功)——不需要单独的 `wait` 和 `snap` 往返。
-4. 只有需要像素时才 `shot`,且尽量便宜:`--max 800 --format jpeg`,或 `--crop` 到组件区域。
-5. 布局问题("这个居中了吗?")相信 `measure` 的数字,而不是肉眼。
-6. 有依赖关系的步骤用 `batch` 串起来——`printf 'click m @e4\nwait m --text "Saved"\nsnap m --diff\n' | node cli.mjs batch`,整个序列只占一个进程、一次 shell 调用。
-
-## 人们用它做什么
-
-- "每天早上看一眼我的仪表盘,把变化丢进 Slack"——cron 启动的智能体在已登录的标签页里跑检查;万一撞上登录墙,`wait --human` 会把标签页交回给你两分钟。
-- 从 CSV 填 CMS,不用重新登录——智能体搭你已经打开的后台标签页的便车。
-- 用你真实登录的会话回答 Stack Overflow 问题——复现发生在你的浏览器里,而不是一个干净的配置。
-- 对照 Figma 审查 staging 构建——在真实 URL 上跑 design-eye 流程,连网格叠加都在。
-- 任何干净浏览器会撞墙、而你的真实浏览器不会的地方:SSO、反爬墙、VPN 后面的内部仪表盘。
-
-## 设计走查
-
-[design-eye.md](design-eye.md)——一套对比实现与 Figma/设计稿的流程,不会漏掉对齐和包含关系等细节。包含 8px 对齐网格覆盖层:
-
-![8px 对齐网格覆盖层](docs/grid.png)
-
 ## 开发
 
-`node test/selftest.mjs`——用模拟扩展做端到端检查(不需要 Chrome);每次 push 由 GitHub Actions 自动运行(Node 18/20/22)。如何提交变更(自测门禁、版本号、标签、风格)见 [AGENTS.md](AGENTS.md) 的 *Developing* 一节。
+`node test/selftest.mjs` 用模拟扩展做端到端检查(不需要 Chrome)。CI 在每次 push 时运行它。如何提交变更(版本号、标签、风格)见 [AGENTS.md](AGENTS.md) 的 *Developing* 一节。
 
-chrome-bridge 的 npm 入口是受限域安装包 [`@siropkin/chrome-bridge`](https://www.npmjs.com/package/@siropkin/chrome-bridge)——`npx @siropkin/chrome-bridge` 会把本仓库克隆到 `~/.chrome-bridge`、启动服务,然后转发到真正的 CLI。npm 上的裸名 `chrome-bridge` 属于一个 2017 年的无关项目(chrome-pagevars):`npm install chrome-bridge` 装到的不是本项目(`chrome-bridge-mcp`/`chrome-bridge-sdk` 同样无关)。要固定智能体运行的代码,请签出标签——例如 `git checkout v1.26.6`;`git tag -l` 列出最新标签。
+npm 包是 [`@siropkin/chrome-bridge`](https://www.npmjs.com/package/@siropkin/chrome-bridge):`npx @siropkin/chrome-bridge` 会把本仓库克隆到 `~/.chrome-bridge` 并启动。npm 上不带作用域的 `chrome-bridge` 是一个无关项目。要固定版本,请签出一个标签(`git tag -l`)。
 
 ## 许可证
 
