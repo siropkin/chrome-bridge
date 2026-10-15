@@ -354,6 +354,20 @@ s_net() {
   "${CLI[@]}" close "9334/api" --all --profile "$P1" >/dev/null 2>&1
 }
 
+s_perf() {
+  SECTION=perf
+  "${CLI[@]}" open "$FX/anim.html" --profile "$P1" >/dev/null
+  "${CLI[@]}" activate anim.html >/dev/null 2>&1 || true
+  "${CLI[@]}" perf anim.html --dur 2000 >"$OUT/perf.log" 2>&1
+  assert_grep "perf reports renderer CPU" "$OUT/perf.log" '^cpu +renderer [0-9]+%'
+  assert_grep "perf splits main-thread busy" "$OUT/perf.log" '^main +busy [0-9]+% — script'
+  assert_grep "perf flags the height animation, one on and one off screen" "$OUT/perf.log" 'height ×2 \(1 on screen\) ⚠ not composited'
+  assert_ngrep "perf does not flag the transform animation" "$OUT/perf.log" 'transform ×1 \(1 on screen\) ⚠'
+  "${CLI[@]}" perf anim.html --dur 99999 >"$OUT/perf-cap.log" 2>&1
+  assert_grep "perf --dur over the cap fails loud" "$OUT/perf-cap.log" 'max is 30000'
+  "${CLI[@]}" close anim.html --all --profile "$P1" >/dev/null 2>&1
+}
+
 # ---------------------------------------------------------------- section 7
 s_marks() {
   SECTION=marks
@@ -822,7 +836,7 @@ cleanup() {
   local m p base rc=0
   for m in static.html counter.html big.html rich.html change.html \
            fixedheader.html slowchange.html net.html alert.html csp.html modal.html \
-           shotreset.html navlink.html chooser.html framefocus.html iframe.html; do
+           shotreset.html navlink.html chooser.html framefocus.html iframe.html anim.html; do
     for base in "stress/fixtures" "9334/fixtures"; do
       for p in "$P1" "$P2"; do
         [ -z "$p" ] && continue
@@ -844,7 +858,7 @@ cleanup() {
 }
 
 # ---------------------------------------------------------------- main
-ALL="profiles churn interact dialog pixel waits net marks misc edges ids refs type trusted issues doctor cleanup"
+ALL="profiles churn interact dialog pixel waits net perf marks misc edges ids refs type trusted issues doctor cleanup"
 SECTIONS=${*:-$ALL}
 cd "$REPO"
 detect_profiles || { echo "FAIL: no connected profile (cli profiles)"; exit 1; }
@@ -856,7 +870,7 @@ curl -s -m 2 http://localhost:9334/api/data >/dev/null 2>&1 || ( node "$S/server
 for sec in $SECTIONS; do
   case $sec in
     profiles) s_profiles ;; churn) s_churn ;; interact) s_interact ;; dialog) s_dialog ;;
-    pixel) s_pixel ;; waits) s_waits ;; net) s_net ;; marks) s_marks ;; misc) s_misc ;;
+    pixel) s_pixel ;; waits) s_waits ;; net) s_net ;; perf) s_perf ;; marks) s_marks ;; misc) s_misc ;;
     edges) s_edges ;; ids) s_ids ;; refs) s_refs ;; type) s_type ;; trusted) s_trusted ;; issues) s_issues ;; doctor) s_doctor ;; cleanup) cleanup ;;
     *) echo "unknown section: $sec" ;;
   esac

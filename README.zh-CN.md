@@ -173,7 +173,7 @@ MCP 桥需要 MCP 客户端和配置好的服务器。Chrome DevTools MCP 能挂
 
 操作标签页的命令都接受一个 `<match>`:标签页 URL 或标题的一部分,或精确的 `id:<tabId>`。包含所有参数和注意事项的完整参考见 [AGENTS.md](AGENTS.md#commands)。
 
-- **读取:** `snap` · `shot` · `measure` · `console` · `net` · `fetch` · `eval` · `ask`
+- **读取:** `snap` · `shot` · `measure` · `perf` · `console` · `net` · `fetch` · `eval` · `ask`
 - **操作:** `click` · `fill` · `type` · `paste` · `press` · `hover` · `drag` · `scroll` · `upload` · `clear` · `dialog`
 - **标签页:** `tabs` · `open` · `nav` · `close` · `activate` · `wait`(`--human` 把标签页交给你)
 - **设备视图:** `emulate` · `unemulate` · `resize` · `grid`

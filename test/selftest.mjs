@@ -214,7 +214,7 @@ try {
     // scope 'empty' answers the empty string the real extension returns on a
     // still-loading page — cli must fail loud, not print nothing with exit 0 (#60).
     if (msg.type === 'snap' && msg.scope === 'empty') return respond('');
-    if (['snap', 'press', 'type', 'hover', 'net', 'click', 'fill', 'paste', 'navigate', 'scroll', 'ask', 'upload', 'console', 'note', 'measure', 'grid', 'open', 'close', 'mark', 'release', 'activate', 'unemulate', 'wait', 'emulate', 'resize', 'dialog', 'drag', 'clear'].includes(msg.type)) return respond(msg); // echo for flag-parsing checks
+    if (['snap', 'press', 'type', 'hover', 'net', 'perf', 'click', 'fill', 'paste', 'navigate', 'scroll', 'ask', 'upload', 'console', 'note', 'measure', 'grid', 'open', 'close', 'mark', 'release', 'activate', 'unemulate', 'wait', 'emulate', 'resize', 'dialog', 'drag', 'clear'].includes(msg.type)) return respond(msg); // echo for flag-parsing checks
     return respond(null);
   });
   await new Promise((r) => setTimeout(r, 100));
@@ -604,6 +604,12 @@ try {
   assert(meas.status === 0 && meas.stdout.includes('"type":"measure"') && meas.stdout.includes('"selector":".btn"'), 'cli measure sends its own type + selector', meas.stdout + meas.stderr);
   const gr = await cli('grid', 'example.com');
   assert(gr.status === 0 && gr.stdout.includes('"type":"grid"'), 'cli grid sends its own type', gr.stdout + gr.stderr);
+  const perf = await cli('perf', 'example.com', '--dur', '2000');
+  assert(perf.status === 0 && perf.stdout.includes('"type":"perf"') && perf.stdout.includes('"duration":2000'), 'cli perf sends its type + --dur', perf.stdout + perf.stderr);
+  const perfCap = await cli('perf', 'example.com', '--dur', '60000');
+  assert(perfCap.status !== 0 && perfCap.stderr.includes('--dur max is 30000'), 'cli perf rejects --dur above the 30s cap', perfCap.stdout + perfCap.stderr);
+  const perfTypo = await cli('perf', 'example.com', '--during', '5');
+  assert(perfTypo.status !== 0 && perfTypo.stderr.includes('unknown flag'), 'cli perf rejects unknown flags', perfTypo.stdout + perfTypo.stderr);
 
   // Wire shapes for commands the suite never echoed before (open/close/mark/
   // release/unemulate/wait/emulate/resize + the new dialog/drag) — pins each
@@ -754,7 +760,7 @@ try {
     // Bare attachDbg/detachDbg remains only where the attach isn't the whole
     // body: withDbg itself, emulation, net, runEval's CDP fallback.
     assert(bg.split('await attachDbg(').length === 5 && bg.split('await detachDbg(').length === 6, 'ext: bare attach/detach only in withDbg + the non-full-body sites');
-    assert(bg.split('withDbg(').length === 9, 'ext: all 8 full-body CDP sites ride withDbg (trustedInput, waitPixel, fetch --csrf, fetch fallback, dialog, upload --chooser, upload, shot)');
+    assert(bg.split('withDbg(').length === 10, 'ext: all 9 full-body CDP sites ride withDbg (trustedInput, waitPixel, fetch --csrf, fetch fallback, dialog, upload --chooser, upload, shot, perf)');
     // CDP commands serialize per tab — an unemulate racing a sibling's
     // sendCommand tore the shared session mid-flight (5.5% of interleaved
     // CDP commands in stress). (Remaining bare withCdp sites: release's

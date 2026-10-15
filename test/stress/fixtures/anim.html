@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>stress anim</title>
+<style>
+  @keyframes grow { from { height: 4px; } to { height: 40px; } }
+  @keyframes slide { from { transform: translateX(0); } to { transform: translateX(40px); } }
+  .bar { width: 8px; background: teal; animation: grow 0.8s ease-in-out infinite alternate; }
+  .chip { width: 40px; height: 20px; background: coral; animation: slide 1s linear infinite alternate; }
+  .below { margin-top: 300vh; }
+</style>
+</head>
+<body>
+  <h1>perf fixture — one layout-bound and one compositor animation on screen, one more off screen</h1>
+  <div class="bar"></div>
+  <div class="chip"></div>
+  <div class="bar below"></div>
+</body>
+</html>

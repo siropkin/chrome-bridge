@@ -758,6 +758,7 @@ const ACT_VERBS = {
   measure: ['measuring layout', 'measured layout'],
   grid: ['toggling alignment grid', 'toggled alignment grid'],
   net: ['watching network', 'watched network'],
+  perf: ['measuring CPU', 'measured CPU'],
   console: ['reading page logs', 'read page logs'],
   emulate: ['emulating device', 'emulated device'],
   unemulate: ['clearing device emulation', 'cleared device emulation'],
@@ -2614,6 +2615,74 @@ const FIND_SRC = (scope, find) => `(async () => {
 const measureSrc = (sel) =>
   `JSON.stringify((()=>{${DEEPQ}return deepAll(${JSON.stringify(sel)}, document);})().map(e=>{const r=e.getBoundingClientRect();const c=getComputedStyle(e);return{text:(e.textContent||'').trim().slice(0,30),x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height),display:c.display,alignItems:c.alignItems,justifyContent:c.justifyContent,textAlign:c.textAlign,gap:c.gap,padding:c.padding,radius:c.borderRadius,bg:c.backgroundColor,color:c.color,font:c.fontSize+'/'+c.fontWeight}}))`;
 const GRID_SRC = `(()=>{const g=document.getElementById('bridge-grid');if(g){g.remove();return 'grid off'}const d=document.createElement('div');d.id='bridge-grid';d.style.cssText='position:fixed;inset:0;z-index:2147483647;pointer-events:none;background-image:repeating-linear-gradient(0deg,rgba(255,0,0,.25) 0 1px,transparent 1px 8px),repeating-linear-gradient(90deg,rgba(255,0,0,.25) 0 1px,transparent 1px 8px)';document.body.appendChild(d);return 'grid on'})()`;
+
+// perf: running animations grouped by what they animate. Anything but
+// transform/opacity/filter re-runs style+layout+paint on the main thread every
+// frame — the usual answer to "idle page, busy CPU". The bridge's own UI
+// (#bridge-*) is left out so the pill's fade doesn't show up as a finding.
+const PERF_PAGE_SRC = `JSON.stringify((() => {
+  const COMPOSITED = new Set(['transform', 'opacity', 'filter', 'translate', 'scale', 'rotate']);
+  const SKIP = new Set(['offset', 'computedOffset', 'easing', 'composite']);
+  const kebab = (p) => p.replace(/[A-Z]/g, (c) => '-' + c.toLowerCase());
+  const groups = {};
+  for (const a of document.getAnimations()) {
+    if (a.playState !== 'running') continue;
+    const t = a.effect && a.effect.target;
+    if (t && t.closest && t.closest('[id^="bridge-"]')) continue;
+    const props = [...new Set(a.effect.getKeyframes().flatMap((k) => Object.keys(k)).filter((p) => !SKIP.has(p)).map(kebab))];
+    const key = props.join(',') || '(none)';
+    const g = (groups[key] ||= { n: 0, onScreen: 0, composited: props.every((p) => COMPOSITED.has(p)) });
+    g.n++;
+    const r = t && t.getBoundingClientRect();
+    if (r && r.width && r.height && r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth) g.onScreen++;
+  }
+  return { visibility: document.visibilityState, groups };
+})())`;
+
+const fmtBytes = (b) => (b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : Math.round(b / 1e6) + ' MB');
+
+// CDP Performance counters diffed over a window + the animation audit above.
+// ProcessTime/ThreadTime are CPU seconds (whole renderer process / main
+// thread); the *Duration counters are main-thread seconds per category, so
+// "other" is mostly paint, GC and compile. The GPU process is out of CDP's
+// reach — a compositor-heavy page reads low here.
+async function capturePerf(tabId, duration) {
+  const ms = Math.min(duration || 5000, 30000);
+  const metrics = async () =>
+    Object.fromEntries((await chrome.debugger.sendCommand({ tabId }, 'Performance.getMetrics')).metrics.map((m) => [m.name, m.value]));
+  const [a, b] = await withDbg(tabId, async () => {
+    await chrome.debugger.sendCommand({ tabId }, 'Performance.enable');
+    try {
+      const first = await metrics();
+      await new Promise((r) => setTimeout(r, ms));
+      return [first, await metrics()];
+    } finally {
+      await chrome.debugger.sendCommand({ tabId }, 'Performance.disable').catch(() => {});
+    }
+  });
+  const page = JSON.parse(await runEval(tabId, PERF_PAGE_SRC));
+  const secs = b.Timestamp - a.Timestamp;
+  const d = (k) => (k in a && k in b ? b[k] - a[k] : null);
+  const pct = (k) => (d(k) == null ? '?' : Math.round((100 * d(k)) / secs) + '%');
+  const rate = (k) => (d(k) == null ? '?' : Math.round(d(k) / secs) + '/s');
+  const other = d('TaskDuration') - d('ScriptDuration') - d('RecalcStyleDuration') - d('LayoutDuration');
+  const anims = Object.entries(page.groups).sort((x, y) => y[1].n - x[1].n);
+  const total = anims.reduce((s, [, g]) => s + g.n, 0);
+  const lines = [];
+  if (page.visibility !== 'visible')
+    lines.push("⚠ tab is hidden — Chrome throttles hidden tabs, so these numbers don't describe the visible page. activate <match> (or drag the tab into its own window) and re-run.");
+  lines.push(
+    `perf ${secs.toFixed(1)}s · ${page.visibility}`,
+    `cpu     renderer ${pct('ProcessTime')} · main thread ${pct('ThreadTime')}  (% of one core)`,
+    `main    busy ${pct('TaskDuration')} — script ${pct('ScriptDuration')} · style ${pct('RecalcStyleDuration')} · layout ${pct('LayoutDuration')} · other ${Math.round((100 * other) / secs)}%`,
+    `rate    style recalcs ${rate('RecalcStyleCount')} · layouts ${rate('LayoutCount')}`,
+    `mem     heap ${fmtBytes(b.JSHeapUsedSize)} · nodes ${b.Nodes}`,
+    `anims   ${total} running${total ? ' — ' : ''}${anims
+      .map(([k, g]) => `${k} ×${g.n} (${g.onScreen} on screen)${g.composited ? '' : ' ⚠ not composited'}`)
+      .join(' · ')}`
+  );
+  return lines.join('\n');
+}
 
 // Console hook must run in the MAIN world — isolated worlds get their own console.
 const consoleSrc = (clear) => `(() => {
@@ -4658,6 +4727,11 @@ async function handle(msg) {
   if (msg.type === 'ask') {
     const tab = await findTab(msg);
     return await runEval(tab.id, askSrc(msg.question));
+  }
+
+  if (msg.type === 'perf') {
+    const tab = await findTab(msg);
+    return await capturePerf(tab.id, msg.duration);
   }
 
   if (msg.type === 'net') {

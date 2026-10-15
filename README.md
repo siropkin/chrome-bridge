@@ -175,7 +175,7 @@ You're giving an agent your logged-in browser, so the design assumes you want to
 
 Commands that work on a tab take a `<match>`: part of the tab's URL or title, or an exact `id:<tabId>`. The full reference, with every flag and gotcha, is in [AGENTS.md](AGENTS.md#commands).
 
-- **Read:** `snap` · `shot` · `measure` · `console` · `net` · `fetch` · `eval` · `ask`
+- **Read:** `snap` · `shot` · `measure` · `perf` · `console` · `net` · `fetch` · `eval` · `ask`
 - **Act:** `click` · `fill` · `type` · `paste` · `press` · `hover` · `drag` · `scroll` · `upload` · `clear` · `dialog`
 - **Tabs:** `tabs` · `open` · `nav` · `close` · `activate` · `wait` (`--human` hands a tab to you)
 - **Device view:** `emulate` · `unemulate` · `resize` · `grid`

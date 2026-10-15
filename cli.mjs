@@ -313,6 +313,12 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     them (x-restli-protocol-version & co); --csrf attaches the
                                     JSESSIONID cookie as the csrf-token header (Voyager-class
                                     APIs; briefly attaches CDP to read the httpOnly cookie)
+  perf <match> [--dur ms]           CPU over a window (default 5s, max 30s; CDP): renderer +
+                                    main-thread CPU %, main-thread busy split (script/style/
+                                    layout/other), style+layout rates, heap; plus running
+                                    animations grouped by property — '⚠ not composited' ones
+                                    repaint every frame. Warns when the tab is hidden (Chrome
+                                    throttles it — the numbers would lie). GPU process not seen
   measure <match> <css>             rect + computed styles as JSON
   console <match> [--clear] [--ask [question]]
                                     page console + errors (hook installs on first call);
@@ -1142,6 +1148,21 @@ async function run(cmdName, args) {
         console.log(`${res.status} ${res.ct || ''}${res.truncated ? ' (page capped the body at 512KB)' : ''}`);
         print(body.length > cap ? body.slice(0, cap) + `\n… body truncated at ${cap} chars — save it whole: fetch <match> <url> --out <file>` : body || '(empty body)');
       }
+      break;
+    }
+
+    case 'perf': {
+      const [match, ...rest] = args;
+      let duration = null;
+      for (let i = 0; i < rest.length; i++) {
+        if (rest[i] === '--dur') {
+          duration = Number(rest[++i]);
+          if (!Number.isFinite(duration) || duration <= 0) fail('--dur needs a positive number (ms)');
+          if (duration > 30000) fail('--dur max is 30000 ms');
+        } else fail(`unknown flag ${rest[i]}`);
+      }
+      if (!match) fail('usage: perf <match> [--dur ms]');
+      print(await cmd({ type: 'perf', urlMatch: match, duration }));
       break;
     }
 

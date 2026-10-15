@@ -447,6 +447,7 @@ const CLI_LINES = {
     `net ${shellq(m.urlMatch)}${m.duration != null ? ' --dur ' + m.duration : ''}${m.filter ? ' --filter ' + shellq(m.filter) : ''}${
       m.body ? ' --body ' + shellq(m.body) : ''
     }${m.ws ? ' --ws' : ''}${m.har ? ' --har net-replay.har' : ''}`,
+  perf: (m) => `perf ${shellq(m.urlMatch)}${m.duration != null ? ' --dur ' + m.duration : ''}`,
   measure: (m) => `measure ${shellq(m.urlMatch)} ${shellq(m.selector)}`,
   console: (m) => `console ${shellq(m.urlMatch)}${m.clear ? ' --clear' : ''}${m.ask ? (m.ask === true ? ' --ask' : ' --ask ' + shellq(m.ask)) : ''}`,
   grid: (m) => `grid ${shellq(m.urlMatch)}`,
