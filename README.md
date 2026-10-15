@@ -105,7 +105,7 @@ node cli.mjs fill localhost:8082 @e2 "hello@example.com"
 node cli.mjs shot localhost:8082 out.png # screenshot, only when pixels matter
 ```
 
-A `snap` shows the page as a short text tree. It costs roughly 10× fewer tokens than a screenshot, and the agent acts on the `@e` refs:
+A `snap` shows the page as a short text tree. The agent can limit it to one part of the page or get only what changed since the last snap, and it acts on the `@e` refs instead of guessing pixel coordinates:
 
 ```
 table "Hacker News new | past | comments | ask | show | jobs | submit" @e1

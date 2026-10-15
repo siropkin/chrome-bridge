@@ -103,7 +103,7 @@ node cli.mjs fill localhost:8082 @e2 "hello@example.com"
 node cli.mjs shot localhost:8082 out.png # 截图,只在需要像素时用
 ```
 
-`snap` 把页面变成一棵简短的文本树。它的 token 开销比截图低约 10 倍,智能体直接操作其中的 `@e` 引用:
+`snap` 把页面变成一棵简短的文本树。智能体可以只看页面的某一部分,或只取上次快照之后的变化,并直接操作其中的 `@e` 引用,不用猜像素坐标:
 
 ```
 table "Hacker News new | past | comments | ask | show | jobs | submit" @e1
