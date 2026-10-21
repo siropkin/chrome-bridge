@@ -74,6 +74,18 @@ for (const lvl of ['error', 'warn']) {
 // can't answer otherwise (behavior can't distinguish loaded from stale).
 logLine('background v' + chrome.runtime.getManifest().version + ' loaded ' + new Date().toISOString());
 
+// Boot timestamp for the stale-CODE guard (#63): set once per LOADED instance
+// and kept in storage.session — it survives service-worker restarts (which do
+// NOT re-read the script Chrome has cached) and is wiped by an extension
+// reload / browser restart, so it stays "when this build was loaded". The
+// server compares it with the newest mtime under <repo>/extension and warns
+// when the disk moved on after the load — the version compare can't see
+// same-version drift (a since-reverted spike kept running once).
+const BOOT_TS_P = chrome.storage.session
+  .get('bootTime')
+  .then(({ bootTime }) => bootTime || (chrome.storage.session.set({ bootTime: Date.now() }), Date.now()))
+  .catch(() => Date.now());
+
 // Lifecycle journal — one WS event per marker-affecting transition (mark,
 // release, reap, boot, …) so server.log can answer "why is this tab still
 // marked?" after the fact. Fire-and-forget like self-release, except events
@@ -89,7 +101,10 @@ function journal(kind, tabId, detail) {
   }
 }
 
-function connect() {
+// Async: awaits BOOT_TS_P before dialing. Callers fire-and-forget, and the
+// double-connect guard runs synchronously at entry, so the await can't wedge
+// a second connect behind a first one — only the dial itself moves later.
+async function connect() {
   // Two connects in flight (reconnect timer + keepalive alarm) means two
   // sockets; the server seats the first and rejects the second. Reply on the
   // socket that received the message (s), never the global ws — after a race
@@ -97,6 +112,11 @@ function connect() {
   // unanswered while health still says "connected".
   try {
     ws?.close();
+  } catch {}
+  // ?boot= feeds the server's stale-code check (#63) — see BOOT_TS_P.
+  let boot = null;
+  try {
+    boot = await BOOT_TS_P;
   } catch {}
   let s;
   try {
@@ -108,7 +128,8 @@ function connect() {
         chrome.runtime.getManifest().version +
         (PROFILE_ID ? '&id=' + PROFILE_ID : '') +
         (PROFILE_NAME ? '&name=' + PROFILE_NAME : '') +
-        (INSTALL_TYPE ? '&install=' + INSTALL_TYPE : '')
+        (INSTALL_TYPE ? '&install=' + INSTALL_TYPE : '') +
+        (boot ? '&boot=' + boot : '')
     );
   } catch {
     return;
@@ -1720,7 +1741,14 @@ async function captureNetwork(tabId, duration, filter, bodyFilter, har, ws) {
           if (c.detached) break; // detached mid-loop: further callbacks never fire
           const b = await Promise.race([r.bodyP, c.dead]).catch(() => null);
           if (b) r.bodyRaw = b; // kept whole for the HAR (base64 flag and all)
-          if (r.lineBody) r.body = !b ? '(body unavailable)' : b.base64Encoded ? '(binary body)' : b.body.slice(0, 1500);
+          if (r.lineBody)
+            // #65: name the cut and the remedy — a body silently missing its
+            // tail read as the whole list (the entries past 1500 chars looked
+            // absent from the API).
+            r.body =
+              !b ? '(body unavailable)' :
+              b.base64Encoded ? '(binary body)' :
+              b.body.length > 1500 ? b.body.slice(0, 1500) + ` … ${b.body.length - 1500} chars more — full body: fetch <match> <url> --out <file>` : b.body;
         }
     await chrome.debugger.sendCommand({ tabId }, 'Network.disable').catch(() => {});
   } finally {
@@ -1733,11 +1761,15 @@ async function captureNetwork(tabId, duration, filter, bodyFilter, har, ws) {
     let u;
     try {
       const p = new URL(r.url);
-      u = p.pathname + p.search;
+      // The path tells calls apart (.../{id}/items); the query can carry
+      // tokens — cut the query first, never the path (#64: the id sat past
+      // the old flat 100-char cut, and every {id} line read identical).
+      const path = p.pathname.length > 200 ? p.pathname.slice(0, 197) + '…' : p.pathname;
+      u = path.length + p.search.length > 200 ? path + '?' + p.search.slice(1, Math.max(1, 197 - path.length)) + '…' : path + p.search;
     } catch {
       u = r.url;
     }
-    if (u.length > 100) u = u.slice(0, 97) + '…';
+    if (u.length > 200) u = u.slice(0, 197) + '…';
     const status = r.error ? 'ERR:' + r.error : r.status || '…';
     const kb = r.size !== undefined ? ' ' + (r.size > 1024 ? Math.round(r.size / 1024) + 'kB' : r.size + 'B') : '';
     const ms = r.ms !== undefined ? ' ' + r.ms + 'ms' : '';
@@ -1876,7 +1908,7 @@ const REFKEY_SRC = `
   }
 `;
 
-const SNAP_SRC = (scope, diff, href, skel) => `(() => {
+const SNAP_SRC = (scope, diff, href, skel, nofold) => `(() => {
   const MAX = 300;
   // --skeleton: depth-limited map — past the cut, count instead of emit.
   const SKEL = ${skel ? 'true' : 'false'};
@@ -2036,8 +2068,27 @@ const SNAP_SRC = (scope, diff, href, skel) => `(() => {
   // roots) or an @ref — the --skeleton drill-down is 'snap <match> @eN'.
   // Same staleness rules as deepQuery: a detached scope node is gone (#47).
   const scopeRef = scopeSel?.startsWith('@') ? window.__bridgeRefs?.[scopeSel.slice(1)] : undefined;
-  const root = scopeSel ? (scopeSel.startsWith('@') ? (scopeRef?.isConnected ? scopeRef : null) : document.querySelector(scopeSel) || deepAll(scopeSel, document)[0]) : document.body;
-  if (!root) throw new Error('scope not found: ' + scopeSel + (scopeSel.startsWith('@') ? staleRefHint() : ''));
+  let root;
+  if (!scopeSel) root = document.body;
+  else if (scopeSel.startsWith('@')) root = scopeRef?.isConnected ? scopeRef : null;
+  else {
+    root = document.querySelector(scopeSel) || deepAll(scopeSel, document)[0];
+    // #68: [role=dialog] can not match a NATIVE <dialog> — the role is
+    // implicit, there is no attribute, and it is the first selector everyone
+    // tries. Retry with the bare name as a tag selector ('[role=X]' → 'X,
+    // [role=X]') so the natural scope just works.
+    if (!root) {
+      const m = scopeSel.match(/^\\[role=([\\w-]+)\\]$/);
+      if (m) root = document.querySelector(m[1] + ', ' + scopeSel) || deepAll(m[1] + ', ' + scopeSel, document)[0];
+    }
+  }
+  if (!root)
+    throw new Error(
+      'scope not found: ' + scopeSel +
+      (scopeSel.startsWith('@')
+        ? staleRefHint()
+        : ' — no element matches (native elements carry implicit roles: [role=dialog] can not match a native <dialog>; try the tag: dialog, or snap unscoped and scope with @ref)')
+    );
   walk(root, 0);
   if (truncated) lines.push('… truncated at ' + MAX + ' nodes' + (scopeSel ? '' : ' — scope with: snap <match> <css>'));
   // --diff: lines added/changed/removed since the last snap at THIS scope.
@@ -2068,8 +2119,12 @@ const SNAP_SRC = (scope, diff, href, skel) => `(() => {
   // into trailing "… N more" summaries that keep the refs clickable. Repeated
   // rows (avatar stacks, row checkboxes, icon buttons) were ~25% of snap
   // bytes on real apps. Starred (fresh) lines always show. The diff store
-  // above is built from full lines, so --diff is unaffected.
-  if (!${diff ? 'true' : 'false'}) {
+  // above is built from full lines, so --diff is unaffected. --no-fold (#67):
+  // the summaries move refs to the END, out of document order, so a scripted
+  // 'grep | tail -1' picked the wrong row — the flag keeps every line inline.
+  // (The img elision note rides the lines array below the gate, so --no-fold keeps it.)
+  if (skipped) lines.push('… ' + skipped + ' unnamed img/status elided (decorative — no name, no ref)');
+  if (!${diff ? 'true' : 'false'} && !${nofold ? 'true' : 'false'}) {
     // Two passes: count identical lines first so dups occurring only twice
     // stay inline in place (a "1 more" summary costs what it saves), and only
     // lines seen 3+ times collapse — first occurrence in place, rest summarized.
@@ -2092,7 +2147,6 @@ const SNAP_SRC = (scope, diff, href, skel) => `(() => {
     for (const [k, refs2] of extra) {
       out.push('… ' + refs2.length + ' more · ' + k.trim() + ' → ' + refs2.map((r) => '@' + r).join(' '));
     }
-    if (skipped) out.push('… ' + skipped + ' unnamed img/status elided (decorative — no name, no ref)');
     return out.join('\\n');
   }
   return lines.join('\\n');
@@ -4033,8 +4087,19 @@ async function cmdFetch(tab, msg) {
       const frameId = tree?.frameTree?.frame?.id;
       const out = await chrome.debugger.sendCommand({ tabId: tab.id }, 'Network.loadNetworkResource', { url: msg.url, frameId, options: { includeCredentials: true, disableCache: false } });
       const rec = out?.resource || {};
-      if (!rec.success)
-        throw new Error('browser-network read failed (' + (rec.netErrorName || rec.netError || 'unknown') + ') — in-page fetch said: ' + String(e).replace(/^(Error:\s*)+/, '').slice(0, 120));
+      if (!rec.success) {
+        // #66: name each layer instead of concatenating them. 'Failed to
+        // fetch' is the PAGE's wall (CSP connect-src, or cross-origin with no
+        // CORS — the page never saw a status); ERR_HTTP_RESPONSE_CODE_FAILURE
+        // is the server ANSWERING with a 4xx/5xx. One failure can be both:
+        // cross-origin, the page can not read the error status it caused.
+        const inpage = String(e).replace(/^(Error:\s*)+/, '').slice(0, 120);
+        const netErr = rec.netErrorName || rec.netError || 'unknown';
+        throw new Error(
+          'fetch failed — in-page: ' + inpage + (/failed to fetch/i.test(inpage) ? ' (blocked cross-origin or by CSP — the page never saw a status)' : '') +
+          '; browser read: ' + netErr + (/HTTP_RESPONSE_CODE_FAILURE/.test(netErr) ? ' (the server answered an HTTP error status — a 4xx/5xx)' : '')
+        );
+      }
       // The body now STREAMS (rec.stream, Chrome 152) instead of riding
       // rec.content — read it via IO.read or the CLI writes a 0-byte
       // --out (stress: 200 application/json, 0 KB file).
@@ -4675,7 +4740,7 @@ async function handle(msg) {
     const tab = await findTab(msg);
     if (msg.find) return await runEval(tab.id, FIND_SRC(msg.scope, msg.find));
     // Chained: every snap writes the in-page diff store — see withSnap.
-    return await withSnap(tab.id, () => runEval(tab.id, SNAP_SRC(msg.scope, msg.diff, msg.href, msg.skeleton)));
+    return await withSnap(tab.id, () => runEval(tab.id, SNAP_SRC(msg.scope, msg.diff, msg.href, msg.skeleton, msg.nofold)));
   }
 
   // --trusted: route click/press/type/hover/drag through CDP Input.dispatch*

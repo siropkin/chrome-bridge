@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>stress fold</title>
+</head>
+<body>
+  <!-- #67: 5 identical rows — snap folds repeats 3+ into a trailing summary,
+       which moves the refs out of document order. A scripted last-line pick
+       must land on row 5 with --no-fold (and the summary's last ref too). -->
+  <div id="rows"></div>
+  <div id="status" role="status">none</div>
+  <script>
+    for (let i = 1; i <= 5; i++) {
+      const b = document.createElement('button');
+      b.textContent = 'Pick';
+      b.onclick = () => { document.getElementById('status').textContent = 'picked ' + i; };
+      document.getElementById('rows').appendChild(b);
+    }
+  </script>
+</body>
+</html>

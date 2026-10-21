@@ -34,7 +34,7 @@ function assert(cond, name, detail) {
 }
 
 // --- tiny WS client (client frames must be masked) ---------------------------
-function wsClient(port, id = 'alpha-test', name, install, vOverride) {
+function wsClient(port, id = 'alpha-test', name, install, vOverride, boot) {
   return new Promise((resolve, reject) => {
     const key = crypto.randomBytes(16).toString('base64');
     const socket = net.connect(port, '127.0.0.1');
@@ -66,7 +66,7 @@ function wsClient(port, id = 'alpha-test', name, install, vOverride) {
       // ?v=/?id= mirror the real extension's handshake (cli health compares
       // versions against the repo manifest; --profile prefix-matches the id).
       socket.write(
-        `GET /ws?v=${vOverride || MANIFEST_V}&id=${id}${name ? `&name=${name}` : ''}${install ? `&install=${install}` : ''} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`
+        `GET /ws?v=${vOverride || MANIFEST_V}&id=${id}${name ? `&name=${name}` : ''}${install ? `&install=${install}` : ''}${boot ? `&boot=${boot}` : ''} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`
       );
     });
     socket.on('data', (chunk) => {
@@ -1508,6 +1508,42 @@ try {
     assert(xr.status !== 0 && xr.stderr.includes('updates via the store'), 'extreload refuses a store-installed extension', xr.stdout + xr.stderr);
     extS.socket.destroy();
     await new Promise((r) => setTimeout(r, 100)); // let the seat drop before later sections probe
+  }
+
+  // ?boot= handshake (#63): a dev seat whose load predates the newest mtime
+  // under extension/ gets a stale-code warning on health AND every /cmd reply
+  // (plain snaps are where a stale build misbehaves, not health). boot=1000
+  // predates any checkout deterministically; a fresh boot and store installs
+  // stay quiet.
+  {
+    const reply = (ext) => ext.onMessage((msg) => ext.send({ id: msg.id, ok: true, result: null }));
+    const extStale = await wsClient(PORT, 'stale-dev', 'stale-seat', 'dev', undefined, 1000);
+    reply(extStale);
+    const extFresh = await wsClient(PORT, 'fresh-dev', 'fresh-seat', 'dev', undefined, Date.now());
+    reply(extFresh);
+    const extStaleStore = await wsClient(PORT, 'stale-store', 'stale-store', 'store', undefined, 1000);
+    reply(extStaleStore);
+    await new Promise((r) => setTimeout(r, 100));
+    const hw = await cli('health');
+    const hjson = JSON.parse(hw.stdout);
+    assert(
+      Array.isArray(hjson.warn) && hjson.warn.length === 1 && hjson.warn[0].includes('stale-seat') && hjson.warn[0].includes('extreload'),
+      'stale-code warning: health warn names the stale dev seat + extreload (fresh boot and store stay quiet)',
+      hw.stdout + hw.stderr
+    );
+    assert(hw.stderr.includes('⚠ extension code on disk changed after this build loaded'), 'stale-code warning: health prints it to stderr', hw.stderr);
+    const tw = await cli('tabs', '--profile', 'stale-dev');
+    assert(
+      tw.stderr.includes('extension code on disk changed after this build loaded') && tw.status === 0,
+      'stale-code warning rides every /cmd reply (tabs still succeeds)',
+      tw.stdout + tw.stderr
+    );
+    const tf = await cli('tabs', '--profile', 'fresh-dev');
+    assert(!tf.stderr.includes('fresh-seat'), 'a fresh-boot dev seat is never the one named in the warn', tf.stderr);
+    for (const e of [extStale, extFresh, extStaleStore]) e.socket.destroy();
+    await new Promise((r) => setTimeout(r, 100));
+    const hc = await cli('health');
+    assert(!JSON.parse(hc.stdout).warn?.length && !hc.stderr.includes('stale'), 'stale-code warning clears when the seat drops', hc.stdout + hc.stderr);
   }
 
   // watch runs for real against the live server — until now it was the only

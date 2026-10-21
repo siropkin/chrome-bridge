@@ -19,6 +19,13 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json', ...cors });
     return res.end(JSON.stringify({ ok: true, items: [1, 2, 3] }));
   }
+  // #64/#65: a path long enough to outrun net's old flat 100-char URL cut
+  // (the id sat past it) and a body big enough to hit the 1500-char --body
+  // cap (the marker must name the tail it dropped).
+  if (req.url.startsWith('/api/items/')) {
+    res.writeHead(200, { 'Content-Type': 'application/json', ...cors });
+    return res.end(JSON.stringify({ ok: true, id: req.url.split('/').pop(), blob: 'b'.repeat(2200) }));
+  }
   if (req.url === '/api/slow') {
     // SLOW_MS: CI sets 100 — the 800ms default + CI slowness outruns the 3s
     // --diff settle window, and issue55's nav verdict can't land in time.

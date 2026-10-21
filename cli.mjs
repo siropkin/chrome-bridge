@@ -68,6 +68,9 @@ async function cmd(msg, soft) {
   // Two real causes, one message: the server died mid-reply (restart/stop with
   // the command in flight) or something else owns the port.
   if (!out) fail(`unreadable response from bridge on port ${PORT} — the server died mid-reply (restart?), or another server owns the port`);
+  // Server hygiene warnings ride every reply (stale extension code — #63);
+  // stderr, like health's version warning, so they survive stdout pipes.
+  if (Array.isArray(out.warn)) for (const w of out.warn) console.error('⚠ ' + w);
   if (!out.ok) {
     if (soft) return { error: String(out.error) };
     fail(out.error);
@@ -202,13 +205,16 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     same loaded:false semantics as open)
   close <match> [--all]             close the matching tab — --all closes every match
                                     (the remedy for identical-URL tabs no <match> can separate)
-  snap <match> [css|@ref] [--diff] [--href] [--skeleton] [--find "nl"]
+  snap <match> [css|@ref] [--diff] [--href] [--skeleton] [--no-fold] [--find "nl"]
                                     a11y-tree snapshot with @eN refs (cheap — use before shot);
                                     [css|@ref] scopes to a subtree (@ref = the --skeleton drill-down),
                                     --diff shows only changes since last snap,
                                     --href includes all link URLs (default: only nameless links);
                                     --skeleton: depth-limited map — cut containers read '… N inside'
                                     (drill: snap <match> @ref) instead of a silent 300-node cut;
+                                    --no-fold: keep repeated lines inline in document order —
+                                    the '… N more' summaries move folded refs to the end, so
+                                    scripted last-line picks got the wrong row;
                                     --find asks local Gemini Nano to pick the lines matching a
                                     natural-language query — a ~2s shortlist (~20s first call
                                     while Nano loads) to VERIFY, not ground
@@ -392,6 +398,8 @@ async function run(cmdName, args) {
         const res = await fetch(`${BASE}/health`);
         const h = await res.json();
         print(h);
+        // Stale-extension-code warnings, precomputed by the server (#63).
+        for (const w of h.warn || []) console.error('⚠ ' + w);
         // Exit 1 when the extension is disconnected: `health && …` preflights
         // and SDK-style gating read the exit code, and 0 here lied about a
         // bridge that can't run a command. The JSON still prints — which half
@@ -749,11 +757,15 @@ async function run(cmdName, args) {
       break;
 
     case 'snap': {
-      if (!args[0]) fail('usage: snap <match> [css|@ref] [--diff] [--href] [--skeleton] [--find "nl query"]');
-      const SNAP_FLAGS = ['--diff', '--href', '--skeleton'];
+      if (!args[0]) fail('usage: snap <match> [css|@ref] [--diff] [--href] [--skeleton] [--no-fold] [--find "nl query"]');
+      const SNAP_FLAGS = ['--diff', '--href', '--skeleton', '--no-fold'];
       const diff = args.includes('--diff');
       const href = args.includes('--href');
       const skeleton = args.includes('--skeleton');
+      // --no-fold: keep every line inline (#67) — the "… N more" summaries
+      // move folded refs to the end, out of document order, so a scripted
+      // 'snap | grep <line> | tail -1' picked the wrong row.
+      const nofold = args.includes('--no-fold');
       const fi = args.indexOf('--find');
       let find = null;
       if (fi >= 0) {
@@ -774,8 +786,8 @@ async function run(cmdName, args) {
       // --dfif used to return a FULL snap the agent then read as a diff —
       // "nothing changed" conclusions off an observation that never ran.
       const stray = before.find((a) => a.startsWith('--') && !SNAP_FLAGS.includes(a));
-      if (stray) fail(`unknown flag ${stray} (flags: --diff, --href, --skeleton, --find "query")`);
-      const out = await cmd({ type: 'snap', urlMatch: args[0], scope, diff, href, ...(skeleton ? { skeleton: true } : {}), ...(find ? { find } : {}) });
+      if (stray) fail(`unknown flag ${stray} (flags: --diff, --href, --skeleton, --no-fold, --find "query")`);
+      const out = await cmd({ type: 'snap', urlMatch: args[0], scope, diff, href, ...(skeleton ? { skeleton: true } : {}), ...(nofold ? { nofold: true } : {}), ...(find ? { find } : {}) });
       // Empty tree right after `open` printed NOTHING with exit 0 — a script
       // read that as "empty page" when the truth was "still loading" (#60).
       if (typeof out === 'string' && !out.trim())
@@ -1139,6 +1151,11 @@ async function run(cmdName, args) {
       }
       if (res && res.error) fail(res.error);
       if (res.binary && !outFile) fail(`binary response (${res.ct || 'unknown type'}) — save it: fetch <match> <url> --out <file>`);
+      // A dev-proxy route that does not match serves the SPA shell (index.html)
+      // as a 200 text/html "success" (#66) — the JSON parse then dies far from
+      // the cause. Name it at the fetch, before the file misleads.
+      if (/text\/html/i.test(res.ct || ''))
+        console.error(`⚠ response is HTML, not the JSON you likely wanted — an unmatched dev-proxy route serves the SPA shell; check the path (status ${res.status})`);
       if (outFile) {
         fs.writeFileSync(outFile, res.binary ? Buffer.from(res.body, 'base64') : res.body);
         console.log(`saved ${outFile} (${Math.round(Buffer.byteLength(res.body) / 1024)} KB, ${res.status} ${res.ct || ''}${res.truncated ? ' — page capped the body at 512KB' : ''})`);

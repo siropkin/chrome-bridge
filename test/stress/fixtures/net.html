@@ -27,6 +27,13 @@
         out.push('slow:' + (await r2.json()).ok);
       } catch (e) { out.push('slow-err:' + e.message); }
       el.textContent = 'net: ' + out.join(' ');
+      // #64: a path past net's old 100-char URL cut, id at the END — the
+      // line must carry the id, not '…' where it was.
+      try {
+        const r3 = await fetch(BASE + '/api/items/' + 'deep-segment/'.repeat(8) + 'id-987654');
+        out.push('items:' + (await r3.json()).id);
+      } catch (e) { out.push('items-err:' + e.message); }
+      el.textContent = 'net: ' + out.join(' ');
       await ws();
     }
     // a WS echo exchange at load so net --ws has frames to see; again on fire

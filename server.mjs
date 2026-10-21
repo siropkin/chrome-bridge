@@ -51,7 +51,42 @@ try {
 //                 (never silently act in the personal browser when the agent
 //                 meant the work one), msg.profile overrides with an explicit
 //                 id (prefix match) or the exact profile name.
-const seats = new Map(); // profileId -> { socket, v, name, pending: Map, nextId }
+const seats = new Map(); // profileId -> { socket, v, name, install, boot, pending: Map, nextId }
+
+// Stale-CODE warnings (#63): the extension reports ?boot= — when this loaded
+// instance last (re)loaded (chrome.storage.session-set, so service-worker
+// restarts keep it while an extension reload / browser restart resets it).
+// Compare with the newest mtime under <repo>/extension: disk that changed
+// after the load means the running worker is old code — the version compare
+// catches only version bumps, not same-version drift (a since-reverted spike
+// kept serving its broken snap once). Store installs skip: their code comes
+// from the Web Store, this repo's disk says nothing about them.
+function staleCodeWarnings() {
+  let mtime = 0;
+  try {
+    const dir = fileURLToPath(new URL('./extension/', import.meta.url));
+    const walk = (d) => {
+      for (const f of fs.readdirSync(d, { withFileTypes: true })) {
+        if (f.name === '.DS_Store') continue;
+        const p = d + (d.endsWith('/') ? '' : '/') + f.name;
+        if (f.isDirectory()) walk(p);
+        else mtime = Math.max(mtime, fs.statSync(p).mtimeMs);
+      }
+    };
+    walk(dir);
+  } catch {
+    return [];
+  }
+  const warns = [];
+  for (const s of seats.values()) {
+    if (!s.socket || s.socket.destroyed || !s.boot || s.install !== 'dev' || mtime <= s.boot + 2000) continue;
+    const fix = seats.size > 1 ? `cli.mjs extreload --profile ${JSON.stringify(s.name || s.pid.slice(0, 4))}` : 'cli.mjs extreload';
+    warns.push(
+      `extension code on disk changed after this build loaded (${new Date(mtime).toISOString().slice(0, 16).replace('T', ' ')} UTC) — the running code may be stale: run \`${fix}\` (or reload at chrome://extensions)`
+    );
+  }
+  return warns;
+}
 
 function dropSeatPending(seat, error) {
   for (const resolve of seat.pending.values()) resolve({ ok: false, error });
@@ -647,6 +682,10 @@ const server = http.createServer((req, res) => {
         ok: true,
         extension: !![...seats.values()].find((s) => s.socket && !s.socket.destroyed),
         profiles: [...seats.entries()].map(([pid, s]) => ({ id: pid, v: s.v, ...(s.name ? { name: s.name } : {}), ...(s.install ? { install: s.install } : {}) })),
+        // Stale-extension-code warnings (the CLI prints them to stderr) —
+        // same surface for /cmd replies below; a dev extension whose disk
+        // moved on after load is the silent-stale trap #63.
+        warn: staleCodeWarnings(),
         // Where this server runs FROM — an agent's `<repo>` discovery: ask the
         // live bridge instead of guessing ~/chrome-bridge vs an npm install.
         repo: fileURLToPath(new URL('.', import.meta.url)),
@@ -710,6 +749,12 @@ const server = http.createServer((req, res) => {
         console.log('[act] logging failed for ' + (msg?.type || '?') + ': ' + String(e).slice(0, 80));
       }
       res.writeHead(200, { 'content-type': 'application/json' });
+      // Stale-code warnings ride EVERY command reply (#63 — a stale build
+      // misbehaves in plain snap/tabs calls, which never run health). The
+      // CLI prints them to stderr; the envelope gains the field only when
+      // there is something to say.
+      const warns = staleCodeWarnings();
+      if (warns.length && out && typeof out === 'object') out.warn = warns;
       res.end(JSON.stringify(out));
     });
     return;
@@ -764,6 +809,8 @@ server.on('upgrade', (req, socket) => {
   // extreload fixes a stale unpacked extension; a store install updates
   // through the Web Store and must not be told to reload from disk.
   const install = u.searchParams.get('install') === 'store' ? 'store' : u.searchParams.get('install') === 'dev' ? 'dev' : null;
+  // When this loaded instance last (re)loaded — feeds staleCodeWarnings().
+  const boot = Number(u.searchParams.get('boot')) || null;
   // All id-less clients (old extensions, raw test sockets) share one 'anon'
   // seat: a second id-less connection is the same legacy browser reconnecting
   // (SW race) — it gets the seat-taken bounce, not a second seat posing as a
@@ -791,6 +838,7 @@ server.on('upgrade', (req, socket) => {
     v,
     name,
     install,
+    boot,
     socket,
     nextId: 1,
     pending: new Map(),

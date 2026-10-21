@@ -327,7 +327,12 @@ s_net() {
   wait $clickpid
   assert_grep "net filter+body" "$OUT/06.log" 'GET 200 /api/data'
   assert_grep "net body content" "$OUT/06.log" 'ok.*true.*items'
-  assert_grep "har saved" "$OUT/06.log" 'saved.*HAR 1.2, 2 entries'
+  # #64: the id sits past the old flat 100-char URL cut — the request line
+  # must carry it (not the body's echo: the pattern pins the URL line shape).
+  assert_grep "net keeps a 124-char path whole (#64)" "$OUT/06.log" 'GET 200 /api/items/deep-segment/.*id-987654'
+  # #65: a body past the 1500-char cap names the cut and the remedy.
+  assert_grep "net --body names its truncation (#65)" "$OUT/06.log" 'chars more — full body: fetch'
+  assert_grep "har saved" "$OUT/06.log" 'saved.*HAR 1.2, 3 entries'
   node -e "const h=JSON.parse(require('fs').readFileSync('$OUT/stress.har','utf8')); if(h.log&&h.log.entries&&h.log.entries.length>=2) console.log('har valid, entries: '+h.log.entries.length); else process.exit(1)" >>"$OUT/06.log" 2>&1 && ok "har parses with entries" || bad "har file invalid"
   ( sleep 0.5 && "${CLI[@]}" click net.html '#fire' >/dev/null 2>&1 ) &
   clickpid=$!
@@ -794,6 +799,37 @@ s_issues() {
   "${CLI[@]}" click issue58 "$R2" --profile "$P1" >>"$OUT/issue58.log" 2>&1
   assert_ngrep "a still-visible ref is not misread as stale" "$OUT/issue58.log" "element not found: $R2"
   "${CLI[@]}" close issue58 --profile "$P1" >/dev/null 2>&1
+  # #67: folding moves repeated-line refs to the END, out of document order —
+  # a scripted 'grep | tail -1' pick landed on the wrong row. --no-fold keeps
+  # every line inline; the fold summary's own refs stay in mint order (the
+  # manual recovery) — both paths must target row 5.
+  "${CLI[@]}" open "$FX/fold.html" --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" snap fold.html --profile "$P1" >"$OUT/issue67.log" 2>&1
+  assert_grep "folding collapses 5 identical rows to 1 + summary" "$OUT/issue67.log" '… 4 more · button "Pick"'
+  [ "$(grep -cE '^ *button \"Pick\" @' "$OUT/issue67.log")" = "1" ] && ok "folded snap shows one inline row" || bad "folded snap inline row count"
+  "${CLI[@]}" snap fold.html --no-fold --profile "$P1" >"$OUT/issue67-nofold.log" 2>&1
+  [ "$(grep -cE '^ *button \"Pick\" @' "$OUT/issue67-nofold.log")" = "5" ] && ok "--no-fold keeps all 5 rows inline" || bad "--no-fold row count"
+  assert_ngrep "--no-fold prints no fold summary" "$OUT/issue67-nofold.log" 'more ·'
+  NFREF=$(grep 'button "Pick" @' "$OUT/issue67-nofold.log" | tail -1 | grep -oE '@e[0-9]+')
+  "${CLI[@]}" click fold.html "$NFREF" --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" eval fold.html "document.getElementById('status').textContent" --profile "$P1" >"$OUT/issue67-click.log" 2>&1
+  assert_grep "--no-fold: last-line pick lands on row 5" "$OUT/issue67-click.log" '^picked 5$'
+  "${CLI[@]}" eval fold.html "document.getElementById('status').textContent='none'; 'reset'" --profile "$P1" >/dev/null 2>&1
+  FREF=$(grep '→ @' "$OUT/issue67.log" | grep -oE '@e[0-9]+' | tail -1)
+  "${CLI[@]}" click fold.html "$FREF" --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" eval fold.html "document.getElementById('status').textContent" --profile "$P1" >>"$OUT/issue67-click.log" 2>&1
+  assert_grep "fold summary's last ref still targets row 5" "$OUT/issue67-click.log" '^picked 5$'
+  "${CLI[@]}" close fold.html --profile "$P1" >/dev/null 2>&1
+  # #68: [role=dialog] can not match a NATIVE <dialog> — the role is implicit,
+  # there is no attribute. The scope retries the bare tag, so the natural
+  # first-try selector works.
+  "${CLI[@]}" open "$FX/modal.html?x=issue68" --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" click "modal.html?x=issue68" '#open-modal' --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" snap "modal.html?x=issue68" '[role=dialog]' --profile "$P1" >"$OUT/issue68.log" 2>&1
+  assert_grep "[role=dialog] scope finds the native dialog (#68)" "$OUT/issue68.log" '^dialog'
+  assert_grep "scoped snap shows the dialog's own button" "$OUT/issue68.log" "No, don"
+  assert_ngrep "no scope-not-found error" "$OUT/issue68.log" 'scope not found'
+  "${CLI[@]}" close "modal.html?x=issue68" --profile "$P1" >/dev/null 2>&1
 }
 
 s_doctor() {
