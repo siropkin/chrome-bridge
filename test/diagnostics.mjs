@@ -52,6 +52,15 @@ test('diagnostics are opt-in, private, correlated, persistent, bounded, and dele
   }
 });
 
+test('popup width is independent of the viewport Chrome sizes from its content', () => {
+  const html = fs.readFileSync(new URL('../extension/popup.html', import.meta.url), 'utf8');
+  const body = html.match(/body\s*\{([^}]+)\}/)[1];
+  assert.match(body, /\bwidth:\s*340px\s*;/);
+  assert.match(body, /\bmin-width:\s*340px\s*;/);
+  assert.match(body, /box-sizing:\s*border-box\s*;/);
+  assert.doesNotMatch(body, /\b(?:max-width|vw|dvw|svw)\b/);
+});
+
 test('popup settings save, validate, confirm deletion, and surface unavailable servers', async () => {
   const elements = new Map();
   const element = (id) => {
