@@ -60,10 +60,17 @@ node <repo>/cli.mjs <command> …
 
 A timeout after dispatch means the extension may have acted before its reply was lost; inspect the tab or `history` before retrying a non-idempotent command. A timeout before dispatch explicitly did not run.
 
+Queued `--diff` actions refuse to start after their server-owned deadline or tab release, including release followed by re-mark. Already-running actions can still finish. `close --all` checks every match before closing any and refuses if one was reclaimed by the human. Upgrade the server and extension together.
+
+Application `EvalError`s never replay the payload; CSP fallback first probes capability without your code. `fetch --csrf` requires the same HTTP(S) origin as the selected tab, uses fixed isolated execution pinned to that document, and refuses redirects or execution fallback. Use the final same-origin URL. Binary streams are capped by decoded bytes. Pill history resets on navigation and worker restart; the current page can still read its pill, so never put secrets in `note`.
+
+Popup controls support Chrome 117. A lost settings reply triggers status reconciliation or an unknown state with Retry; do not assume the previous checkbox state is authoritative. Releasing one tab preserves controls for other driven tabs. Diagnostics repair incomplete JSONL tails, expose boot-scoped loss/recovery counters in health, and distinguish failed profile rows from successful aggregate transport. Single-profile commands record the actual dispatched extension version.
+
 An `eval` syntax failure may include a local line/column hint (compile-only, no code echoed). Fix the JavaScript or shell quoting before retrying; use `eval <match> -` to supply complex snippets through stdin. The local check runs only after Chrome reports a syntax error and does not reject newer browser syntax in advance.
 
 ## Rules
 
+- **Background first.** Do not prepend `activate` to reads, synthetic actions, direct-input uploads, or screenshots. `open` and fetch scratch tabs are inactive; DOM element focus is not browser focus. `--trusted` and `upload --chooser` refuse hidden pages rather than activating them. Prefer synthetic/direct-input alternatives; explicit `emulate focus` can satisfy focus-gated scripts without switching tabs, but cannot guarantee fresh pixels in occluded windows. Only `activate` deliberately selects a tab and focuses its window. Screenshot fallback requires an already-active target and never switches tabs automatically. See AGENTS.md "Minimize focus changes" for the command matrix and caveats.
 - **Diagnostic logging is opt-in.** Popup Settings controls server-wide logging, its rolling limit (1-100 MiB, default 10), and deletion. Ask before enabling it. `health` reports status; `<repo>/docs/diagnostics.md` documents the JSONL schema and analysis workflow. Never share `.diagnostics/settings.json` (fingerprint key). Mark scripted tests with `BRIDGE_DIAGNOSTICS_TEST=1`.
 - **Bound polling.** Stop on permanent errors (missing tab IDs, restricted pages, human reclaim); do not retry forever. After-dispatch timeouts require checking state before repeating an action.
 

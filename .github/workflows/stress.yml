@@ -75,7 +75,7 @@ jobs:
       # stay manual; file:// fixtures become http:// (extension file-URL access
       # isn't guaranteed here — the suite's own :9334 server serves /fixtures).
       - name: Stress suite (single-profile sections)
-        run: FX=http://localhost:9334/fixtures test/stress/run.sh dialog pixel waits net marks misc edges ids refs type trusted issues doctor cleanup
+        run: FX=http://localhost:9334/fixtures test/stress/run.sh dialog pixel waits net marks misc edges ids refs type trusted issues safety doctor cleanup
       - name: Suite logs on failure
         if: failure()
         run: |

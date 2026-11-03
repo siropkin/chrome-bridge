@@ -139,7 +139,7 @@ await Promise.race([
 ]);
 
 try {
-  const diagnosticTests = spawnSync(process.execPath, ['--test', `${ROOT}/test/diagnostics.mjs`], { encoding: 'utf8' });
+  const diagnosticTests = spawnSync(process.execPath, ['--test', `${ROOT}/test/diagnostics.mjs`, `${ROOT}/test/background.mjs`], { encoding: 'utf8' });
   assert(diagnosticTests.status === 0, 'diagnostics: collector and popup unit tests', diagnosticTests.stdout + diagnosticTests.stderr);
   // The version lives in TWO files (package.json, extension/manifest.json) and
   // nothing but this check compares them — the v1.6.0 eager-clear bug shipped
@@ -965,8 +965,9 @@ try {
     // Contract drift tripwires: the command list lives in 3 places (cli USAGE,
     // handle() dispatch, ACT_VERBS) kept in sync by hand — fail here when they
     // drift instead of shipping a command with a wrong/missing pill label.
-    const handleTypes = new Set([...bg.matchAll(/msg\.type === '(\w+)'/g)].map((m) => m[1]));
-    for (const m of bg.matchAll(/\[([^\]]+)\]\.includes\(msg\.type\)/g))
+    const handleBlock = bg.slice(bg.indexOf('async function handle(msg)'));
+    const handleTypes = new Set([...handleBlock.matchAll(/msg\.type === '(\w+)'/g)].map((m) => m[1]));
+    for (const m of handleBlock.matchAll(/\[([^\]]+)\]\.includes\(msg\.type\)/g))
       for (const q of m[1].matchAll(/'(\w+)'/g)) handleTypes.add(q[1]);
     const verbBlock = bg.slice(bg.indexOf('const ACT_VERBS'), bg.indexOf('};', bg.indexOf('const ACT_VERBS')));
     const verbKeys = new Set([...verbBlock.matchAll(/^  (\w+): \[/gm)].map((m) => m[1]));

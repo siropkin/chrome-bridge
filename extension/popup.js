@@ -18,7 +18,11 @@ let bridgeHealth = null;
 let bridgeState; // undefined = not yet answered; null = the worker is dead/mid-reload
 function renderStatus() {
   if (!bridgeHealth) return; // health hasn't answered — the catch below owns the line
+  // "All" is all tabs THIS profile's worker drives — with several profiles
+  // connected, the panic button must not read wider than it is.
+  if ((bridgeHealth.profiles?.length || 0) > 1) $('release-all').textContent = 'Release all agent tabs (this profile)';
   const el = $('bridge-status');
+  el.className = '';
   if (!(bridgeHealth.ok && bridgeHealth.extension)) {
     $('status-text').textContent = 'server up — waiting for the extension…';
     return;
@@ -69,38 +73,43 @@ chrome.tabs.query({ active: true, currentWindow: true }).then(async ([tab]) => {
   });
   // Driven-tab controls — the emergency stop. Hidden entirely while nothing
   // is driven: a calm popup shows nothing to stop.
-  const state = await chrome.runtime.sendMessage({ type: 'bridge-state', tabId: tab.id }).catch(() => null);
-  bridgeState = state;
-  renderStatus();
-  if (!state?.count) return;
-  $('driven').hidden = false;
-  $('driven-count').textContent = `🟣 ${state.count} tab${state.count > 1 ? 's' : ''} driven by your AI agent`;
-  // "All" is all tabs THIS profile's worker drives — with several profiles
-  // connected, the panic button must not read wider than it is.
-  if ((bridgeHealth?.profiles?.length || 0) > 1) $('release-all').textContent = 'Release all agent tabs (this profile)';
+  const refreshState = async () => {
+    const state = await chrome.runtime.sendMessage({ type: 'bridge-state', tabId: tab.id });
+    if (state?.error || !Number.isInteger(state?.count) || state.count < 0 || typeof state.active !== 'boolean') throw new Error(state?.error || 'Tab state unavailable');
+    bridgeState = state;
+    renderStatus();
+    $('driven').hidden = state.count === 0;
+    $('driven-count').textContent = `🟣 ${state.count} tab${state.count > 1 ? 's' : ''} driven by your AI agent`;
+    $('release-tab').hidden = !state.active;
+    $('release-all').hidden = state.count === 0;
+  };
   const release = (btn, msg) => {
-    btn.hidden = false;
-    btn.addEventListener('click', () => {
-      chrome.runtime
-        .sendMessage(msg)
-        .then((r) => {
-          // The worker resolves {error} on failure — a caught release error
-          // must never print the success line: the emergency stop's worst
-          // bug is a silent failure wearing a ✓.
-          if (r?.error) {
-            $('status').textContent = 'Release failed: ' + r.error;
-            return;
-          }
-          $('driven').hidden = true;
-          $('status').textContent = 'Released ✓ — the tab(s) are yours again';
-        })
-        .catch((e) => {
-          $('status').textContent = 'Release failed: ' + e;
-        });
+    btn.addEventListener('click', async () => {
+      $('release-tab').disabled = $('release-all').disabled = true;
+      let failure;
+      try {
+        const response = await chrome.runtime.sendMessage(msg);
+        if (response?.error || !Number.isInteger(response?.count) || response.count < 0) throw new Error(response?.error || 'Release acknowledgement unavailable');
+      } catch (error) {
+        failure = error;
+      }
+      try {
+        await refreshState();
+      } catch (error) {
+        failure ||= error;
+        bridgeState = null;
+        renderStatus();
+      }
+      $('status').textContent = failure ? 'Release failed: ' + failure : 'Released ✓ — the tab(s) are yours again';
+      $('release-tab').disabled = $('release-all').disabled = false;
     });
   };
-  if (state.active) release($('release-tab'), { type: 'release-active', tabId: tab.id });
+  release($('release-tab'), { type: 'release-active', tabId: tab.id });
   release($('release-all'), { type: 'release-all' });
+  await refreshState().catch(() => {
+    bridgeState = null;
+    renderStatus();
+  });
 });
 
 $('setup').addEventListener('click', () => {
@@ -118,29 +127,53 @@ $('setup').addEventListener('click', () => {
 });
 
 let loggingState = null;
+let loggingBusy = false;
 function renderLogging() {
-  if (!loggingState) return;
+  $('logging-enabled').indeterminate = !loggingState;
+  if (!loggingState) {
+    $('logging-enabled').checked = false;
+    $('log-limit').value = '';
+    $('log-folder').value = '';
+    $('logging-status').textContent = 'Logging state unknown: status unavailable. Retry or reopen Settings.';
+    return;
+  }
   $('logging-enabled').checked = loggingState.enabled;
   $('log-limit').value = String(loggingState.limitMiB);
   $('log-folder').value = loggingState.directory;
   const usage = loggingState.bytes == null ? 'usage unavailable' : `${(loggingState.bytes / 1024 / 1024).toFixed(2)} / ${loggingState.limitMiB} MiB`;
-  $('logging-status').textContent = `${loggingState.enabled ? 'On' : 'Off'} · ${usage}${loggingState.error ? ' · Storage error: ' + loggingState.error : ''}`;
+  $('logging-status').textContent = `${loggingState.enabled ? 'On' : 'Off'} · ${usage}${loggingState.error ? ' · Storage error' : ''}`;
 }
 
 async function loggingRequest(action, extra = {}) {
+  if (loggingBusy || (action !== 'status' && !loggingState)) return;
+  loggingBusy = true;
   for (const id of ['logging-enabled', 'log-limit', 'logging-save', 'logging-delete', 'logging-confirm']) $(id).disabled = true;
+  $('logging-retry').disabled = true;
+  const request = async (requestedAction, values = {}) => {
+    const response = await chrome.runtime.sendMessage({ type: 'diagnostics', action: requestedAction, ...values });
+    const result = response?.result;
+    if (!response?.ok || typeof result?.enabled !== 'boolean' || !Number.isInteger(result.limitMiB) || result.limitMiB < 1 || result.limitMiB > 100) throw new Error('Settings unavailable');
+    return result;
+  };
   try {
-    const response = await chrome.runtime.sendMessage({ type: 'diagnostics', action, ...extra });
-    if (!response?.ok) throw new Error(response?.error || 'Settings unavailable. Update the extension and server.');
-    loggingState = response.result;
+    loggingState = await request(action, extra);
     renderLogging();
-  } catch (cause) {
+  } catch {
+    loggingState = null;
+    if (action !== 'status') {
+      try {
+        loggingState = await request('status');
+      } catch {}
+    }
     renderLogging();
-    $('logging-status').textContent = String(cause.message || cause);
+    if (loggingState) $('logging-status').textContent = 'Change acknowledgement unavailable; current status refreshed. ' + $('logging-status').textContent;
   } finally {
+    loggingBusy = false;
     for (const id of ['logging-enabled', 'log-limit', 'logging-save']) $(id).disabled = !loggingState;
     $('logging-delete').disabled = !loggingState || loggingState.bytes === 0;
     $('logging-confirm').disabled = !loggingState;
+    $('logging-retry').hidden = !!loggingState;
+    $('logging-retry').disabled = false;
   }
 }
 
@@ -156,6 +189,7 @@ $('logging-form').addEventListener('submit', async (event) => {
 $('settings').addEventListener('toggle', () => {
   if ($('settings').open) loggingRequest('status');
 });
+$('logging-retry').addEventListener('click', () => loggingRequest('status'));
 $('logging-delete').addEventListener('click', () => {
   $('logging-confirmation').hidden = false;
 });

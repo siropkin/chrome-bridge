@@ -21,6 +21,7 @@ const ERROR_CODES = [
   ['syntax_error', /SyntaxError/],
   ['type_error', /TypeError/],
   ['dialog_missing', /No dialog is showing/],
+  ['unresponsive', /^unresponsive$/],
 ];
 
 export function createDiagnostics(directory, version) {
@@ -30,6 +31,10 @@ export function createDiagnostics(directory, version) {
   let sequence = 0;
   let generation = 0;
   let error = null;
+  let droppedRecords = 0;
+  let recoveredTails = 0;
+  let recoveredBytes = 0;
+  let needsRepair = true;
   let settings = { enabled: false, limitMiB: 10, key: crypto.randomBytes(32).toString('hex') };
   try {
     const saved = JSON.parse(fs.readFileSync(configPath, 'utf8'));
@@ -43,15 +48,49 @@ export function createDiagnostics(directory, version) {
   const size = (file) => {
     try { return fs.statSync(file).size; } catch (cause) { if (cause.code === 'ENOENT') return 0; throw cause; }
   };
+  const repairTails = () => {
+    if (!needsRepair) return;
+    for (const file of files) {
+      let descriptor;
+      try { descriptor = fs.openSync(file, 'r+'); } catch (cause) { if (cause.code === 'ENOENT') continue; throw cause; }
+      try {
+        fs.fchmodSync(descriptor, 0o600);
+        const bytes = fs.fstatSync(descriptor).size;
+        const buffer = Buffer.alloc(4096);
+        let boundary = bytes;
+        while (boundary > 0) {
+          const start = Math.max(0, boundary - buffer.length);
+          const length = boundary - start;
+          const read = fs.readSync(descriptor, buffer, 0, length, start);
+          if (read !== length) throw new Error('tail_read_incomplete');
+          const newline = buffer.subarray(0, read).lastIndexOf(10);
+          if (newline !== -1) { boundary = start + newline + 1; break; }
+          boundary = start;
+        }
+        if (boundary < bytes) {
+          fs.ftruncateSync(descriptor, boundary);
+          recoveredTails++;
+          recoveredBytes += bytes - boundary;
+        }
+      } finally {
+        fs.closeSync(descriptor);
+      }
+    }
+    needsRepair = false;
+  };
+  if (settings.enabled) {
+    try { repairTails(); } catch (cause) { error = cause.code || 'repair_failed'; }
+  }
   const status = () => {
     let bytes = null;
     try { bytes = files.reduce((total, file) => total + size(file), 0); } catch { error = 'storage_unreadable'; }
-    return { enabled: settings.enabled, limitMiB: settings.limitMiB, bytes, directory, error };
+    return { enabled: settings.enabled, limitMiB: settings.limitMiB, bytes, directory, error, droppedRecords, recoveredTails, recoveredBytes };
   };
   const write = (event) => {
     if (!settings.enabled) return;
     try {
       fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+      repairTails();
       const line = JSON.stringify({ schema: 1, timestamp: new Date().toISOString(), boot, sequence: ++sequence, version, ...event }) + '\n';
       const half = Math.floor(settings.limitMiB * 1024 * 1024 / 2);
       if (Buffer.byteLength(line) > half) throw new Error('record_too_large');
@@ -62,6 +101,8 @@ export function createDiagnostics(directory, version) {
       fs.appendFileSync(files[1], line, { mode: 0o600 });
       error = null;
     } catch (cause) {
+      droppedRecords++;
+      needsRepair = true;
       error = cause.code || 'write_failed';
     }
   };
@@ -117,7 +158,19 @@ export function createDiagnostics(directory, version) {
       summary.sampleLines = result.slice(0, 65536).split('\n').length;
       if (msg?.diff && ['click', 'drag', 'fill', 'clear', 'type', 'paste', 'press', 'hover', 'scroll', 'upload', 'navigate'].includes(msg.type)) summary.verdict = /^(succeeded|uncertain|needs_human|blocked) ·/.exec(result)?.[1];
     }
-    if (Array.isArray(result)) summary.items = result.length;
+    if (Array.isArray(result)) {
+      summary.items = result.length;
+      if (['tabs', 'doctor'].includes(msg?.type)) {
+        summary.failedRows = 0;
+        summary.rowErrorCodes = {};
+        for (const row of result) {
+          if (typeof row?.profile !== 'string' || typeof row?.error !== 'string') continue;
+          summary.failedRows++;
+          const code = ERROR_CODES.find(([, pattern]) => pattern.test(row.error))?.[0] || 'other';
+          summary.rowErrorCodes[code] = (summary.rowErrorCodes[code] || 0) + 1;
+        }
+      }
+    }
     if (result && typeof result === 'object' && !Array.isArray(result)) {
       for (const field of ['loaded', 'truncated', 'changed']) if (typeof result[field] === 'boolean') summary[field] = result[field];
       if (Number.isInteger(result.status) && result.status >= 100 && result.status <= 599) summary.httpStatus = result.status;
@@ -150,7 +203,7 @@ export function createDiagnostics(directory, version) {
       write({ event: 'command_finish', id: token.id, durationMs: Math.round(performance.now() - token.started), profile: typeof msg?.profile === 'string' ? fingerprint(msg.profile) : undefined, extensionVersion: /^\d+\.\d+\.\d+$/.test(extensionVersion) ? extensionVersion : undefined, outcome: outcome(out, msg) });
     },
     client(msg, meta) {
-      write({ event: 'cli_finish', command: command(msg), caller: caller(meta), durationMs: Number.isFinite(msg?.durationMs) ? Math.max(0, msg.durationMs) : undefined, outcome: outcome(msg) });
+      write({ event: 'cli_finish', command: command(msg), caller: caller(meta), durationMs: Number.isFinite(msg?.durationMs) ? Math.max(0, msg.durationMs) : undefined, outcome: outcome(msg, msg) });
     },
     lifecycle(msg, profile) {
       const known = ['self-release', 'mark', 'release', 'reap', 'boot', 'extreload', 'tab-closed', 'favicon-stuck', 'dbg-external-detach'];

@@ -108,7 +108,7 @@ function dropSeatPending(seat, error) {
 
 // One command to one seat. Same shape as the old single-seat sendToExt: the
 // MV3 service worker cycles, so a missing socket gets a brief reconnect grace.
-function ask(seat, msg, timeoutMs = CMD_TIMEOUT_MS) {
+function ask(seat, msg, timeoutMs = CMD_TIMEOUT_MS, dispatch) {
   return new Promise((resolve, reject) => {
     const t0 = Date.now();
     let dispatched = false;
@@ -144,8 +144,12 @@ function ask(seat, msg, timeoutMs = CMD_TIMEOUT_MS) {
           // Once write accepts the frame, the extension can act even if the
           // reply is lost. Every later timeout must preserve that uncertainty
           // so callers do not blindly retry a non-idempotent operation.
-          s.socket.write(encodeFrame(JSON.stringify({ ...msg, id })));
+          s.socket.write(encodeFrame(JSON.stringify({ ...msg, id, deadlineAt: t0 + timeoutMs })));
           dispatched = true;
+          if (dispatch) {
+            dispatch.profile = s.pid;
+            dispatch.extensionVersion = s.v;
+          }
         } catch (e) {
           clearTimeout(t);
           s.pending.delete(id);
@@ -197,7 +201,7 @@ async function seatByProfileGrace(want) {
 // Adding a command? SEVEN registries stay in sync (a missing one fails SILENTLY):
 // cli.mjs USAGE · cli.mjs run() · server.mjs CLI_LINES · server.mjs route() (only if it
 // needs special routing) · background.js handle() · ACT_VERBS (pill narration) · MUTATING.
-async function route(msg) {
+async function route(msg, dispatch) {
   if (msg.type === 'tabs') {
     // Read-only: merged across profiles. Single profile keeps today's output
     // byte-identical (no profile tags) — the common case stays the old shape.
@@ -207,10 +211,10 @@ async function route(msg) {
       // seatTag(msg.profile) — a NAME left here printed as its 4-char id
       // prefix in the feed ('@haze' for hazel, found live).
       msg.profile = seat.pid;
-      return ask(seat, msg); // pinned: that seat's rows, untagged
+      return ask(seat, msg, CMD_TIMEOUT_MS, dispatch); // pinned: that seat's rows, untagged
     }
     if (!seats.size) throw new Error('extension not connected — load extension/ at chrome://extensions');
-    if (seats.size === 1) return ask(seats.values().next().value, msg);
+    if (seats.size === 1) return ask(seats.values().next().value, msg, CMD_TIMEOUT_MS, dispatch);
     const rows = [];
     const seenIds = new Map(); // "id url" -> first seat reporting it
     let dualInstall = false;
@@ -262,7 +266,7 @@ async function route(msg) {
     for (const [pid, seat] of entries) {
       // Same 5s deaf-seat budget as the tabs merge — a wedged profile must
       // not hold the whole report for the full command timeout.
-      const reply = await ask(seat, msg, 5_000).catch(() => null);
+      const reply = await ask(seat, msg, 5_000, entries.length === 1 ? dispatch : undefined).catch(() => null);
       if (!reply?.ok) {
         out.push({ profile: seatTag(pid), error: reply ? String(reply.error) : 'unresponsive' });
         continue;
@@ -364,14 +368,14 @@ async function route(msg) {
   // `wait --human` blocks for minutes (CAPTCHA/2FA handoff) — the 70s command
   // cap would kill it mid-handoff. 285s, just under the CLI HTTP client's
   // 5-min wall, which is the real ceiling (undici aborts the fetch at 300s).
-  if (msg.type === 'wait' && msg.human) return await ask(seat, msg, 285_000);
+  if (msg.type === 'wait' && msg.human) return await ask(seat, msg, 285_000, dispatch);
   // `type` pays per-char: the inter-key cadence PLUS the page's own per-event
   // framework work (a heavy block editor spends ~50-100ms per keystroke —
   // #29/#32: a 650-char payload legitimately needs >70s, and a timed-out
   // reply invites a retry while the first loop is still typing). Scale the
   // budget with the payload; the 285s ceiling is the same 300s undici wall.
-  if (msg.type === 'type') return await ask(seat, msg, Math.min(285_000, CMD_TIMEOUT_MS + (msg.value?.length || 0) * 100));
-  return await ask(seat, msg, CMD_TIMEOUT_MS);
+  if (msg.type === 'type') return await ask(seat, msg, Math.min(285_000, CMD_TIMEOUT_MS + (msg.value?.length || 0) * 100), dispatch);
+  return await ask(seat, msg, CMD_TIMEOUT_MS, dispatch);
 }
 
 // --- activity feed (`cli.mjs watch`) ----------------------------------------
@@ -743,6 +747,7 @@ const server = http.createServer((req, res) => {
         test: process.env.BRIDGE_DIAGNOSTICS_TEST === '1' || req.headers['x-bridge-test'] === '1',
       };
       let diagnosticToken;
+      const dispatch = {};
       try {
         msg = JSON.parse(body);
         // Underscore fields (_tabId, _warn, _pill) are INTERNAL — set by the
@@ -755,7 +760,7 @@ const server = http.createServer((req, res) => {
           out = { ok: true, result: diagnosticRequest(msg, meta) };
         } else {
           diagnosticToken = diagnostics.start(msg, meta);
-          out = await route(msg);
+          out = await route(msg, dispatch);
         }
       } catch (e) {
         out = { ok: false, error: String(e) };
@@ -776,7 +781,7 @@ const server = http.createServer((req, res) => {
       // there is something to say.
       const warns = staleCodeWarnings();
       if (warns.length && out && typeof out === 'object') out.warn = warns;
-      diagnostics.finish(diagnosticToken, msg, out, seats.get(msg?.profile)?.v);
+      diagnostics.finish(diagnosticToken, { ...msg, profile: dispatch.profile }, out, dispatch.extensionVersion);
       res.end(JSON.stringify(out));
     });
     return;

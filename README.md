@@ -184,11 +184,17 @@ Commands that work on a tab take a `<match>`: part of the tab's URL or title, or
 
 ## Local Diagnostic Logging
 
+**Background first:** reads, synthetic actions, direct-input uploads, and CDP screenshots do not activate tabs. Trusted input and chooser upload require a suitable visible/focused page and refuse hidden targets rather than switching focus. `emulate focus` is an explicit background option for focus-gated scripts, not a guarantee of rendering in an occluded window. Screenshot fallback now requires an already-active target; only explicit `activate` changes tab/window focus. See [the focus matrix](AGENTS.md#minimize-focus-changes).
+
+Safety checks cover bulk close and queued `--diff` actions: a human-reclaimed tab cannot be closed with `--all`, and queued actions refuse to start after release or their dispatch deadline. Actions already running can still finish. Application `EvalError`s are returned without replaying the payload. `fetch --csrf` requires the tab and request to share an HTTP(S) origin, binds execution to that document in the isolated world, and refuses redirects. Pill history resets on navigation and worker restart; the current document can still read its own pill. Binary fetch streams are bounded by decoded bytes.
+
 `eval` syntax failures now include a local line/column hint when available, without echoing your code. Fix the JavaScript or shell quoting before retrying; pass complex snippets through stdin with `eval <match> -`. The check runs only after Chrome reports a syntax error, so newer browser syntax is not blocked by your Node version.
 
 For a later review of failures, retry loops, and missing features, open the extension popup's **Settings** and enable **Diagnostic logging**. It is **off by default**, local only, and shared across connected profiles. Choose a rolling size limit (1-100 MiB, default 10 MiB); view usage or delete the logs in the same panel.
 
 The JSONL files in `.diagnostics/` record correlated command outcomes, timings, error categories, and privacy-preserving fingerprints, not raw page content, input values, or eval code. The existing `watch`/`history` feed stays in memory; command activity is no longer written to `server.log`. See [collection, privacy, and week-later analysis](docs/diagnostics.md).
+
+Popup controls work from Chrome 117. After an uncertain settings write, the popup refreshes status or shows an unknown state with Retry; it never presents the previous setting as confirmed. Releasing one tab keeps controls for the others. Logging repairs incomplete JSONL tails and reports boot-scoped recovery/loss counters through health; partial profile failures and actual single-profile dispatch versions are retained in diagnostics.
 
 ## Install detail
 

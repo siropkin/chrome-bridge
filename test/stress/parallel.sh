@@ -16,7 +16,8 @@ set -u
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 S="$REPO/test/stress"
 OUT="$S/out/parallel"; mkdir -p "$OUT"
-CLI=(node "$REPO/cli.mjs")
+CLI=(env BRIDGE_DIAGNOSTICS_TEST=1 node "$REPO/cli.mjs")
+CURL=(curl -H 'x-bridge-test: 1')
 FX="file://$S/fixtures"
 PASS=0; FAIL=0; SECTION="?"
 # markers that must NEVER appear in worker output (except where a section says so)
@@ -315,13 +316,13 @@ s_robust() {
   # {"type":"shot",...,"crop":"z"} used to crash the WHOLE server: pushAct ran
   # outside the route try/catch and CLI_LINES.shot did m.crop.join on a string
   # — the throw, inside an async 'end' handler, was an unhandled rejection.
-  curl -s -m 5 -X POST http://127.0.0.1:9333/cmd -d '{"type":"shot","urlMatch":"nope","crop":"z"}' >"$OUT/robust.log" 2>&1
+  "${CURL[@]}" -s -m 5 -X POST http://127.0.0.1:9333/cmd -d '{"type":"shot","urlMatch":"nope","crop":"z"}' >"$OUT/robust.log" 2>&1
   grep -q '"ok":false' "$OUT/robust.log" && ok "malformed crop gets a clean error" || bad "malformed crop response: $(head -c 120 "$OUT/robust.log")"
-  curl -s -m 5 -X POST http://127.0.0.1:9333/cmd -d '{"type":"eval","urlMatch":"x"}' >>"$OUT/robust.log" 2>&1   # no code field
-  curl -s -m 5 -X POST http://127.0.0.1:9333/cmd -d 'not json at all' >>"$OUT/robust.log" 2>&1
-  curl -s -m 5 -X POST http://127.0.0.1:9333/cmd -d '{"type":"bogus"}' >>"$OUT/robust.log" 2>&1
-  curl -s -m 5 -X POST http://127.0.0.1:9333/cmd -d '{"type":"wait","urlMatch":"x","text":123}' >>"$OUT/robust.log" 2>&1
-  local h; h=$(curl -s -m 2 http://127.0.0.1:9333/health | grep -c '"ok":true')
+  "${CURL[@]}" -s -m 5 -X POST http://127.0.0.1:9333/cmd -d '{"type":"eval","urlMatch":"x"}' >>"$OUT/robust.log" 2>&1   # no code field
+  "${CURL[@]}" -s -m 5 -X POST http://127.0.0.1:9333/cmd -d 'not json at all' >>"$OUT/robust.log" 2>&1
+  "${CURL[@]}" -s -m 5 -X POST http://127.0.0.1:9333/cmd -d '{"type":"bogus"}' >>"$OUT/robust.log" 2>&1
+  "${CURL[@]}" -s -m 5 -X POST http://127.0.0.1:9333/cmd -d '{"type":"wait","urlMatch":"x","text":123}' >>"$OUT/robust.log" 2>&1
+  local h; h=$("${CURL[@]}" -s -m 2 http://127.0.0.1:9333/health | grep -c '"ok":true')
   [ "$h" = 1 ] && ok "server survives a 5-hit malformed-input burst" || bad "server died on malformed input"
 }
 
@@ -341,11 +342,11 @@ s_restart() {
   done
   sleep 2
   "${CLI[@]}" stop >/dev/null 2>&1
-  "${CLI[@]}" start >/dev/null 2>&1
+  env -u BRIDGE_DIAGNOSTICS_TEST node "$REPO/cli.mjs" start >/dev/null 2>&1
   # wait for BOTH seats back (SW reconnect is ~500ms hot, 30s alarm backstop)
   local t0=$SECONDS seats=0
   while [ $SECONDS -lt $((t0 + 40)) ]; do
-    seats=$(curl -s -m 2 http://127.0.0.1:9333/health 2>/dev/null | grep -o '"id"' | wc -l | tr -d ' ')
+    seats=$("${CURL[@]}" -s -m 2 http://127.0.0.1:9333/health 2>/dev/null | grep -o '"id"' | wc -l | tr -d ' ')
     [ "$seats" -ge 2 ] && break
     sleep 1
   done
@@ -394,7 +395,7 @@ SECTIONS=${*:-$ALL}
 cd "$REPO"
 detect_profiles || { echo "FAIL: no connected profile (cli profiles)"; exit 1; }
 echo "profiles: P1=$P1 P2=${P2:-<none>}"
-curl -s -m 2 http://localhost:9334/api/data >/dev/null 2>&1 || ( node "$S/server.mjs" &>/dev/null & )
+"${CURL[@]}" -s -m 2 http://localhost:9334/api/data >/dev/null 2>&1 || ( node "$S/server.mjs" &>/dev/null & )
 for sec in $SECTIONS; do
   case $sec in
     sametab) s_sametab ;; mixed) s_mixed ;; tabs) s_tabs ;; profiles) s_profiles ;;

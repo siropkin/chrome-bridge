@@ -833,6 +833,17 @@ s_issues() {
   "${CLI[@]}" close "modal.html?x=issue68" --profile "$P1" >/dev/null 2>&1
 }
 
+s_safety() {
+  SECTION=safety
+  local rc=0 passed failed
+  node "$S/safety.mjs" "$P1" "$OUT" >"$OUT/safety.log" 2>&1 || rc=$?
+  cat "$OUT/safety.log"
+  passed=$(grep -c '^PASS \[safety\]' "$OUT/safety.log" || true)
+  failed=$(grep -c '^FAIL \[safety\]' "$OUT/safety.log" || true)
+  PASS=$((PASS+passed)); FAIL=$((FAIL+failed))
+  if [ "$rc" -ne 0 ] && [ "$failed" -eq 0 ]; then bad "safety helper exited $rc"; fi
+}
+
 s_doctor() {
   SECTION=doctor
   # The residue lifecycle, end to end: drive a tab (marked + 🟣-grouped), then
@@ -895,7 +906,7 @@ cleanup() {
 }
 
 # ---------------------------------------------------------------- main
-ALL="profiles churn interact dialog pixel waits net perf marks misc edges ids refs type trusted issues doctor cleanup"
+ALL="profiles churn interact dialog pixel waits net perf marks misc edges ids refs type trusted issues safety doctor cleanup"
 SECTIONS=${*:-$ALL}
 cd "$REPO"
 detect_profiles || { echo "FAIL: no connected profile (cli profiles)"; exit 1; }
@@ -903,12 +914,17 @@ echo "profiles: P1=$P1 P2=${P2:-<none>}"
 # fixture server (HTTP + WS echo) — start if :9334 is down. Detached spawn:
 # a plain `&` would put the server on this shell's job table, and every bare
 # `wait` below would then wait for the never-exiting server forever
-curl -s -m 2 http://localhost:9334/api/data >/dev/null 2>&1 || ( node "$S/server.mjs" &>/dev/null & )
+if ! curl -fsS -m 2 http://localhost:9334/api/data >/dev/null 2>&1; then
+  if [ "$SECTIONS" = safety ]; then
+    echo "FAIL [safety] existing fixture server required on localhost:9334"; exit 1
+  fi
+  ( node "$S/server.mjs" &>/dev/null & )
+fi
 for sec in $SECTIONS; do
   case $sec in
     profiles) s_profiles ;; churn) s_churn ;; interact) s_interact ;; dialog) s_dialog ;;
     pixel) s_pixel ;; waits) s_waits ;; net) s_net ;; perf) s_perf ;; marks) s_marks ;; misc) s_misc ;;
-    edges) s_edges ;; ids) s_ids ;; refs) s_refs ;; type) s_type ;; trusted) s_trusted ;; issues) s_issues ;; doctor) s_doctor ;; cleanup) cleanup ;;
+    edges) s_edges ;; ids) s_ids ;; refs) s_refs ;; type) s_type ;; trusted) s_trusted ;; issues) s_issues ;; safety) s_safety ;; doctor) s_doctor ;; cleanup) cleanup ;;
     *) echo "unknown section: $sec" ;;
   esac
 done

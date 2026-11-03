@@ -236,7 +236,7 @@ async function connect() {
       }
       // Failures belong in the human-visible history too — a red-ink line in
       // the pill log, not just an error back to the agent.
-      if (msg._tabId != null && drivenTabs.has(msg._tabId)) {
+      if (msg._tabId != null && currentActivity(msg._tabId, msg)) {
         const { done } = activityPhrases(msg);
         // Same 'Error: Error:' dedup the CLI and the watch feed got (756df17)
         // — the pill history is the third place this line lands.
@@ -261,7 +261,7 @@ async function connect() {
         if (n > 0) inflight.set(tabId, n);
         else inflight.delete(tabId);
       }
-      if (tabId != null && drivenTabs.has(tabId)) {
+      if (tabId != null && currentActivity(tabId, msg)) {
         // Consecutive failures since the last ok: the durable "something
         // failed" glance — ✗ in the favicon is 16px in the strip, but the
         // pill itself must not read 'AI idle' like nothing happened. Only a
@@ -288,7 +288,7 @@ async function connect() {
         // just before the command ended — the #41 frozen-label race.
         const seq = pillSeq.get(tabId) || 0;
         setTimeout(() => {
-          if (!drivenTabs.has(tabId)) return; // released in the window — never paint over the '✓ released' fade
+          if (!currentActivity(tabId, msg)) return;
           if ((pillSeq.get(tabId) || 0) !== seq) return;
           if ((inflight.get(tabId) || 0) > 0) return;
           // A gone pill (page wiped it; a first mark gated by a capture
@@ -368,6 +368,7 @@ const drivenTabs = new Set();
 // outlived its worker only by luck (the heartbeat keeps the SW warm while the
 // bridge runs, but a crash or an update kills it mid-gate).
 const humanReclaimed = new Map();
+const ownershipSeq = new Map();
 
 // Per-tab bridge state lives in chrome.storage.session: it survives the MV3
 // service-worker cycle and dies with the browser — exactly the lifetime these
@@ -654,14 +655,21 @@ const pillBusy = new Map();
 // command path).
 const pillQ = new Map();
 function pillWrite(tabId, args, world) {
-  const inj = { target: { tabId }, func: pillInject, args };
-  if (world) inj.world = world;
-  const run = (pillQ.get(tabId) || Promise.resolve()).then(() =>
-    chrome.scripting
-      .executeScript(inj)
-      .then((res) => revivePill(tabId, res, args))
-      .catch(() => {})
-  );
+  const nav = navSeq.get(tabId) || 0;
+  const ownership = ownershipSeq.get(tabId) || 0;
+  const current = () => drivenTabs.has(tabId) && (navSeq.get(tabId) || 0) === nav && (ownershipSeq.get(tabId) || 0) === ownership;
+  const document = chrome.scripting.executeScript({ target: { tabId }, world: 'ISOLATED', func: () => null })
+    .then((result) => result?.[0]?.documentId).catch(() => null);
+  const run = (pillQ.get(tabId) || Promise.resolve()).then(async () => {
+    if (!current()) return;
+    const documentId = await document;
+    if (!documentId || !current()) return;
+    const target = { tabId, documentIds: [documentId] };
+    const inj = { target, func: pillInject, args };
+    if (world) inj.world = world;
+    const result = await chrome.scripting.executeScript(inj);
+    if (current()) await revivePill(tabId, result, args, target, current);
+  }).catch(() => {});
   const tail = run.catch(() => {});
   pillQ.set(tabId, tail);
   tail.then(() => pillQ.get(tabId) === tail && pillQ.delete(tabId)); // self-pruning, groupChain-style
@@ -721,7 +729,7 @@ function startTick(tabId, msg, t0) {
   pillTick.set(
     tabId,
     setInterval(() => {
-      if (!inflight.get(tabId)) return stopTick(tabId);
+      if (!inflight.get(tabId) || !currentActivity(tabId, msg)) return stopTick(tabId);
       const args = [`${ing}… ${Math.round((Date.now() - t0) / 1000)}s`, tabActivity.get(tabId) || [], msg.target || null, true];
       pillWrite(tabId, args, worldCache.get(tabId) || 'MAIN');
     }, 5000)
@@ -749,15 +757,16 @@ function pushActivity(tabId, line) {
 // bannerSuppressed gates this: never rebuild the pill into a shot/wait
 // capture window — the exact regression removeBannerForCapture exists to
 // prevent.
-function revivePill(tabId, res, args) {
+async function revivePill(tabId, res, args, target, current) {
   if (res?.[0]?.result !== 'gone') return;
-  if (!drivenTabs.has(tabId) || bannerSuppressed.has(tabId)) return;
-  chrome.scripting
-    .executeScript({ target: { tabId }, func: injectBanner })
-    .then(() =>
-      chrome.scripting.executeScript({ target: { tabId }, func: pillInject, args, world: worldCache.get(tabId) || 'MAIN' })
-    )
-    .catch(() => {});
+  if (!current() || bannerSuppressed.has(tabId)) return;
+  await chrome.scripting.executeScript({ target, func: injectBanner });
+  if (!current() || bannerSuppressed.has(tabId)) return;
+  await chrome.scripting.executeScript({ target, func: pillInject, args, world: worldCache.get(tabId) || 'MAIN' });
+}
+
+function currentActivity(tabId, msg) {
+  return msg._pill && drivenTabs.has(tabId) && msg._pillNav === (navSeq.get(tabId) || 0) && msg._pillOwnership === (ownershipSeq.get(tabId) || 0);
 }
 
 function recordActivity(tabId, msg) {
@@ -765,6 +774,8 @@ function recordActivity(tabId, msg) {
   const lines = pushActivity(tabId, done);
   pillSeq.set(tabId, (pillSeq.get(tabId) || 0) + 1);
   msg._pill = true; // onmessage's finally decrements inflight only for commands that recorded
+  msg._pillNav = navSeq.get(tabId) || 0;
+  msg._pillOwnership = ownershipSeq.get(tabId) || 0;
   inflight.set(tabId, (inflight.get(tabId) || 0) + 1);
   pillBusy.set(tabId, ing + '…'); // what restoreBanner/reconnect repaints while a command runs
   startTick(tabId, msg, Date.now());
@@ -1015,6 +1026,8 @@ const awaitMark = (tabId, ms = 2000) => {
 };
 
 async function releaseTab(tabId, opts = {}) {
+  ownershipSeq.set(tabId, (ownershipSeq.get(tabId) || 0) + 1);
+  if (opts.flash) humanReclaimed.set(tabId, Date.now());
   drivenTabs.delete(tabId);
   chrome.action.setBadgeText({ tabId, text: '' }).catch(() => {}); // the everywhere-marker (markTab) — restore it everywhere too
   // The human's ⏏ (flash) also cuts a live net capture short — the same
@@ -1091,6 +1104,11 @@ chrome.tabs.onUpdated.addListener((tabId, info) => {
   if (info.url || info.status === 'loading') {
     shotBaselines.delete(tabId);
     navSeq.set(tabId, (navSeq.get(tabId) || 0) + 1);
+    tabActivity.delete(tabId);
+    pillBusy.delete(tabId);
+    failedSinceOk.delete(tabId);
+    stopTick(tabId);
+    persist();
   }
   if (info.status === 'complete' && drivenTabs.has(tabId) && !bannerSuppressed.has(tabId)) {
     // respectHide while a debugger is or was JUST attached: Chrome fires a
@@ -1130,6 +1148,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   pillQ.delete(tabId); // the chain self-prunes; this just doesn't wait for it
   humanWaits.delete(tabId);
   humanReclaimed.delete(tabId);
+  ownershipSeq.delete(tabId);
   navSeq.delete(tabId);
   dbgSince.delete(tabId);
   markInflight.delete(tabId); // a mark whose injectBanner pends forever (uncommitted nav) never self-prunes
@@ -1169,7 +1188,9 @@ function remapTabId(newTabId, oldTabId) {
   cdpQ.delete(oldTabId); // the dead session's pending chain can only wedge the new id (up to 65s)
   emulatedTabs.delete(oldTabId); // the override died with the old renderer — the new id is fresh for the next emulate
   emulatedDsf.delete(oldTabId); // same lifetime as the override — must not follow the id (stale dpr for shot)
-  for (const m of [tabActivity, failedSinceOk, worldCache, shotBaselines, humanReclaimed]) {
+  tabActivity.delete(oldTabId);
+  pillBusy.delete(oldTabId);
+  for (const m of [failedSinceOk, worldCache, shotBaselines, humanReclaimed]) {
     if (m.has(oldTabId)) {
       m.set(newTabId, m.get(oldTabId));
       m.delete(oldTabId);
@@ -1190,10 +1211,15 @@ function remapTabId(newTabId, oldTabId) {
 // click handler's isTrusted guard keeps synthesized clicks out. releaseTab
 // is idempotent on a non-driven tab, so no entry guard needed; it also clears
 // device emulation (release = the tab is the human's again, ALL of it).
-chrome.runtime.onMessage.addListener((msg, sender) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (['diagnostics', 'bridge-state', 'release-active', 'release-all'].includes(msg?.type) &&
+      (sender?.id !== chrome.runtime.id || sender.url !== chrome.runtime.getURL('popup.html') || sender.tab)) {
+    sendResponse({ ok: false, error: msg.type === 'diagnostics' ? 'Logging settings are restricted to the popup.' : 'Tab controls are restricted to the popup.' });
+    return;
+  }
   if (msg?.type === 'diagnostics') {
-    if (sender.id !== chrome.runtime.id || sender.url !== chrome.runtime.getURL('popup.html') || sender.tab) return Promise.resolve({ ok: false, error: 'Logging settings are restricted to the popup.' });
-    return requestDiagnostics(msg);
+    Promise.resolve().then(() => requestDiagnostics(msg)).then(sendResponse, (error) => sendResponse({ ok: false, error: String(error) }));
+    return true;
   }
   if (msg?.type === 'self-release' && sender?.tab?.id != null) {
     logLine('self-release tab ' + sender.tab.id + ' (pill ⏏ — human)');
@@ -1223,38 +1249,47 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
     // connected: THIS profile's own socket — the popup's "bridge ready" must
     // not ride /health's any-seat flag (another profile's live seat says
     // nothing about this one).
-    return ready.then(() => ({ count: drivenTabs.size, active: msg.tabId != null && drivenTabs.has(msg.tabId), connected: !!(ws && ws.readyState === WebSocket.OPEN) }));
+    ready.then(() => ({ count: drivenTabs.size, active: msg.tabId != null && drivenTabs.has(msg.tabId), connected: !!(ws && ws.readyState === WebSocket.OPEN) }))
+      .then(sendResponse, (error) => sendResponse({ error: String(error) }));
+    return true;
   }
   if (msg?.type === 'release-active' && msg.tabId != null) {
     // The popup's ⏏ is the same human reclaim as the pill's — arm the same
     // sticky gate, or an agent mid-loop re-marks the tab seconds after the
     // human stopped it from the one surface that always exists.
-    return ready
+    ready
       .then(() => releaseTab(msg.tabId, { flash: true }))
       .then(() => {
         humanReclaimed.set(msg.tabId, Date.now());
         persist();
         return { count: drivenTabs.size };
       })
-      .catch((e) => ({ error: String(e) }));
+      .then(sendResponse, (error) => sendResponse({ error: String(error) }));
+    return true;
   }
   if (msg?.type === 'release-all') {
     // The emergency stop: every driven tab back to the human in one click,
     // each with its own '✓ released' fade — and each gated like a ⏏ (the
     // human said stop; the next agent command must not undo it). Copy the
     // set first — releaseTab mutates drivenTabs while we iterate it.
-    return ready
+    ready
       .then(async () => {
         let n = 0;
+        const errors = [];
         for (const id of [...drivenTabs]) {
-          await releaseTab(id, { flash: true }).catch(() => {});
-          humanReclaimed.set(id, Date.now());
-          n++;
+          try {
+            await releaseTab(id, { flash: true });
+            humanReclaimed.set(id, Date.now());
+            n++;
+          } catch (error) {
+            errors.push(String(error));
+          }
         }
         persist(); // one write for the whole sweep
-        return { count: n };
+        return errors.length ? { count: n, error: errors.join('; ') } : { count: n };
       })
-      .catch((e) => ({ error: String(e) }));
+      .then(sendResponse, (error) => sendResponse({ error: String(error) }));
+    return true;
   }
 });
 
@@ -1511,7 +1546,6 @@ const ready = (async () => {
     for (const id of s?.drivenTabs || []) drivenTabs.add(id);
     for (const id of s?.emulatedTabs || []) emulatedTabs.add(id);
     for (const [k, v] of Object.entries(s?.tabStatus || {})) tabStatus.set(Number(k), v);
-    for (const [k, v] of Object.entries(s?.tabActivity || {})) tabActivity.set(Number(k), v);
     for (const [k, v] of Object.entries(s?.humanReclaimed || {})) humanReclaimed.set(Number(k), v);
     // The dead worker's log tail rides along — this worker's own lines (the
     // 'background vX loaded' marker) stay newest at the end.
@@ -1558,9 +1592,7 @@ const ready = (async () => {
       // turn'), and injectBanner early-returns on the same-version banner —
       // without this reset the "agent is acting RIGHT NOW" signal stays lit
       // on a worker that isn't running anything.
-      .then(() =>
-        chrome.scripting.executeScript({ target: { tabId: id }, func: pillInject, args: [idleLabel(id), tabActivity.get(id) || [], null, false] })
-      )
+      .then(() => pillWrite(id, [idleLabel(id), tabActivity.get(id) || [], null, false]))
       .catch(() => {});
     if (tabStatus.get(id)) setFavicon(id, tabStatus.get(id));
   }
@@ -3217,7 +3249,7 @@ async function cdpDrag(tabId, x1, y1, x2, y2) {
   await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: x2, y: y2, button: 'left', clickCount: 1 });
 }
 
-async function trustedInput(tab, msg) {
+async function trustedInput(tab, msg, beforeDispatch = () => {}) {
   // CDP Input.dispatch* on a hidden tab fires ZERO page events while the
   // command would still report success — and the coords trustedPointSrc
   // computes come from the hidden tab's stale layout, so a dispatch that does
@@ -3238,6 +3270,7 @@ async function trustedInput(tab, msg) {
   // mid-dispatch and put the pill back under the coords.
   await awaitMark(tab.id);
   await withDbg(tab.id, async () => {
+    beforeDispatch();
     // CDP input hits whatever is topmost at the coords, and the pill is
     // pointer-events:auto with live ✕/⏏ — a trusted click landing on it can
     // self-release the tab behind a false 'clicked' success (the coverage
@@ -3260,22 +3293,26 @@ async function trustedInput(tab, msg) {
         const p = await point(msg.target, true, true);
         if (!p.inBanner) suppression = await removeBannerForCapture(tab.id);
         const m0 = await runEval(tab.id, MODAL_COUNT_SRC).catch(() => 0);
+        beforeDispatch();
         await cdpMouseClick(tab.id, p.cx, p.cy, msg.dbl);
         res = `clicked ${msg.target} (trusted${msg.dbl ? ', double' : ''})`;
         res += await runEval(tab.id, modalNoteSrc(m0)).catch(() => '');
       } else if (msg.type === 'hover') {
         const p = await point(msg.target, false, false);
         if (!p.inBanner) suppression = await removeBannerForCapture(tab.id);
+        beforeDispatch();
         await chrome.debugger.sendCommand({ tabId: tab.id }, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: p.cx, y: p.cy });
         res = `hovered ${msg.target} (trusted)`;
       } else if (msg.type === 'drag') {
         const p1 = await point(msg.from, true, false);
         const p2 = await point(msg.to, false, false);
         if (!p1.inBanner && !p2.inBanner) suppression = await removeBannerForCapture(tab.id);
+        beforeDispatch();
         await cdpDrag(tab.id, p1.cx, p1.cy, p2.cx, p2.cy);
         res = `dragged ${msg.from} onto ${msg.to} (trusted)`;
       } else if (msg.type === 'press') {
         const what = await runEval(tab.id, trustedFocusSrc(msg.target, msg.key));
+        beforeDispatch();
         await cdpKeyEvent(tab.id, msg.key);
         res = `pressed ${msg.key} on ${what} (trusted)`;
       } else if (msg.type === 'type') {
@@ -3290,6 +3327,7 @@ async function trustedInput(tab, msg) {
         const what = await runEval(tab.id, trustedFocusSrc(msg.target));
         const delay = Math.min(25, 15000 / (msg.value.length || 1));
         const chars = [...msg.value];
+        beforeDispatch();
         for (let i = 0; i < chars.length; i++) {
           // Released (⏏ or `release`) mid-type: stop feeding CDP keys into a
           // tab the human took back — say where it stopped so the agent can
@@ -3585,6 +3623,12 @@ const worldCache = new Map(); // tabId -> world whose eval worked (CSP pages pay
 async function runEval(tabId, code, world = 'auto') {
   const injected = (src) => {
     try {
+      eval('');
+    } catch (e) {
+      if (e instanceof EvalError) return { blocked: true };
+      return { ok: false, error: String(e) };
+    }
+    try {
       const value = eval(src);
       if (value && typeof value.then === 'function') {
         return value.then(
@@ -3629,9 +3673,7 @@ async function runEval(tabId, code, world = 'auto') {
   for (const w of worlds) {
     if (!w) continue;
     const r = (await run(w))?.[0]?.result;
-    // Anchored: CSP refusal is always a sync 'EvalError: Refused to evaluate…' —
-    // a bare /eval/ would re-run user code whose own error message mentions 'eval'.
-    if (r && r.ok === false && r.error.startsWith('EvalError:')) continue; // CSP — try next
+    if (r?.blocked === true) continue;
     if (!r) throw new Error('no injection result');
     if (r.ok === false) throw new Error(r.error);
     if (world === 'auto') worldCache.set(tabId, w);
@@ -3757,10 +3799,19 @@ function withSnap(tabId, fn) {
 // prior snap it returned a full tree labeled as a diff.
 async function actAndVerify(tabId, msg, run) {
   if (!msg.diff) return await run();
+  const ownership = ownershipSeq.get(tabId) || 0;
+  const check = () => {
+    if (!Number.isFinite(msg.deadlineAt) || Date.now() >= msg.deadlineAt)
+      throw new Error('queued action expired before execution — the command did not run');
+    if (!drivenTabs.has(tabId) || humanReclaimed.has(tabId) || (ownershipSeq.get(tabId) || 0) !== ownership)
+      throw new Error('queued action cancelled after tab release — the command did not run');
+  };
   return await withSnap(tabId, async () => {
+    check();
     const url0 = (await chrome.tabs.get(tabId)).url;
     await runEval(tabId, SNAP_SRC(null, false, false)); // pre-action baseline
-    const result = await run();
+    check();
+    const result = await run(check);
     return await observeDiff(tabId, result, url0);
   });
 }
@@ -3989,6 +4040,14 @@ const tabMatches = (t, m) => {
 // Takes the whole msg: records _tabId so the onmessage finally can flip a
 // driven tab's favicon to ✅, and marks a driven tab busy (⏳) for the command
 // about to run. `open` sets msg._tabId itself — it creates rather than finds.
+function assertNotReclaimed(tabId, msg) {
+  const reclaimed = humanReclaimed.get(tabId);
+  if (reclaimed && !['mark', 'release'].includes(msg.type))
+    throw new Error(
+      `⚠ the human released this tab via ⏏ at ${new Date(reclaimed).toTimeString().slice(0, 8)} — they took it back. Every command on it is refused until a deliberate re-claim: ask the human, and only if they hand it back — mark <match>`
+    );
+}
+
 async function findTab(msg) {
   // A flag where <match> belongs can never match a URL — say so instead of
   // 'no tab matching "--max"'. One guard here covers every command.
@@ -4041,11 +4100,7 @@ async function findTab(msg) {
   // re-claim (passes and clears the flag); `release` passes and KEEPS it (a
   // stray agent release must not launder the tab back). `tabs`/`probe` never
   // reach findTab — listing and routing stay possible while gated.
-  const reclaimed = humanReclaimed.get(matches[0].id);
-  if (reclaimed && !['mark', 'release'].includes(msg.type))
-    throw new Error(
-      `⚠ the human released this tab via ⏏ at ${new Date(reclaimed).toTimeString().slice(0, 8)} — they took it back. Every command on it is refused until a deliberate re-claim: ask the human, and only if they hand it back — mark <match>`
-    );
+  assertNotReclaimed(matches[0].id, msg);
   if (msg.type === 'mark') {
     humanReclaimed.delete(matches[0].id);
     persist(); // the re-claim must survive an SW restart too — a resurrected veto would refuse commands on a tab the human handed back
@@ -4087,10 +4142,48 @@ async function cmdFetch(tab, msg) {
   // the in-page fetch below.
   const headers = { ...(msg.headers || {}) };
   if (msg.csrf) {
+    const origin = new URL(msg.url).origin;
+    if (!/^https?:/.test(msg.url) || new URL(tab.url).origin !== origin)
+      throw new Error('--csrf: request and tab must have the same HTTP(S) origin');
+    const document = (await chrome.scripting.executeScript({
+      target: { tabId: tab.id, frameIds: [0] },
+      world: 'ISOLATED',
+      func: () => location.origin,
+    }))?.[0];
+    if (!document?.documentId || document.result !== origin)
+      throw new Error('--csrf: tab document origin changed before cookie access');
     const cookies = await withDbg(tab.id, () => chrome.debugger.sendCommand({ tabId: tab.id }, 'Network.getCookies', { urls: [msg.url] }));
     const j = (cookies?.cookies || []).find((c) => c.name === 'JSESSIONID');
     if (!j) throw new Error('--csrf: no JSESSIONID cookie reaches ' + new URL(msg.url).host + ' — wrong origin, or the profile is not logged in');
     headers['csrf-token'] = j.value.replace(/^"|"$/g, ''); // the cookie stores the value quoted
+    const result = (await chrome.scripting.executeScript({
+      target: { tabId: tab.id, documentIds: [document.documentId] },
+      world: 'ISOLATED',
+      func: async (url, headers, origin, cap) => {
+        try {
+          if (location.origin !== origin || new URL(url).origin !== origin)
+            throw new Error('--csrf: document and request origin must match');
+          const response = await fetch(url, { credentials: 'include', headers, redirect: 'error' });
+          const ct = response.headers.get('content-type') || '';
+          const bytes = new Uint8Array(await response.arrayBuffer());
+          const truncated = bytes.length > cap;
+          const kept = bytes.subarray(0, cap);
+          const binary = !/text|json|xml|javascript|csv/i.test(ct);
+          let body = '';
+          if (binary) {
+            for (let offset = 0; offset < kept.length; offset += 0x8000)
+              body += String.fromCharCode.apply(null, kept.subarray(offset, offset + 0x8000));
+            body = btoa(body);
+          } else body = new TextDecoder().decode(kept, { stream: truncated });
+          return { ok: true, value: { status: response.status, ct, binary, body, truncated } };
+        } catch (error) {
+          return { ok: false, error: String(error) };
+        }
+      },
+      args: [msg.url, headers, origin, BODY_CAP],
+    }))?.[0]?.result;
+    if (!result?.ok) throw new Error(result?.error || '--csrf: no isolated document result');
+    return result.value;
   }
   const hasHeaders = Object.keys(headers).length > 0;
   // In-page fetch first — the page's session rides it. A page CSP
@@ -4135,31 +4228,46 @@ async function cmdFetch(tab, msg) {
       // rec.content — read it via IO.read or the CLI writes a 0-byte
       // --out (stress: 200 application/json, 0 KB file).
       let binary = !!rec.base64Encoded;
-      let body = rec.content ?? '';
       let truncated = false;
+      const bytes = new Uint8Array(BODY_CAP);
+      let length = 0;
+      const append = (data, encoded) => {
+        const chunk = encoded ? Uint8Array.from(atob(data || ''), (char) => char.charCodeAt(0)) : new TextEncoder().encode(data || '');
+        const kept = chunk.subarray(0, BODY_CAP - length);
+        bytes.set(kept, length);
+        length += kept.length;
+        truncated ||= kept.length < chunk.length;
+        binary ||= !!encoded;
+      };
       if (rec.stream) {
-        let b64 = '', text = '';
         const t0 = Date.now();
-        for (;;) {
-          const c = await chrome.debugger.sendCommand({ tabId: tab.id }, 'IO.read', { handle: rec.stream });
-          if (c.base64Encoded) { binary = true; b64 += c.data; } else text += c.data || '';
-          if (c.eof) break;
-          // A huge body used to accumulate unbounded — and outlive the
-          // withCdp timeout, which can't cancel this loop from outside.
-          if (b64.length + text.length > BODY_CAP || Date.now() - t0 > 60_000) {
-            truncated = true;
-            break;
+        try {
+          for (;;) {
+            const chunk = await chrome.debugger.sendCommand({ tabId: tab.id }, 'IO.read', { handle: rec.stream, size: BODY_CAP });
+            append(chunk.data, chunk.base64Encoded);
+            if (chunk.eof || truncated) break;
+            if (Date.now() - t0 > 60_000) {
+              truncated = true;
+              break;
+            }
           }
+        } finally {
+          await chrome.debugger.sendCommand({ tabId: tab.id }, 'IO.close', { handle: rec.stream }).catch(() => {});
         }
-        await chrome.debugger.sendCommand({ tabId: tab.id }, 'IO.close', { handle: rec.stream }).catch(() => {});
-        truncated = truncated || (!binary && text.length > BODY_CAP);
-        body = binary ? b64 : text.slice(0, BODY_CAP);
+      } else append(rec.content, rec.base64Encoded);
+      let body = '';
+      if (binary) {
+        for (let offset = 0; offset < length; offset += 0x8000)
+          body += String.fromCharCode.apply(null, bytes.subarray(offset, Math.min(offset + 0x8000, length)));
+        body = btoa(body);
+      } else {
+        body = new TextDecoder().decode(bytes.subarray(0, length), { stream: truncated });
       }
       return {
         status: rec.httpStatusCode ?? rec.statusCode ?? 200,
         ct: rec.mime || rec.headers?.['Content-Type'] || '',
         binary,
-        body: binary ? String(body) : String(body).slice(0, BODY_CAP),
+        body,
         truncated,
       };
     });
@@ -4235,26 +4343,31 @@ async function cmdUpload(tab, msg) {
     if (vis?.startsWith('hidden'))
       throw new Error('tab is hidden — upload --chooser clicks the trigger with trusted input, which reaches only the foreground tab. activate <match> it first, or target the file input directly without --chooser (works on hidden tabs)');
     await awaitMark(tab.id);
-    return await actAndVerify(tab.id, msg, async () => {
+    return await actAndVerify(tab.id, msg, async (beforeDispatch = () => {}) => {
       let suppression = null;
       await withDbg(tab.id, async () => {
+        beforeDispatch();
         await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.enable');
         await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.setInterceptFileChooserDialog', { enabled: true });
+        let chooserTimer;
         try {
+          const point = JSON.parse(await runEval(tab.id, trustedPointSrc(msg.target, true, false)));
+          if (!point.inBanner) suppression = await removeBannerForCapture(tab.id);
+          beforeDispatch();
           const opened = new Promise((resolve, reject) => {
-            const timer = setTimeout(() => {
+            chooserTimer = setTimeout(() => {
               chooserWaiters.delete(tab.id);
               reject(new Error('no file chooser opened within 5s of clicking ' + msg.target + ' — is that the element that opens the picker?'));
             }, 5000);
-            chooserWaiters.set(tab.id, { resolve: (p) => { clearTimeout(timer); resolve(p); } });
+            chooserWaiters.set(tab.id, { resolve: (event) => { clearTimeout(chooserTimer); resolve(event); } });
           });
-          const p = JSON.parse(await runEval(tab.id, trustedPointSrc(msg.target, true, false)));
-          if (!p.inBanner) suppression = await removeBannerForCapture(tab.id);
-          await cdpMouseClick(tab.id, p.cx, p.cy);
+          await cdpMouseClick(tab.id, point.cx, point.cy);
           const ev = await opened;
           if (msg.files.length > 1 && ev.mode !== 'selectMultiple') throw new Error('this file chooser takes a single file — pass one');
           await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.setFileInputFiles', { files: msg.files, backendNodeId: ev.backendNodeId });
         } finally {
+          clearTimeout(chooserTimer);
+          chooserWaiters.delete(tab.id);
           await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.setInterceptFileChooserDialog', { enabled: false }).catch(() => {});
           if (suppression !== null) await restoreBanner(tab.id, suppression);
         }
@@ -4266,7 +4379,7 @@ async function cmdUpload(tab, msg) {
   const TAG = 'data-bridge-upload';
   // The whole body rides actAndVerify so the verdict baseline precedes the
   // CDP mutation (setFileInputFiles fires real input/change events).
-  return await actAndVerify(tab.id, msg, async () => {
+  return await actAndVerify(tab.id, msg, async (beforeDispatch = () => {}) => {
     const mode = await runEval(
       tab.id,
       `(() => {
@@ -4287,12 +4400,14 @@ async function cmdUpload(tab, msg) {
     }
     try {
       await withDbg(tab.id, async () => {
+        beforeDispatch();
         const { root } = await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.getDocument', { depth: 1 });
         const { nodeId } = await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.querySelector', {
           nodeId: root.nodeId,
           selector: `[${TAG}]`,
         });
         if (!nodeId) throw new Error('tagged input vanished mid-upload — re-snap and retry');
+        beforeDispatch();
         await chrome.debugger.sendCommand({ tabId: tab.id }, 'DOM.setFileInputFiles', { nodeId, files: msg.files });
       });
     } finally {
@@ -4303,8 +4418,6 @@ async function cmdUpload(tab, msg) {
   });
 }
 
-  // No tab activation here: CDP captureScreenshot works on background tabs,
-  // and activating would steal the user's view. Only the fallback below needs it.
 const shotFallbackQ = new Map(); // windowId -> captureVisibleTab fallback chain (see cmdShot's catch)
 async function cmdShot(tab, msg) {
   const format = msg.format === 'jpeg' ? 'jpeg' : 'png';
@@ -4431,39 +4544,14 @@ async function cmdShot(tab, msg) {
       }
     });
   } catch (e) {
-    // The human's own DevTools holding this tab is NOT a fallback case: the
-    // captureVisibleTab path ACTIVATES the tab (stealing their view
-    // mid-debugging) and the real cause never reaches the agent. Fail loud.
-    // Same for every permanent unscriptable wall (chrome://, Web Store, an
-    // unattachable target): captureVisibleTab can never shoot what CDP was
-    // refused on, so the fallback is a doomed capture that ACTIVATES the tab
-    // AND its error masks the real one — #61: the masked error then missed
-    // #37's unmark regex and left a pill-less marked tab behind. Rethrowing
-    // the real error matches #37's regex, so the fresh mark is released.
     if (/another debugger holds|Cannot access a chrome|Cannot attach|extensions gallery/i.test(errText(e))) throw e;
-    // debugger unavailable (chrome:// pages etc.) — fall back to captureVisibleTab
-    // (viewport only, native res — crop/max/scale can't be honored there)
-    console.warn('[bridge] cdp shot failed, falling back (crop/max/scale ignored):', e);
-    // captureVisibleTab grabs the window's ACTIVE tab — must activate first,
-    // otherwise we'd screenshot whatever the user is looking at. Restore the
-    // tab the human WAS on after: stealing their view is the one promise
-    // this path must not break (the CDP path above never activates).
-    // Serialized PER WINDOW: two concurrent fallbacks on different tabs of
-    // one window used to interleave activate→sleep→capture, and A captured
-    // B's tab (stress-review finding) — withCdp is per-tab and can't help.
     const run = (shotFallbackQ.get(tab.windowId) || Promise.resolve()).then(async () => {
-      const prev = (await chrome.tabs.query({ active: true, windowId: tab.windowId }))[0];
-      await chrome.tabs.update(tab.id, { active: true });
-      try {
-        await new Promise((r) => setTimeout(r, 400));
-        const png = await chrome.tabs.captureVisibleTab(tab.windowId, { format, ...(format === 'jpeg' ? { quality: msg.quality ?? 80 } : {}) });
-        // --diff can't run without CDP — say so instead of silently handing
-        // back a plain shot the agent would read as a completed diff cycle.
-        if (msg.diff) return { note: 'diff skipped — cdp unavailable on this page; this file is a plain fallback shot and the baseline is unchanged', data: png };
-        return png;
-      } finally {
-        if (prev && prev.id !== tab.id) await chrome.tabs.update(prev.id, { active: true }).catch(() => {});
-      }
+      const active = () => chrome.tabs.query({ active: true, windowId: tab.windowId }).then(([current]) => current?.id === tab.id);
+      if (!await active()) throw new Error('CDP screenshot failed: ' + errText(e) + ' — fallback needs the target tab active; no focus changed. Use activate <match> explicitly, then retry shot');
+      const png = await chrome.tabs.captureVisibleTab(tab.windowId, { format, ...(format === 'jpeg' ? { quality: msg.quality ?? 80 } : {}) });
+      if (!await active()) throw new Error('active tab changed during screenshot fallback — capture discarded; no focus changed');
+      const note = 'fallback shot — CDP unavailable; viewport only, crop/max/scale ignored';
+      return { note: msg.diff ? 'diff skipped — ' + note + '; the baseline is unchanged' : note, data: png };
     });
     const tail = run.catch(() => {});
     shotFallbackQ.set(tab.windowId, tail);
@@ -4676,6 +4764,7 @@ async function handle(msg) {
       const ts = await chrome.tabs.query({});
       const matches = ts.filter((t) => tabMatches(t, msg.urlMatch));
       if (!matches.length) throw new Error(`no tab matching "${msg.urlMatch}" — already closed? (the match is a URL/title substring)`);
+      for (const tab of matches) assertNotReclaimed(tab.id, msg);
       await chrome.tabs.remove(matches.map((t) => t.id));
       return { closed: matches.length };
     }
@@ -4778,7 +4867,7 @@ async function handle(msg) {
   // (isTrusted=true events). Before the synthetic group so the flag wins.
   if (msg.trusted && ['click', 'press', 'type', 'hover', 'drag'].includes(msg.type)) {
     const tab = await findTab(msg);
-    return await actAndVerify(tab.id, msg, () => trustedInput(tab, msg));
+    return await actAndVerify(tab.id, msg, (beforeDispatch) => trustedInput(tab, msg, beforeDispatch));
   }
 
   if (['click', 'fill', 'clear', 'type', 'press', 'hover'].includes(msg.type)) {

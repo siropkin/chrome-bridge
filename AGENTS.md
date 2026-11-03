@@ -265,6 +265,31 @@ Permanent errors (missing tab IDs, restricted pages, human reclaim) must stop a 
 
 ## Recipes
 
+### Minimize focus changes
+
+Start in the background. `activate` explicitly selects the tab AND focuses its browser window; do not prepend it to every command. DOM element focus (`type`, `press`, `paste`) is not browser-window activation. Debugger attachment is also not activation, though Chrome shows an infobar.
+
+| Work | Focus policy |
+| --- | --- |
+| `open`, `nav`, `snap`, `eval`, `fetch`, `console`, `net`, `ask`, `note`, `mark`, `release`, synthetic actions, direct-input `upload` | No automatic activation. `open` and fetch scratch tabs are inactive. Page code may itself react to actions; use explicit final-state checks. |
+| `measure`, `scroll`, screenshots, pixel-change waits | Try without activation. Layout/pixels can be stale or unavailable in an occluded/minimized window; use DOM evidence when sufficient. CDP screenshots never activate; if CDP fails, fallback works only on an already-active target and otherwise requests explicit `activate`. |
+| `--trusted` input and `upload --chooser` | Need a page accepting trusted input. Use synthetic input/direct file input first when suitable. Hidden tabs refuse instead of silently switching focus. Explicit `emulate focus` may satisfy page focus/visibility checks without selecting a tab, but does not guarantee fresh pixels in an occluded window. If that is insufficient, use explicit activation or a visible window. |
+| `emulate focus` | Opt-in CDP focus emulation: no OS/tab switch. Can resume focus-gated scripts in background tabs. Clear with `unemulate` when done. Do not silently enable it for other commands. |
+| `perf`, `wait --human` | Visibility matters to the intended measurement or human interaction. Hidden-tab performance is throttled and not representative; warn/arrange visibility deliberately. Human handoff must be visible to the human, not merely emulated. |
+| `close`, `resize`, `activate` | Intentional browser changes. Closing the active tab naturally selects another; resizing changes the window; `activate` deliberately changes tab/window focus. |
+
+Screenshot fallback rechecks the active tab after capture and discards a detected mismatch. It never restores focus behind the user's back. An active-tab switch away and back during capture is not an atomic guarantee; prefer the tab-bound CDP path.
+
+### Execution and privacy boundaries
+
+- `close --all` validates every match before closing any; a human-reclaimed match refuses the whole operation.
+- Queued `--diff` actions recheck the server-owned dispatch deadline and tab ownership immediately before execution. Release, including release followed by re-mark, cancels old queued actions. A refusal saying the command did not run is safe to distinguish from an after-dispatch timeout; an already-running action can still finish, so inspect state before retrying uncertain results. Restart the server and reload the extension together when upgrading.
+- Eval fallback probes capability before executing your code. An application `EvalError`, including one mentioning CSP, does not replay the payload in another world.
+- `fetch --csrf` requires the request and tab to share an HTTP(S) origin. It uses a fixed isolated function bound to the verified document, refuses redirects, and never falls back to page-world eval. Use the final same-origin URL. Missing document identity, navigation, or isolated execution failure stops the request.
+- Pill history is scoped to the current document and is discarded on navigation and worker restart. Delayed writes cannot carry the previous document's narration into a new one. The current page can still read its pill: never put secrets in `note`.
+- Popup messaging supports Chrome 117. A lost settings acknowledgement triggers a status refresh; if unavailable, controls show unknown state and offer Retry. Releasing one tab leaves controls for other driven tabs available.
+- Binary fetch streams assemble decoded bytes before encoding output; `truncated` reflects the decoded-byte cap, including an oversized final chunk.
+
 ### Diagnose eval syntax errors
 
 After Chrome reports a `SyntaxError`, the CLI attempts a local compile-only check and adds a line/column hint when the input also fails to parse locally. It never executes the code locally or prints the source. Fix malformed expressions or shell quoting before retrying; use `eval <match> -` with stdin for complex snippets. This is not a preflight gate: newer Chrome syntax still runs, and valid input that throws a runtime `SyntaxError` (for example in `JSON.parse`) is not labeled as malformed input.
