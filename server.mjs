@@ -8,6 +8,22 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { createDiagnostics } from './diagnostics.mjs';
+
+const diagnostics = createDiagnostics(
+  process.env.BRIDGE_DIAGNOSTICS_DIR || fileURLToPath(new URL('./.diagnostics/', import.meta.url)),
+  JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version
+);
+
+function diagnosticRequest(msg, meta) {
+  switch (msg?.action) {
+    case 'status': return diagnostics.status();
+    case 'configure': return diagnostics.configure(msg);
+    case 'clear': return diagnostics.clear();
+    case 'client': diagnostics.client(msg, meta); return { recorded: diagnostics.status().enabled };
+    default: throw new Error('Unknown diagnostics action. Use status, configure, clear, or client.');
+  }
+}
 
 // Port 9333 is hardcoded in FOUR places: extension/background.js (WS_URL —
 // the extension can't read BRIDGE_PORT), cli.mjs, popup.js, here. Change all four.
@@ -29,11 +45,8 @@ const MAX_WS_BUFFER_BYTES = MAX_WS_FRAME_BYTES + 64 * 1024;
 // can't forge Host, so requiring a loopback Host closes every route at once.
 const LOOPBACK_HOST = /^(127\.0\.0\.1|localhost)(:\d+)?$/;
 
-// server.log gets one durable line per command — cap it here, at boot, so all
-// three start paths (install.sh, cli start, manual) are covered by one guard.
-// ponytail: boot-time cap only — between restarts the log grows unbounded;
-// the pathological writer is the 30s rejected-seat probe (~160KB/day). Add a
-// daily re-check if a long-lived server's log size ever actually matters.
+// server.log holds operational notices only. All start paths share this
+// legacy boot-time cap; diagnostic events have their own rolling size limit.
 try {
   const p = fileURLToPath(new URL('./server.log', import.meta.url));
   fs.chmodSync(p, 0o600); // the log holds URL fragments and page text — owner-only, every boot
@@ -368,12 +381,8 @@ const activity = [];
 let actSeq = 0;
 
 // --- lifecycle journal (extension → server events) ---------------------------
-// The extension's marker-affecting transitions (mark, release, reap, boot,
-// extreload, tab-closed, favicon-stuck, dbg-external-detach), one durable
-// `[tab]` line each in server.log — the forensic record for "why is this tab
-// still marked?". A small memory ring lets `doctor` annotate residue rows
-// with the tab's last transitions. NOT in the activity ring: watch/history
-// stay command-focused.
+// Marker transitions stay in a memory ring for doctor; the opt-in diagnostic
+// collector persists fingerprinted events. watch/history stay command-focused.
 const journal = []; // { ts, tabId, kind, detail, profile } — cap 500
 
 // Replayable CLI line for the ring, rebuilt from the command at relay time —
@@ -503,8 +512,8 @@ function summarize(msg) {
   const s = [msg.type];
   if (msg.urlMatch) s.push(msg.urlMatch);
   if (msg.profile) s.push('@' + seatTag(msg.profile)); // multi-profile: who acted
-  // value stays out on purpose: fill values can be secrets, and this line is
-  // persisted to server.log. Same for a dialog's --text answer (a prompt
+  // value stays out on purpose: fill values can be secrets, even in the
+  // in-memory activity feed. Same for a dialog's --text answer (a prompt
   // answer can be a code or a password); note/wait text stays — the note's
   // text is its whole purpose, and wait --text is a page-text expectation.
   const extra =
@@ -552,7 +561,6 @@ function pushAct(msg, out, ms) {
     : prof + replay;
   activity.push({ seq: ++actSeq, line, cmd });
   if (activity.length > 300) activity.shift();
-  console.log('[act] ' + line); // server.log gets a durable copy for post-mortems
 }
 
 // --- minimal RFC 6455 server (text frames) -----------------------------------
@@ -689,11 +697,12 @@ const server = http.createServer((req, res) => {
         // Where this server runs FROM — an agent's `<repo>` discovery: ask the
         // live bridge instead of guessing ~/chrome-bridge vs an npm install.
         repo: fileURLToPath(new URL('.', import.meta.url)),
+        diagnostics: diagnostics.status(),
       })
     );
     return;
   }
-  if (req.method === 'POST' && req.url === '/cmd') {
+  if (req.method === 'POST' && (req.url === '/cmd' || req.url === '/diagnostics')) {
     // Drive-by protection: a browser page's fetch always carries Origin and
     // Sec-Fetch-* headers; the CLI (Node fetch) and curl never do. Reject
     // anything a malicious web page could have sent.
@@ -727,6 +736,13 @@ const server = http.createServer((req, res) => {
       }
       let msg, out;
       const t0 = Date.now();
+      const meta = {
+        source: req.headers['x-bridge-source'],
+        invocation: req.headers['x-bridge-invocation'],
+        parent: req.headers['x-bridge-parent'],
+        test: process.env.BRIDGE_DIAGNOSTICS_TEST === '1' || req.headers['x-bridge-test'] === '1',
+      };
+      let diagnosticToken;
       try {
         msg = JSON.parse(body);
         // Underscore fields (_tabId, _warn, _pill) are INTERNAL — set by the
@@ -735,7 +751,12 @@ const server = http.createServer((req, res) => {
         // would record activity and decrement an inflight counter on a tab no
         // command ever resolved. Strip them at the only client ingress.
         if (msg && typeof msg === 'object') for (const k of Object.keys(msg)) if (k.startsWith('_')) delete msg[k];
-        out = await route(msg);
+        if (req.url === '/diagnostics') {
+          out = { ok: true, result: diagnosticRequest(msg, meta) };
+        } else {
+          diagnosticToken = diagnostics.start(msg, meta);
+          out = await route(msg);
+        }
       } catch (e) {
         out = { ok: false, error: String(e) };
       }
@@ -744,9 +765,9 @@ const server = http.createServer((req, res) => {
       // async 'end' handler — took the whole server down as an unhandled
       // rejection (found by the parallel stress suite; one curl repro).
       try {
-        pushAct(msg, out, Date.now() - t0);
+        if (req.url === '/cmd') pushAct(msg, out, Date.now() - t0);
       } catch (e) {
-        console.log('[act] logging failed for ' + (msg?.type || '?') + ': ' + String(e).slice(0, 80));
+        console.log('[bridge] activity formatting failed');
       }
       res.writeHead(200, { 'content-type': 'application/json' });
       // Stale-code warnings ride EVERY command reply (#63 — a stale build
@@ -755,6 +776,7 @@ const server = http.createServer((req, res) => {
       // there is something to say.
       const warns = staleCodeWarnings();
       if (warns.length && out && typeof out === 'object') out.warn = warns;
+      diagnostics.finish(diagnosticToken, msg, out, seats.get(msg?.profile)?.v);
       res.end(JSON.stringify(out));
     });
     return;
@@ -849,6 +871,17 @@ server.on('upgrade', (req, socket) => {
       } catch {
         return;
       }
+      if (msg?.type === 'diagnostics') {
+        let response;
+        try {
+          if (!['status', 'configure', 'clear'].includes(msg.action)) throw new Error('Unknown popup diagnostics action.');
+          response = { ok: true, result: diagnosticRequest(msg) };
+        } catch (cause) {
+          response = { ok: false, error: String(cause) };
+        }
+        socket.write(encodeFrame(JSON.stringify({ type: 'diagnostics-result', requestId: msg.requestId, ...response })));
+        return;
+      }
       // Unsolicited event frames (no pending id): the human clicked the pill's
       // ⏏. The feed must show it — otherwise the agent's next command silently
       // re-marks the tab and from the human's seat "nobody noticed".
@@ -859,19 +892,13 @@ server.on('upgrade', (req, socket) => {
         ).replace(/[\x00-\x1f\x7f\x9b]/g, ' '); // same ANSI/newline strip as pushAct — the URL is page-influenced
         activity.push({ seq: ++actSeq, line, cmd: null });
         if (activity.length > 300) activity.shift();
-        console.log('[act] ' + line);
+        diagnostics.lifecycle(msg, this.pid);
         return;
       }
-      // Lifecycle journal (every other event kind): durable [tab] line in
-      // server.log + the ring doctor reads. Unknown future kinds land here
-      // too — an old server still records a new extension's transitions.
+      // Lifecycle events feed doctor and the opt-in diagnostic collector.
       if (msg?.type === 'event' && typeof msg.kind === 'string') {
         const detail = String(msg.detail || '').slice(0, 120);
-        const line = (
-          new Date().toTimeString().slice(0, 8) +
-          ` ${String(msg.kind).slice(0, 24)} tab ${msg.tabId ?? '-'}${detail ? ' — ' + detail : ''} @${seatTag(this.pid)}`
-        ).replace(/[\x00-\x1f\x7f\x9b]/g, ' '); // same strip — detail/kind are page-influenced
-        console.log('[tab] ' + line);
+        diagnostics.lifecycle(msg, this.pid);
         journal.push({ ts: Date.now(), tabId: typeof msg.tabId === 'number' ? msg.tabId : null, kind: String(msg.kind).slice(0, 24), detail, profile: this.pid });
         if (journal.length > 500) journal.shift();
         return;

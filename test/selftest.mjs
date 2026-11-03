@@ -6,10 +6,12 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 const PORT = 9871;
 const ROOT = new URL('..', import.meta.url).pathname;
-const env = { ...process.env, BRIDGE_PORT: String(PORT), BRIDGE_CMD_TIMEOUT_MS: '750' };
+const diagnosticDirectory = fs.mkdtempSync(join(tmpdir(), 'bridge-selftest-'));
+const env = { ...process.env, BRIDGE_PORT: String(PORT), BRIDGE_CMD_TIMEOUT_MS: '750', BRIDGE_DIAGNOSTICS_DIR: diagnosticDirectory, BRIDGE_DIAGNOSTICS_TEST: '1' };
 // The fake extension's handshake version mirrors the repo manifest — cli
 // health compares the two, and a hardcode here would trip its warning.
 const MANIFEST_V = JSON.parse(fs.readFileSync(`${ROOT}extension/manifest.json`, 'utf8')).version;
@@ -137,6 +139,8 @@ await Promise.race([
 ]);
 
 try {
+  const diagnosticTests = spawnSync(process.execPath, ['--test', `${ROOT}/test/diagnostics.mjs`], { encoding: 'utf8' });
+  assert(diagnosticTests.status === 0, 'diagnostics: collector and popup unit tests', diagnosticTests.stdout + diagnosticTests.stderr);
   // The version lives in TWO files (package.json, extension/manifest.json) and
   // nothing but this check compares them — the v1.6.0 eager-clear bug shipped
   // precisely because same-version drift was invisible everywhere else.
@@ -156,6 +160,7 @@ try {
     'base64'
   );
   ext.onMessage((msg) => {
+    if (msg.type === 'diagnostics-result') return;
     const respond = (result) => ext.send({ id: msg.id, ok: true, result });
     if (msg.type === 'ping') return respond('pong');
     if (msg.type === 'timeout-test') return; // regression: server must label post-dispatch uncertainty
@@ -221,6 +226,44 @@ try {
 
   h = await cli('health');
   assert(JSON.parse(h.stdout).extension === true, 'health: extension true after connect');
+  {
+    const configure = (body, headers = {}) => fetch(`http://127.0.0.1:${PORT}/diagnostics`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
+    assert(JSON.parse(h.stdout).diagnostics.enabled === false, 'diagnostics: off by default');
+    const popupRequest = (action, extra = {}) => new Promise((resolve, reject) => {
+      const requestId = crypto.randomUUID();
+      const timer = setTimeout(() => reject(new Error('popup settings timed out')), 2000);
+      ext.onMessage((msg) => {
+        if (msg.type === 'diagnostics-result' && msg.requestId === requestId) {
+          clearTimeout(timer);
+          resolve(msg);
+        }
+      });
+      ext.send({ type: 'diagnostics', requestId, action, ...extra });
+    });
+    assert((await popupRequest('status')).result.enabled === false, 'diagnostics: popup reads server settings over its existing socket');
+    assert(!(await popupRequest('configure', { enabled: true, limitMiB: 101 })).ok, 'diagnostics: popup rejects invalid limits');
+    assert((await popupRequest('configure', { enabled: true, limitMiB: 1 })).ok, 'diagnostics: popup can opt in');
+    await popupRequest('clear');
+    await popupRequest('configure', { enabled: false, limitMiB: 1 });
+    assert((await configure({ action: 'configure', enabled: true, limitMiB: 1 }, { origin: 'https://evil.example' })).status === 403, 'diagnostics: web pages cannot enable logging');
+    assert((await (await configure({ action: 'configure', enabled: true, limitMiB: 1 })).json()).ok, 'diagnostics: explicit local opt-in');
+    await cli('tabs');
+    const events = fs.readFileSync(join(diagnosticDirectory, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    const started = events.find((event) => event.event === 'command_start');
+    const finished = events.find((event) => event.event === 'command_finish');
+    assert(started.command.name === 'tabs' && finished.id === started.id && finished.outcome.ok && started.caller.test, 'diagnostics: correlated command outcome and test label');
+    const completed = events.find((event) => event.event === 'cli_finish');
+    assert(completed?.caller.invocation === started.caller.invocation, 'diagnostics: CLI and server share an invocation');
+    const invalid = await cli('click');
+    const latest = fs.readFileSync(join(diagnosticDirectory, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse).at(-1);
+    assert(invalid.status === 1 && latest.event === 'cli_finish' && latest.command.name === 'click' && latest.outcome.errorCode === 'invalid_arguments', 'diagnostics: CLI validation failures are recorded');
+    await configure({ action: 'configure', enabled: false, limitMiB: 1 });
+    const bytes = fs.statSync(join(diagnosticDirectory, 'events.jsonl')).size;
+    await cli('tabs');
+    assert(fs.statSync(join(diagnosticDirectory, 'events.jsonl')).size === bytes, 'diagnostics: disabling stops recording');
+    await configure({ action: 'clear' });
+    assert(!fs.existsSync(join(diagnosticDirectory, 'events.jsonl')), 'diagnostics: clear removes records');
+  }
   {
     const hv = JSON.parse(h.stdout);
     assert(hv.profiles?.length === 1 && hv.profiles[0].id === 'alpha-test' && hv.profiles[0].v === MANIFEST_V, 'health reports connected profiles + versions from the WS handshake', h.stdout);
@@ -1608,5 +1651,6 @@ try {
   console.log(`\n${passed} checks passed`);
 } finally {
   server.kill();
+  fs.rmSync(diagnosticDirectory, { recursive: true, force: true });
 }
 process.exit(0);

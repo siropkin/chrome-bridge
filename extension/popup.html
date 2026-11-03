@@ -2,7 +2,7 @@
 <meta charset="utf-8">
 <title>chrome-bridge</title>
 <style>
-  body { width: 280px; margin: 0; padding: 12px; font: 13px system-ui, sans-serif; color: #1f1333; background: #fff; }
+  body { width: 280px; max-width: calc(100vw - 24px); margin: 0; padding: 12px; font: 13px system-ui, sans-serif; color: #1f1333; background: #fff; }
   #bridge-status { display: flex; align-items: center; gap: 6px; font-weight: 600; margin-bottom: 10px; }
   #bridge-status .dot { width: 9px; height: 9px; border-radius: 50%; background: #bbb; }
   #bridge-status.ok .dot { background: #22c55e; }
@@ -23,6 +23,13 @@
   .divider { border-top: 1px solid #ede9fe; margin: 10px 0; }
   #rate { display: block; margin-top: 8px; text-align: center; color: #7c3aed; font-size: 11px; text-decoration: none; }
   #rate:hover { text-decoration: underline; }
+  summary { cursor: pointer; font-weight: 600; }
+  .setting-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 10px 0; }
+  #log-limit { width: 64px; padding: 4px; font: inherit; }
+  #logging-status { overflow-wrap: anywhere; min-height: 28px; }
+  #log-folder { display: block; width: 100%; box-sizing: border-box; font: 11px ui-monospace, monospace; margin: 6px 0; }
+  #logging-delete, #logging-cancel { margin-top: 6px; background: #fff; color: #7c3aed; border: 1px solid #7c3aed; }
+  #logging-confirm { margin-top: 6px; background: #b91c1c; }
 </style>
 <div id="bridge-status" role="status"><span class="dot"></span><span id="status-text">checking…</span></div>
 <div id="title">…</div>
@@ -38,5 +45,24 @@
 <button id="setup">Copy setup prompt for your AI agent</button>
 <div class="hint">Paste it to your agent (Claude, Cursor, …) — it installs and verifies everything itself.</div>
 <div id="status" role="status"></div>
+<div class="divider"></div>
+<details id="settings">
+  <summary>Settings</summary>
+  <form id="logging-form">
+    <label class="setting-row" for="logging-enabled">Diagnostic logging <input id="logging-enabled" type="checkbox" disabled></label>
+    <label class="setting-row" for="log-limit">Log limit (MiB) <input id="log-limit" type="number" min="1" max="100" step="1" value="10" required disabled></label>
+    <div class="hint">Local only · All connected profiles · Oldest records rotate out</div>
+    <div id="logging-status" class="hint" role="status">Loading settings…</div>
+    <label class="hint" for="log-folder">Log folder</label>
+    <input id="log-folder" type="text" readonly aria-label="Log folder">
+    <button id="logging-save" type="submit" disabled>Save settings</button>
+  </form>
+  <button id="logging-delete" disabled>Delete diagnostic logs</button>
+  <div id="logging-confirmation" hidden>
+    <div class="hint">Delete all diagnostic records? Logging settings stay unchanged.</div>
+    <button id="logging-confirm">Delete records</button>
+    <button id="logging-cancel">Cancel</button>
+  </div>
+</details>
 <a id="rate" href="https://chromewebstore.google.com/detail/chrome-bridge/kmhjlnokjigmnimgjjmiahlinjbcebkg" target="_blank" rel="noopener">★ Rate it on the Chrome Web Store</a>
 <script src="popup.js"></script>

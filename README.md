@@ -182,6 +182,12 @@ Commands that work on a tab take a `<match>`: part of the tab's URL or title, or
 - **Housekeeping:** `mark` · `release` · `note` · `watch` · `history` · `doctor` · `batch`
 - **Server:** `start` · `stop` · `health` · `profiles` · `extreload` · `swlogs`
 
+## Local Diagnostic Logging
+
+For a later review of failures, retry loops, and missing features, open the extension popup's **Settings** and enable **Diagnostic logging**. It is **off by default**, local only, and shared across connected profiles. Choose a rolling size limit (1-100 MiB, default 10 MiB); view usage or delete the logs in the same panel.
+
+The JSONL files in `.diagnostics/` record correlated command outcomes, timings, error categories, and privacy-preserving fingerprints, not raw page content, input values, or eval code. The existing `watch`/`history` feed stays in memory; command activity is no longer written to `server.log`. See [collection, privacy, and week-later analysis](docs/diagnostics.md).
+
 ## Install detail
 
 <details>

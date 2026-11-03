@@ -10,7 +10,7 @@ chrome-bridge lets an AI agent or CLI on **your own machine** drive the Chrome b
 
 - Connects to a local server (`127.0.0.1:9333`) that you or your AI agent started on your machine, and forwards automation commands to your own browser tabs.
 - Reads the structure and content of the tabs you point it at (accessibility snapshots, screenshots, console and network capture) and hands it to the local server, which hands it to the CLI or AI agent you are running. This is the tool's entire function — your machine, your agent, your tabs.
-- Can also list all open tabs (titles and URLs) in every connected Chrome profile so the agent can pick one — this listing marks no tab and shows no pill, but it is recorded in the local activity feed (`cli watch` / `server.log`).
+- Can also list all open tabs (titles and URLs) in every connected Chrome profile so the agent can pick one — this listing marks no tab and shows no pill, but the command appears in the in-memory activity feed (`cli watch`).
 - Marks the tabs it is driving with a small on-page pill indicator so you can always see what the agent is doing, and clears the marks when it is done.
 - The optional `ask`, `snap --find`, and `console --ask` commands process page text with Chrome's built-in on-device Gemini Nano (Prompt API) — the text stays on your machine; the first use downloads the model (~2GB) from Google.
 
@@ -34,7 +34,9 @@ Local browser storage only, on your machine:
 
 All of it lives in session storage and is cleared when the browser closes — except the profile id, which lives in local storage so it survives restarts (it names your profile in the CLI; it is random, not derived from any account). No browsing history, credentials, or page content is persisted beyond the browser session.
 
-The local server also keeps a `server.log` at the repo root: one line per command (timestamp, command, URL fragment, selector) — typed `fill`/`type`/`paste` values and dialog answers are excluded by design, though page text can appear inside error lines. It is truncated to 5MB on server start, readable only by your user account, and deletable anytime. `history --batch` also comments out pasted/typed text, dialog answers, clipboard pastes, and upload paths rather than retaining them for replay (single-line `eval` code is kept verbatim — don't embed secrets in it).
+The server keeps a short in-memory command history. `server.log` contains operational startup/connection notices, not new command or tab activity. Old pre-upgrade logs may still contain URL fragments, selectors, or error text; they are not automatically deleted. `history --batch` comments out pasted/typed text, dialog answers, clipboard pastes, and upload paths rather than retaining them for replay (single-line `eval` code is kept verbatim — don't embed secrets in it).
+
+**Optional local diagnostic logging is off by default.** Enable it in the popup's Settings. It applies to all connected profiles and persists as owner-only files in `.diagnostics/` on the server machine. Records contain timestamps, build versions, timings, command names, selected options, result sizes, error categories, and keyed fingerprints of inputs and identities. No raw input text, URLs, selectors, eval code, upload paths, headers, cookies, screenshots, or response bodies are stored. Unknown command names are fingerprinted. The default rolling limit is 10 MiB (configurable from 1 to 100); old event files are replaced at the limit. Turning it off stops collection but preserves files; Delete diagnostic logs removes the records without changing settings. The settings file contains a local fingerprint key and must not be shared. Metadata can still be sensitive. Nothing is uploaded automatically. See [diagnostic logging](docs/diagnostics.md) for coverage and analysis guidance.
 
 Files you explicitly ask for land where you point them: screenshots (`shot`), page bodies (`fetch --out`), and HAR captures (`net --har`). A HAR from a logged-in tab contains full request/response headers — including cookies and tokens — plus bodies: the CLI writes it readable only by your user account (0600) and warns on every save. Treat such files as secrets.
 
@@ -46,4 +48,4 @@ Page content from the tabs you drive goes to the local server and to the AI agen
 
 Questions: [GitHub issues](https://github.com/siropkin/chrome-bridge/issues).
 
-Last updated: 2026-09-12.
+Last updated: 2026-11-03.

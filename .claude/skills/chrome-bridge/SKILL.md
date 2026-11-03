@@ -52,7 +52,7 @@ node <repo>/cli.mjs <command> …
 - `emulate <match> <w> <h> [mobile|dsf=N]` / `emulate <match> focus` / `unemulate <match>` — device view without resizing the window; `dsf=N` pins the device scale factor (`dsf=2` = retina-crisp `shot` on any display); `mobile`, `dsf=N` and `focus` are the only modes.
 - `note <match> <text>` — narrate to the human watching the driven tab (pill + history): before a risky/long sequence or to explain a surprising step. Sparing — the pill already shows every command; notes add intent.
 - `watch` — live feed of every bridge command in the user's terminal. Not for you (you see the results) — suggest it when the user wants to follow along.
-- `doctor [--fix]` — browser-hygiene sweep: tabs with leftover bridge markers (🟣 group, favicon, emulation, debugger) the bridge no longer tracks, each row with the tab's last lifecycle events; `--fix` releases them (driven tabs untouched). Marker transitions live as `[tab]` lines in `server.log` — grep a tab id when the user asks "why is this tab still marked?".
+- `doctor [--fix]` — browser-hygiene sweep: tabs with leftover bridge markers (🟣 group, favicon, emulation, debugger) the bridge no longer tracks, each row with the tab's last lifecycle events; `--fix` releases them (driven tabs untouched). Transitions stay in a short memory journal and, when opted in, fingerprinted diagnostic events; new activity no longer goes to `server.log`.
 - `history [match] [-n N]` — what the bridge already ran on this machine (server ring, last 300 commands); `--batch out` exports it as a replayable batch script. Typed/pasted text, dialog answers, clipboard pastes, and upload paths are redacted and commented out, so those steps do not replay — but single-line eval code is kept verbatim: never embed secrets in eval (use `fetch`/env reads).
 - `swlogs` — service-worker console tail (errors/warnings).
 
@@ -61,6 +61,9 @@ node <repo>/cli.mjs <command> …
 A timeout after dispatch means the extension may have acted before its reply was lost; inspect the tab or `history` before retrying a non-idempotent command. A timeout before dispatch explicitly did not run.
 
 ## Rules
+
+- **Diagnostic logging is opt-in.** Popup Settings controls server-wide logging, its rolling limit (1-100 MiB, default 10), and deletion. Ask before enabling it. `health` reports status; `<repo>/docs/diagnostics.md` documents the JSONL schema and analysis workflow. Never share `.diagnostics/settings.json` (fingerprint key). Mark scripted tests with `BRIDGE_DIAGNOSTICS_TEST=1`.
+- **Bound polling.** Stop on permanent errors (missing tab IDs, restricted pages, human reclaim); do not retry forever. After-dispatch timeouts require checking state before repeating an action.
 
 - **Escalate to the browser only when the page makes you.** If a plain HTTP request (`curl`) answers it, use that — the bridge is for interaction, logged-in views, JS-rendered or bot-protected pages.
 - **Reuse beats fresh.** Check `tabs <substr>` before `open` — a tab already on the page keeps its scroll, SPA position, and form state, and `nav` to its current URL is a reload that kills exactly that. `open` only when no tab fits or you need clean state.

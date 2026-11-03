@@ -92,6 +92,29 @@ const BOOT_TS_P = chrome.storage.session
 // fired while the socket is down (boot, extreload) queue briefly and flush
 // on the next connect — losing boot events would defeat the point.
 const pendingJournal = [];
+const pendingDiagnostics = new Map();
+
+function requestDiagnostics(msg) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return Promise.resolve({ ok: false, error: 'Bridge not connected. Start the server and reopen settings.' });
+  return new Promise((resolve) => {
+    const requestId = crypto.randomUUID();
+    const timer = setTimeout(() => {
+      pendingDiagnostics.delete(requestId);
+      resolve({ ok: false, error: 'Settings request timed out. Update/restart the server, then reopen settings to check its state.' });
+    }, 4000);
+    pendingDiagnostics.set(requestId, (response) => {
+      clearTimeout(timer);
+      pendingDiagnostics.delete(requestId);
+      resolve(response);
+    });
+    try {
+      ws.send(JSON.stringify({ type: 'diagnostics', requestId, action: msg.action, enabled: msg.enabled, limitMiB: msg.limitMiB }));
+    } catch {
+      pendingDiagnostics.get(requestId)({ ok: false, error: 'Bridge disconnected. Reopen settings to check its state.' });
+    }
+  });
+}
+
 function journal(kind, tabId, detail) {
   const line = JSON.stringify({ type: 'event', kind, tabId: tabId ?? null, detail: String(detail || '').slice(0, 120) });
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(line);
@@ -160,6 +183,10 @@ async function connect() {
     } catch {
       logLine('bad relay message — reconnecting');
       s.close();
+      return;
+    }
+    if (msg.type === 'diagnostics-result') {
+      pendingDiagnostics.get(msg.requestId)?.(msg);
       return;
     }
     if (msg.type === 'seat-taken') {
@@ -1164,6 +1191,10 @@ function remapTabId(newTabId, oldTabId) {
 // is idempotent on a non-driven tab, so no entry guard needed; it also clears
 // device emulation (release = the tab is the human's again, ALL of it).
 chrome.runtime.onMessage.addListener((msg, sender) => {
+  if (msg?.type === 'diagnostics') {
+    if (sender.id !== chrome.runtime.id || sender.url !== chrome.runtime.getURL('popup.html') || sender.tab) return Promise.resolve({ ok: false, error: 'Logging settings are restricted to the popup.' });
+    return requestDiagnostics(msg);
+  }
   if (msg?.type === 'self-release' && sender?.tab?.id != null) {
     logLine('self-release tab ' + sender.tab.id + ' (pill ⏏ — human)');
     // Wait for hydration like every command does: this click may be the very

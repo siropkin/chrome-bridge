@@ -116,3 +116,53 @@ $('setup').addEventListener('click', () => {
       }
     );
 });
+
+let loggingState = null;
+function renderLogging() {
+  if (!loggingState) return;
+  $('logging-enabled').checked = loggingState.enabled;
+  $('log-limit').value = String(loggingState.limitMiB);
+  $('log-folder').value = loggingState.directory;
+  const usage = loggingState.bytes == null ? 'usage unavailable' : `${(loggingState.bytes / 1024 / 1024).toFixed(2)} / ${loggingState.limitMiB} MiB`;
+  $('logging-status').textContent = `${loggingState.enabled ? 'On' : 'Off'} · ${usage}${loggingState.error ? ' · Storage error: ' + loggingState.error : ''}`;
+}
+
+async function loggingRequest(action, extra = {}) {
+  for (const id of ['logging-enabled', 'log-limit', 'logging-save', 'logging-delete', 'logging-confirm']) $(id).disabled = true;
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'diagnostics', action, ...extra });
+    if (!response?.ok) throw new Error(response?.error || 'Settings unavailable. Update the extension and server.');
+    loggingState = response.result;
+    renderLogging();
+  } catch (cause) {
+    renderLogging();
+    $('logging-status').textContent = String(cause.message || cause);
+  } finally {
+    for (const id of ['logging-enabled', 'log-limit', 'logging-save']) $(id).disabled = !loggingState;
+    $('logging-delete').disabled = !loggingState || loggingState.bytes === 0;
+    $('logging-confirm').disabled = !loggingState;
+  }
+}
+
+$('logging-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const limitMiB = Number($('log-limit').value);
+  if (!Number.isInteger(limitMiB) || limitMiB < 1 || limitMiB > 100) {
+    $('logging-status').textContent = 'Enter a whole-number limit from 1 to 100 MiB.';
+    return;
+  }
+  await loggingRequest('configure', { enabled: $('logging-enabled').checked, limitMiB });
+});
+$('settings').addEventListener('toggle', () => {
+  if ($('settings').open) loggingRequest('status');
+});
+$('logging-delete').addEventListener('click', () => {
+  $('logging-confirmation').hidden = false;
+});
+$('logging-cancel').addEventListener('click', () => {
+  $('logging-confirmation').hidden = true;
+});
+$('logging-confirm').addEventListener('click', async () => {
+  await loggingRequest('clear');
+  $('logging-confirmation').hidden = true;
+});

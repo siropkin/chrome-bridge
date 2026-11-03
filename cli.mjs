@@ -6,29 +6,42 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 
 // Port 9333 is hardcoded in FOUR places: extension/background.js (WS_URL —
 // the extension can't read BRIDGE_PORT), server.mjs, extension/popup.js, here. Change all four.
 const PORT = process.env.BRIDGE_PORT || 9333;
 const BASE = `http://127.0.0.1:${PORT}`;
+let invocation = randomUUID();
+const diagnosticHeaders = () => ({
+  'content-type': 'application/json',
+  'x-bridge-source': 'cli',
+  'x-bridge-invocation': invocation,
+  'x-bridge-parent': String(process.ppid),
+  'x-bridge-test': process.env.BRIDGE_DIAGNOSTICS_TEST === '1' ? '1' : '0',
+});
+
+async function reportCompletion(type, started, error) {
+  try {
+    await fetch(`${BASE}/diagnostics`, {
+      method: 'POST', headers: diagnosticHeaders(), signal: AbortSignal.timeout(500),
+      body: JSON.stringify({ action: 'client', type, ok: !error && !process.exitCode, error, durationMs: Math.round(performance.now() - started) }),
+    });
+  } catch {}
+}
 
 const fail = (msg) => {
   // Server/extension errors arrive pre-wrapped ("Error: Error: …") — strip
   // the nesting so the agent sees one clean prefix.
-  console.error(`ERROR: ${String(msg).replace(/^(Error:\s*)+/, '')}`);
-  process.exit(1);
+  throw new Error(String(msg).replace(/^(Error:\s*)+/, ''));
 };
 const print = (v) => console.log(typeof v === 'string' ? v : JSON.stringify(v));
-
-// fetch is unflagged only since Node 18 — on older Node every command below
-// would misreport "server not running" while the real cause is the runtime.
-if (typeof fetch !== 'function') fail('Node >= 18 required — you have ' + process.version);
 
 // --profile: multi-profile routing. Extracted once at argv level (works
 // before or after the command word) and rides on every command; an id prefix
 // or the exact profile name is enough (see: cli.mjs profiles).
 let PROFILE = null;
-{
+function extractProfile() {
   const i = process.argv.indexOf('--profile');
   if (i >= 0) {
     if (!process.argv[i + 1] || process.argv[i + 1].startsWith('--')) fail('--profile needs an id or name (see: cli.mjs profiles)');
@@ -54,7 +67,7 @@ async function cmd(msg, soft) {
   try {
     res = await fetch(`${BASE}/cmd`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: diagnosticHeaders(),
       body: JSON.stringify(PROFILE ? { ...msg, profile: PROFILE } : msg),
     });
   } catch (e) {
@@ -382,6 +395,21 @@ is refused — name one with --profile <id or name> (an id prefix is enough; see
 // cli.mjs USAGE · cli.mjs run() · server.mjs CLI_LINES · server.mjs route() (only if it
 // needs special routing) · background.js handle() · ACT_VERBS (pill narration) · MUTATING.
 async function run(cmdName, args) {
+  const previous = invocation;
+  invocation = randomUUID();
+  const started = performance.now();
+  try {
+    await runCommand(cmdName, args);
+    await reportCompletion(cmdName || 'help', started);
+  } catch (cause) {
+    await reportCompletion(cmdName || 'help', started, String(cause));
+    throw cause;
+  } finally {
+    invocation = previous;
+  }
+}
+
+async function runCommand(cmdName, args) {
   // New flags parsed here must also land in server.mjs CLI_LINES — history
   // --batch rebuilds replay lines there, and an unmirrored flag is silently
   // dropped at replay.
@@ -1238,5 +1266,17 @@ async function run(cmdName, args) {
   }
 }
 
-const [, , cmdName, ...args] = process.argv;
-await run(cmdName, args);
+try {
+  if (typeof fetch !== 'function') fail('Node >= 18 required — you have ' + process.version);
+  try {
+    extractProfile();
+  } catch (cause) {
+    await reportCompletion('profile-parse', performance.now(), String(cause));
+    throw cause;
+  }
+  const [, , cmdName, ...args] = process.argv;
+  await run(cmdName, args);
+} catch (cause) {
+  console.error(`ERROR: ${String(cause).replace(/^(Error:\s*)+/, '')}`);
+  process.exitCode = 1;
+}

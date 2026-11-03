@@ -180,6 +180,12 @@ MCP 桥需要 MCP 客户端和配置好的服务器。Chrome DevTools MCP 能挂
 - **整理:** `mark` · `release` · `note` · `watch` · `history` · `doctor` · `batch`
 - **服务器:** `start` · `stop` · `health` · `profiles` · `extreload` · `swlogs`
 
+## 本地诊断日志
+
+需要日后分析失败、重复重试或缺失功能时,在扩展弹窗的 **Settings** 中启用 **Diagnostic logging**。默认关闭,仅保存在本机,设置适用于所有已连接的 Chrome 配置。滚动日志上限可设为 1-100 MiB,默认 10 MiB;同一面板可以查看占用并删除日志。
+
+`.diagnostics/` 中的 JSONL 文件记录关联的命令结果、耗时、错误类别和保护隐私的指纹,不保存原始页面内容、输入值或 eval 代码。`watch`/`history` 仍保留在内存中;新的命令活动不再写入 `server.log`。详见[采集、隐私与后续分析](docs/diagnostics.md)。
+
 ## 安装细节
 
 <details>

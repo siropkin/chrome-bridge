@@ -251,11 +251,17 @@ stop                              stop the server
 
 ## Forensics: leftover markers and "why is this tab still marked?"
 
-Marker-affecting transitions (mark, release, reap, boot, extreload, tab-closed, favicon-stuck, dbg-external-detach) ride extension→server events and land as durable `[tab]` lines in `server.log`, one per event with the tab id and profile — grep a numeric id to reconstruct a tab's story. They do NOT appear in `watch`/`history` (those stay command-focused).
+Marker-affecting transitions (mark, release, reap, boot, extreload, tab-closed, favicon-stuck, dbg-external-detach) ride extension→server events and stay in a short memory journal for `doctor`. With diagnostic logging enabled, they also become structured `tab` events with fingerprinted identities. They do NOT appear in `watch`/`history` (those stay command-focused), and new activity no longer goes to `server.log`.
 
 `doctor` sweeps every profile for residue: tabs wearing bridge markers the bridge doesn't track (🟣 group, status favicon, live emulation/debugger) plus tracked ids whose tab is gone. Residue rows carry `last` — the tab's last journal events. `doctor --fix` releases each residue tab through the normal release path and prunes dead-id memory; driven tabs are never touched. A clean browser prints `[]`.
 
 The bridge also cleans up after itself at the source: on every service-worker start, tabs found in a 🟣 Bridge group with no surviving driven state (extension reload / browser restart wipe it) are reaped through the release path — so residue from a dead session disappears on its own. It never works the other way: driven state is never re-derived from group membership (a user can drag tabs into a group; the group is not a source of truth).
+
+## Opt-In Diagnostic Logs
+
+Popup **Settings** controls server-wide diagnostic logging: off by default, 10 MiB rolling limit (1-100 MiB), usage, and confirmed deletion. Never enable it without the user's consent. `health` reports `diagnostics.enabled`, `limitMiB`, `bytes`, `directory`, and `error`. Files are local under `.diagnostics/`; share event JSONL only, never `settings.json` (it holds the fingerprint key). See [docs/diagnostics.md](docs/diagnostics.md) for schema, coverage limits, and an analysis prompt. Test callers should set `BRIDGE_DIAGNOSTICS_TEST=1`. Do not double-count server events and CLI completions.
+
+Permanent errors (missing tab IDs, restricted pages, human reclaim) must stop a polling loop; transient retries must be bounded. The log previously accumulated over 70,000 failures from one five-second dead-tab poller.
 
 ## Recipes
 

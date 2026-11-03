@@ -4,3 +4,4 @@ shots/
 nohup.out
 .DS_Store
 test/stress/out/
+.diagnostics/

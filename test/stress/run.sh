@@ -10,6 +10,7 @@
 # Every test tab this suite opens, it closes. Expected failures assert their
 # error text; a summary with PASS/FAIL counts prints at the end.
 set -u
+export BRIDGE_DIAGNOSTICS_TEST=1
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 S="$REPO/test/stress"
 OUT="$S/out"; mkdir -p "$OUT"
