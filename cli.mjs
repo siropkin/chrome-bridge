@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { Script } from 'node:vm';
 
 // Port 9333 is hardcoded in FOUR places: extension/background.js (WS_URL —
 // the extension can't read BRIDGE_PORT), server.mjs, extension/popup.js, here. Change all four.
@@ -86,6 +87,18 @@ async function cmd(msg, soft) {
   if (Array.isArray(out.warn)) for (const w of out.warn) console.error('⚠ ' + w);
   if (!out.ok) {
     if (soft) return { error: String(out.error) };
+    if (msg.type === 'eval' && typeof msg.code === 'string' && /\bSyntaxError:/.test(String(out.error))) {
+      let hint = '';
+      try {
+        new Script(msg.code, { filename: 'bridge-eval.js' });
+      } catch (cause) {
+        if (cause.name === 'SyntaxError') {
+          const location = /^bridge-eval\.js:(\d+)\n[^\n]*\n( *)\^/.exec(cause.stack || '');
+          hint = '\nLocal syntax check also failed' + (location ? ` at line ${location[1]}, column ${location[2].length + 1}` : '') + '. Fix the JavaScript or shell quoting before retrying; use eval <match> - to pass code through stdin.';
+        }
+      }
+      if (hint) fail(String(out.error) + hint);
+    }
     fail(out.error);
   }
   return out.result;

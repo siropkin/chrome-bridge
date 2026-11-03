@@ -184,6 +184,8 @@ Commands that work on a tab take a `<match>`: part of the tab's URL or title, or
 
 ## Local Diagnostic Logging
 
+`eval` syntax failures now include a local line/column hint when available, without echoing your code. Fix the JavaScript or shell quoting before retrying; pass complex snippets through stdin with `eval <match> -`. The check runs only after Chrome reports a syntax error, so newer browser syntax is not blocked by your Node version.
+
 For a later review of failures, retry loops, and missing features, open the extension popup's **Settings** and enable **Diagnostic logging**. It is **off by default**, local only, and shared across connected profiles. Choose a rolling size limit (1-100 MiB, default 10 MiB); view usage or delete the logs in the same panel.
 
 The JSONL files in `.diagnostics/` record correlated command outcomes, timings, error categories, and privacy-preserving fingerprints, not raw page content, input values, or eval code. The existing `watch`/`history` feed stays in memory; command activity is no longer written to `server.log`. See [collection, privacy, and week-later analysis](docs/diagnostics.md).

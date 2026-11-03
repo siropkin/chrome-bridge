@@ -265,6 +265,10 @@ Permanent errors (missing tab IDs, restricted pages, human reclaim) must stop a 
 
 ## Recipes
 
+### Diagnose eval syntax errors
+
+After Chrome reports a `SyntaxError`, the CLI attempts a local compile-only check and adds a line/column hint when the input also fails to parse locally. It never executes the code locally or prints the source. Fix malformed expressions or shell quoting before retrying; use `eval <match> -` with stdin for complex snippets. This is not a preflight gate: newer Chrome syntax still runs, and valid input that throws a runtime `SyntaxError` (for example in `JSON.parse`) is not labeled as malformed input.
+
 ### Check a page for JS errors
 
 `console <match>` — the first call installs the hook and captures from then on; re-run after every navigation (the hook dies on reload).

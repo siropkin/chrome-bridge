@@ -183,6 +183,7 @@ try {
         )
       );
     if (msg.type === 'eval') {
+      if (msg.code.includes('probe:,') || msg.code === 'JSON.parse("{")') return ext.send({ id: msg.id, ok: false, error: "SyntaxError: Unexpected token ','" });
       // BIGEVAL: a >50K string result — the cli must cap the printout (the
       // last uncapped read was a context bomb: eval document.body.innerText).
       if (msg.code.includes('BIGEVAL')) return respond('y'.repeat(60_000));
@@ -585,6 +586,12 @@ try {
 
   const evWorldBad = await cli('eval', 'example.com', 'document.title', '--world', 'mian');
   assert(evWorldBad.status !== 0 && evWorldBad.stderr.includes('--world'), 'cli eval rejects invalid --world value', evWorldBad.stdout + evWorldBad.stderr);
+  const evSyntax = await cli('eval', 'example.com', '(()=>{return ({probe:, fn:()=>.click()})})()');
+  assert(evSyntax.status === 1 && /line 1, column \d+/.test(evSyntax.stderr) && evSyntax.stderr.includes('stdin') && evSyntax.stderr.includes('before retrying') && !evSyntax.stderr.includes('probe:,'), 'cli eval: malformed JavaScript gets a location and repair guidance without echoing code', evSyntax.stderr);
+  const evMultilineSyntax = await cliStdin('const privateValue = "do-not-print";\n({probe:,})', 'eval', 'example.com', '-');
+  assert(evMultilineSyntax.status === 1 && evMultilineSyntax.stderr.includes('line 2, column') && !evMultilineSyntax.stderr.includes('do-not-print'), 'cli eval: stdin syntax hints locate multiline errors without echoing input', evMultilineSyntax.stderr);
+  const evRuntimeSyntax = await cli('eval', 'example.com', 'JSON.parse("{")');
+  assert(evRuntimeSyntax.status === 1 && evRuntimeSyntax.stderr.includes('SyntaxError') && !evRuntimeSyntax.stderr.includes('Local syntax check'), 'cli eval: runtime parsing errors are not mislabeled as malformed input', evRuntimeSyntax.stderr);
 
   // large frame extension→server (3 MB result)
   const bigRes = await fetch(`http://127.0.0.1:${PORT}/cmd`, {

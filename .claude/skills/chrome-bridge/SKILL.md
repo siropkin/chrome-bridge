@@ -60,6 +60,8 @@ node <repo>/cli.mjs <command> …
 
 A timeout after dispatch means the extension may have acted before its reply was lost; inspect the tab or `history` before retrying a non-idempotent command. A timeout before dispatch explicitly did not run.
 
+An `eval` syntax failure may include a local line/column hint (compile-only, no code echoed). Fix the JavaScript or shell quoting before retrying; use `eval <match> -` to supply complex snippets through stdin. The local check runs only after Chrome reports a syntax error and does not reject newer browser syntax in advance.
+
 ## Rules
 
 - **Diagnostic logging is opt-in.** Popup Settings controls server-wide logging, its rolling limit (1-100 MiB, default 10), and deletion. Ask before enabling it. `health` reports status; `<repo>/docs/diagnostics.md` documents the JSONL schema and analysis workflow. Never share `.diagnostics/settings.json` (fingerprint key). Mark scripted tests with `BRIDGE_DIAGNOSTICS_TEST=1`.
