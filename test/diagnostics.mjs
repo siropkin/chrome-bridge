@@ -22,12 +22,16 @@ test('diagnostics are opt-in, private, correlated, persistent, bounded, and dele
     const token = logger.start(msg, { source: 'cli', invocation: 'one', parent: 'caller', test: true });
     logger.finish(token, { ...msg, type: 'click', diff: true }, { ok: true, result: 'uncertain · ' + secret }, '1.29.1');
     logger.client({ type: secret, ok: false, error: 'SyntaxError: ' + secret });
+    logger.client({ type: 'click', ok: false, error: 'element not found: @e5 — the page re-rendered since the snap (this node is gone or hidden, no navigation happened); run snap again for fresh refs' });
+    logger.client({ type: 'click', ok: false, error: 'tab is hidden — trusted (CDP) input reaches only the foreground tab' });
     const text = fs.readFileSync(join(directory, 'events.jsonl'), 'utf8');
     const events = text.trim().split('\n').map(JSON.parse);
     assert.equal(text.includes(secret), false);
     assert.equal(events[1].id, events[2].id);
     assert.equal(events[2].outcome.verdict, 'uncertain');
     assert.equal(events[3].outcome.errorCode, 'syntax_error');
+    assert.equal(events[4].outcome.errorCode, 'target_stale');
+    assert.equal(events[5].outcome.errorCode, 'tab_hidden');
     assert.equal(events[1].caller.test, true);
     assert.equal(fs.statSync(directory).mode & 0o777, 0o700);
     assert.equal(fs.statSync(join(directory, 'events.jsonl')).mode & 0o777, 0o600);
