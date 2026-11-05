@@ -138,7 +138,7 @@ A real run, checked live on GitHub: [recipes/github.com.md](recipes/github.com.m
 - **The toolbar popup releases the current tab, or every agent tab at once.**
 - **`node cli.mjs watch`** prints every command live in your terminal.
 
-![the 🟣 pill narrating a driven tab, with its action history open](docs/store/screenshot-1-pill.png)
+![Actual on-page action history and release control, enlarged from a local test session](docs/store/screenshot-5-controls.png)
 
 ## How it compares
 

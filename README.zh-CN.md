@@ -136,7 +136,7 @@ table "1. Playa Phone (playaphone.com) 122 points by cutoff 1 hour…" @e14
 - **工具栏弹窗可以释放当前标签页,或一次释放所有智能体标签页。**
 - **`node cli.mjs watch`** 在终端里实时显示每条命令。
 
-![🟣 小标签正在播报被驱动的标签页,操作历史面板已展开](docs/store/screenshot-1-pill.png)
+![本地测试会话中的真实操作历史和释放控件,已放大展示](docs/store/screenshot-5-controls.png)
 
 ## 对比一览
 

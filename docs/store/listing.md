@@ -59,5 +59,13 @@ Developer Tools (or Productivity — Developer Tools is the honest fit)
 
 ## Notes for the console
 
-- Screenshots: regenerate from docs/store/*.html when the popup/pill UI changes (screenshot-1-pill.png, screenshot-2-history.png; add a popup screenshot once v1.21.0+ is live). The mocks are pinned to their exact target canvas (body is NxM px, content top-left-anchored), so any viewport works: serve the repo root, `emulate <match> <w> <h> dsf=2`, `shot <match> <out> --max <w>` — the dsf=2 raster downsamples to exact px; a plain 1x capture (a small window, a 1x external display) reads soft. Crop paths don't compose with emulation — emulate the exact size, don't crop.
+- Upload these five screenshots in order (1280×800, 24-bit RGB PNG, no alpha):
+  1. [E2E testing](screenshot-1-e2e.png): three tasks created, two completed, Active filter checked.
+  2. [Form submission](screenshot-2-form.png): HTTP 201 and a matching server receipt.
+  3. [Network inspection](screenshot-3-network.png): actual POST response, status and JSON.
+  4. [Animation diagnosis](screenshot-4-performance.png): twelve animations found, paused, then zero running; not a comparative speed benchmark.
+  5. [Visible activity and release](screenshot-5-controls.png): actual extension history and controls, enlarged from a local test session.
+- The first four reuse verified local-test frames from the [four public demos](https://github.com/siropkin/chrome-bridge/discussions/69), without stretching the 1280×720 capture; an 80px editorial heading sits above it. The fifth copies the live control DOM and its unmodified history text for an explicitly enlarged view. No fabricated chat, network entries, receipts or human-release event.
+- Refresh captures when the demonstrated behavior or control UI changes. The older `hero.html` / `panel.html` mocks and `screenshot-1-pill.png` / `screenshot-2-history.png` are not the source of this set. `shot` deliberately hides the bridge overlay; capture actual controls separately rather than inventing a history.
+- Render text in Chrome, emulate the exact canvas size and use `shot --max 1280`. Verify final PNG dimensions, no alpha, complete text rows and no overlapping controls before upload. These assets do not imply the store draft has been saved or submitted.
 - The single-purpose statement and permission justifications already filed cover the existing permission set; clipboardWrite (since v1.19.0) is for the popup's user-clicked Copy button — nothing is read.
