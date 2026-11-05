@@ -9,7 +9,7 @@ Chrome Bridge - AI Agent Browser Automation
 
 ## Short description (max 132 chars)
 
-AI browser automation via a local server: your agent drives your real logged-in Chrome — you watch and can veto any tab.
+Open-source browser automation for shell-capable AI agents. Uses existing Chrome tabs and a local Node.js server.
 
 ## Detailed description
 

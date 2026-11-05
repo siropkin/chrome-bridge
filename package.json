@@ -1,7 +1,7 @@
 {
   "name": "chrome-bridge",
-  "version": "1.29.3",
-  "description": "Let AI agents drive your real Chrome browser — logged-in tabs, no relaunch, zero dependencies",
+  "version": "1.29.4",
+  "description": "Open-source browser automation for shell-capable AI agents. Uses existing Chrome tabs and a local Node.js server.",
   "type": "module",
   "private": true,
   "scripts": {
