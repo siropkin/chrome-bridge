@@ -4,7 +4,9 @@ chrome-bridge lets an AI agent or CLI on **your own machine** drive the Chrome b
 
 ## The short version
 
-**Nothing leaves your machine.** The extension talks over a WebSocket to a server that binds to `127.0.0.1` on the same computer. There is no account, no sign-in, no analytics, no telemetry, no third-party service, and no data collected by the developer.
+**The bridge connection is local, not necessarily the entire workflow.** The extension talks over a WebSocket to a server that binds to `127.0.0.1` on the same computer. Chrome Bridge requires no developer-operated account or cloud relay and does not send browsing data or telemetry to the developer.
+
+The connected AI agent receives page content and may send it to its model provider or other services according to its configuration and policies. Browser actions such as form submissions, uploads and page requests can send data to the websites involved. Use only data and accounts you are authorized to expose to your chosen agent and those destinations.
 
 ## What the extension does
 
@@ -23,7 +25,7 @@ chrome-bridge lets an AI agent or CLI on **your own machine** drive the Chrome b
 - `clipboardWrite` — the toolbar popup's copy buttons (copy a tab's `id:` reference, copy the agent setup prompt). The extension never reads your clipboard.
 - `<all_urls>` — the agent must be able to act on any page you point it at; nothing is read or touched until a command names the tab.
 
-All of it stays on `127.0.0.1` — no permission is used to talk to anything off your machine.
+The automation command channel stays on `127.0.0.1`. That does not keep the websites you visit, actions you request, or the connected agent's model calls offline.
 
 ## What is stored
 
@@ -42,10 +44,10 @@ Files you explicitly ask for land where you point them: screenshots (`shot`), pa
 
 ## What is transmitted
 
-Page content from the tabs you drive goes to the local server and to the AI agent or script you connected to it — and nowhere else. It is not uploaded to any server controlled by the developer. If your agent itself sends that content elsewhere, that is between you and your agent.
+The bridge passes page content from the tabs you drive to the local server and the AI agent or script you connected to it. It does not upload that content to a server controlled by the developer. The connected agent may transmit received content to its model provider or other services; review that agent's configuration and privacy policy. Requested browser actions can also transmit information to websites, including the contents of submitted forms or uploaded files.
 
 ## Contact
 
 Questions: [GitHub issues](https://github.com/siropkin/chrome-bridge/issues).
 
-Last updated: 2026-11-03.
+Last updated: 2026-11-05.

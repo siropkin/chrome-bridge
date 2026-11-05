@@ -4,7 +4,9 @@
 
 [![MIT 许可证](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Node ≥ 18](https://img.shields.io/badge/node-%E2%89%A5%2018-339933)](https://nodejs.org) [![零依赖](https://img.shields.io/badge/dependencies-0-brightgreen)](package.json)
 
-让**任何 AI 智能体**驱动你正在使用的 Chrome:你真实的、已登录的配置,包括已打开的标签页、cookie 和 SSO。只需一个小扩展加一个零依赖的 Node CLI。任何能执行 shell 命令的工具都能用它,不需要另起浏览器,也不需要配置 MCP 服务器。智能体触碰的每个标签页都会戴上 🟣 小标签,显示它正在做什么。
+一个小型开源 CLI 桥接器,让**能执行 shell 命令的 AI 智能体**操作你正在使用的 Chrome:已有标签页、登录会话和 SSO。一个 Chrome 扩展连接到本地 Node 服务器和 CLI,没有第三方运行时依赖,不需要另起浏览器或配置 MCP 服务器。被驱动的标签页显示 🟣 小标签,播报当前操作并保留操作历史。
+
+可用于检查页面、验证用户流程、填写表单,或排查网络和性能问题。桥接连接在本地,但**你选择的 AI 智能体可能会把收到的页面内容发送给模型提供商**。复用现有浏览器和 CLI 自动化并非 Chrome Bridge 独有;请参阅[使用取舍](#对比一览)。
 
 ![被驱动标签页的动态演示——🟣 小标签实时播报每一步操作,命令执行时亮起紫色边框,点击处有指针闪烁](docs/demo.gif)
 
@@ -117,20 +119,20 @@ table "1. Playa Phone (playaphone.com) 122 points by cutoff 1 hour…" @e14
 
 自己写智能体循环?可以跳过 CLI,直接向 `POST http://127.0.0.1:9333/cmd` 发送 JSON,例如 `{"type": "snap", "urlMatch": "…"}`。
 
-## 人们用它做什么
+## 示例工作流
 
 - "每天早上看一眼我的仪表盘,把变化发到 Slack。"cron 启动的智能体直接用已登录的标签页。遇到登录墙时,`wait --human` 会把标签页交给你。
 - 从 CSV 填写 CMS,不用重新登录。
 - 对照 Figma 设计稿检查 staging 构建。[design-eye.md](design-eye.md) 是检查清单,还有 8px 对齐网格叠加层。
 - 不调整窗口大小就能看页面的移动端视图:`emulate <tab> 390 844 mobile`。
-- 任何全新浏览器会卡住、而你的浏览器不会的场景:SSO、机器人检测、VPN 后面的内部仪表盘。
+- 在已有登录会话中工作,包括 SSO 和 VPN 后面的内部仪表盘。这不会绕过登录验证或反机器人限制。
 
 一次在 GitHub 上实测的真实运行:[recipes/github.com.md](recipes/github.com.md) 设置仓库的社交预览图。
 
 ## 你始终掌控
 
 - **智能体触碰的每个标签页都戴 🟣 小标签**,只读的标签页也不例外。小标签显示当前正在做什么(`🟣 taking screenshot…`),并保留历史操作记录。被驱动的标签页还会加入 🟣 标签页分组,页面无法伪造它。
-- **小标签上的 ⏏ 会断开智能体对该标签页的控制。** 这是强制执行的:在智能体用 `mark` 重新接管之前,桥接会拒绝它对该标签页的所有命令,而且智能体被要求先征得你的同意。
+- **小标签上的 ⏏ 会断开智能体对该标签页的控制。** 桥接会拒绝后续命令,直到显式执行 `mark`;智能体的操作说明要求重新接管前先征得你的同意。已经开始的操作仍可能完成。这是工作流控制,不是防范恶意本地智能体的安全边界。
 - **工具栏弹窗可以释放当前标签页,或一次释放所有智能体标签页。**
 - **`node cli.mjs watch`** 在终端里实时显示每条命令。
 
@@ -138,22 +140,20 @@ table "1. Playa Phone (playaphone.com) 122 points by cutoff 1 hour…" @e14
 
 ## 对比一览
 
-2026-09-12 依据各工具自己的文档核对。"—" 表示该工具未列出此能力。
+依据下方链接的官方文档核对于 2026-11-05。这是工作流取舍,不是排名或性能基准。
 
-| | chrome-bridge | playwright-mcp | Chrome DevTools MCP | Browser MCP / mcp-chrome | Claude for Chrome |
-|---|---|---|---|---|---|
-| 驱动你真实登录的 Chrome | 唯一模式 | 需手动开启(扩展 / 调试端口挂载) | 需手动开启(`--autoConnect`,Chrome 144+) | 不能——启动自己的浏览器 | 能,但只能在 Claude 应用里 |
-| 需要支持 MCP 的客户端和服务器配置 | 不需要 | 需要 | 可选(自带 CLI) | 需要 | 不适用 |
-| 任何能跑 shell 命令的智能体都能用 | 能 | 限 MCP 客户端 | 限 MCP 客户端 | 限 MCP 客户端 | 仅限 Claude 应用 |
-| 运行中可观看、可否决 | 🟣 小标签实时播报、操作历史、一键断开(强制执行) | — | — | — | — |
+| 方案 | 适用场景 |
+|---|---|
+| **Chrome Bridge** | 小型 MIT 开源扩展加本地 Node 服务器/CLI,没有第三方运行时依赖。围绕已有 Chrome 标签页、shell 命令、局部/差量快照、页内操作播报和显式配置路由设计。 |
+| **[Playwright 扩展 + MCP](https://github.com/microsoft/playwright/tree/main/packages/extension#readme)** | 同样能连接已有登录状态的标签页。文档列有连接审批、各客户端独立标签页分组和断开控制。适合采用 MCP 的工作流。 |
+| **[Playwright CLI + skills](https://github.com/microsoft/playwright-cli)** | 为编码智能体提供不依赖 MCP 的 shell 浏览器自动化,支持浏览器会话和持久化配置。Playwright 及其 CLI 同样开源,采用 Apache-2.0 许可证。 |
+| **[Claude in Chrome + Claude Code](https://code.claude.com/docs/en/chrome)** | 在 Claude Code 及其 VS Code 扩展内集成浏览器测试、表单填写和调试,并复用浏览器登录状态。文档列出的前提包括直接订阅 Anthropic 套餐并登录。 |
 
-### chrome-bridge 对比 Playwright 和 playwright-mcp
+如果你喜欢 Chrome Bridge 的命令接口、可见操作反馈和较小的依赖范围,可以选择它。不绑定智能体提供商是它与 Anthropic 集成的区别,不是与 Playwright 的区别。复用登录态、无障碍快照、开源、CLI 和人工控制都不是独有能力。
 
-Playwright 驱动的是它自己启动的浏览器和自己的配置,所以智能体每次都从未登录状态开始。挂载到你自己的 Chrome 是可以的,但需要手动开启。chrome-bridge 借鉴了 Playwright 最好的设计——带元素引用的无障碍树快照——同时省掉了 40 MB 的依赖。
+CI 中可重复执行的回归测试可考虑 [Playwright Test](https://playwright.dev/docs/intro)。Chrome Bridge 的交互式检查不能替代测试运行器。安装仍需扩展、Node 和本地服务器;部分网站或命令需要人工介入或可见标签页。
 
-### chrome-bridge 对比 MCP 浏览器桥、Chrome DevTools MCP 和 Claude for Chrome
-
-MCP 桥需要 MCP 客户端和配置好的服务器。Chrome DevTools MCP 能挂载到你的配置(`--autoConnect`,Chrome 144+),但它的定位是 DevTools 深度(性能 trace、调试)。Claude for Chrome 只能在 Claude 应用里用,靠截图读页面。Browserbase 之类的云端浏览器没有你的登录态。
+目前没有已公布的同条件对比基准证明 Chrome Bridge 比这些替代方案更快、更安全、更可靠或更省 token。演示只展示特定页面上的能力,不代表优于其他工具或兼容所有网站。
 
 ### Chrome 136 破坏了复制(或复用)Chrome 配置的老办法
 

@@ -1,7 +1,7 @@
 # Chrome Web Store listing — canonical copy
 
 Paste-ready text for the Chrome Web Store console (no API for these fields — copy by hand).
-Keep in sync with README.md's pitch sections. Last synced: 2026-10-15 (title gains search head terms — the bare "Chrome Bridge" ties a same-titled rival and store search never surfaced us; the disproved "order of magnitude fewer tokens" claim removed).
+Keep in sync with README.md's pitch sections. Last synced: 2026-11-05 (accurate workflow positioning, setup requirements, and agent/website data boundaries; no unsupported competitor or benchmark claims).
 
 ## Title (= manifest `name`, ships with the extension — not a console field)
 
@@ -13,33 +13,43 @@ AI browser automation via a local server: your agent drives your real logged-in 
 
 ## Detailed description
 
-chrome-bridge is browser automation for AI agents: ANY agent can drive the Chrome you're already using — your open tabs, your logged-in sessions, your SSO. Playwright-style tools drive a browser they launched with a fresh profile; chrome-bridge drives your real browser. That's the only mode.
+Chrome Bridge is a small, open-source CLI bridge for shell-capable AI agents to work in the Chrome you're already using: existing tabs, logged-in sessions and SSO.
 
-GETTING STARTED — 3 steps, under a minute:
+One Chrome extension connects to a local Node.js server and command-line interface with no third-party runtime dependencies. No separate browser or MCP server is required. The extension alone is not the full setup, and your chosen AI service may have its own costs.
+
+WHAT YOU CAN DO
+
+• Inspect a page using accessibility snapshots, scoped to one region or compared with the previous snapshot.
+• Check a user flow, fill a form, and verify the resulting page or server response.
+• Inspect network requests, console output, layout measurements and page-performance signals.
+• Use screenshots, mobile emulation and trusted input when a task needs them.
+• Work with a specific existing tab by copying its id:… reference from the extension popup.
+
+VISIBLE BROWSER FEEDBACK
+
+Driven tabs show a purple activity pill, action history and tab group. The pill's release control refuses subsequent commands until an explicit reclaim. An action already running may still finish; this is not an undo button or a security boundary against a malicious local agent.
+
+Multiple Chrome profiles are supported. Ambiguous matches require explicit profile selection. Some sites and commands require a visible tab, human authentication or other intervention. The bridge does not bypass login challenges or guarantee website compatibility.
+
+GETTING STARTED
+
+Requires Chrome 117 or newer, Node.js 18 or newer, and an AI agent that can run local shell commands. Documented setup supports macOS and Linux; Windows setup uses Git Bash.
 
 1. Install this extension.
 2. Click its toolbar button and press "Copy setup prompt for your AI agent".
 3. Paste that text to your agent (Claude Code, Cursor, or any agent that can run shell commands).
 
-The agent does the rest itself: downloads the tiny zero-dependency bridge, starts it, verifies the connection, and runs a no-trace dry run before reporting back. The popup's dot shows when the bridge is ready.
+The agent downloads the bridge, starts the local server and checks the connection. Follow any permission or login prompts yourself. Setup time depends on your environment; the popup indicates when the bridge is connected.
 
-WHAT YOU GET
+Chrome Bridge is free and MIT-licensed. Its focus is an inspectable, command-line workflow with visible browser feedback, not a claim to be faster, safer or more reliable than other automation tools. Interactive checks are not a replacement for a repeatable CI test suite.
 
-• Your agent can read pages, click, fill forms, navigate, screenshot, capture network traffic — in YOUR logged-in browser.
-• AI-first under the hood: the agent reads pages as a compact accessibility tree it can narrow to one region or diff against its last look, instead of re-reading screenshots, and every command is a one-line shell call any agent can run.
-• Full local control: everything runs on 127.0.0.1, nothing leaves your machine. No cloud relay, no account, no telemetry.
-• Built for the human watching: every tab the agent touches wears a 🟣 pill narrating each action in real time, joins a 🟣 tab group, and shows status in the favicon; every action lands in a history you can review; one trusted click on ⏏ rejects the agent from that tab.
-• Point the agent at an exact tab: the toolbar popup copies a tab reference (id:…) that pins every command to that tab.
-• Honest actions: if the page re-sorts under a saved element reference, the action fails loudly instead of clicking the wrong element; a click the app ignored says so instead of faking success; trusted input refuses to fake-fire on a hidden tab; a fill an editor's autosave can't see carries a warning; typing into heavy editors (docs, block editors) is paced and verified.
-• Rich editor savvy: the agent can drop whole structured documents (headings, lists, links) into block editors in one shot — and clear them again, even when the editor owns its content model.
-• No residue: a `doctor` command finds and cleans any leftover markers, and dead-session markers are reaped automatically on browser restart.
-• Multiple Chrome profiles supported — the agent never silently acts in your personal browser when you meant the work one.
-
-Advanced users can also run it from source (git clone) — see the GitHub repo.
+Source, setup and operating manual: https://github.com/siropkin/chrome-bridge
 
 PRIVACY
 
-The extension talks only to a local server on 127.0.0.1 that you (or your agent) start. No data leaves your machine. Full policy: https://raw.githubusercontent.com/siropkin/chrome-bridge/master/PRIVACY.md
+The extension-to-CLI connection is local, through 127.0.0.1. Chrome Bridge does not use a developer-operated cloud relay or collect your browsing data. Your connected AI agent receives page content and may send it to its model provider or other services. Requested browser actions, including form submissions and uploads, can send data to websites.
+
+Use only information and accounts you are authorized to expose to your chosen agent. Full policy: https://raw.githubusercontent.com/siropkin/chrome-bridge/master/PRIVACY.md
 
 (The console's privacy-link checker rejected the github.com/blob/… URL as "not reachable" at v1.26.0 submission — the raw.githubusercontent.com URL passes. Paste the raw one into the console field, exactly, no trailing period.)
 

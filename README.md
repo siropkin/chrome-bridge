@@ -6,7 +6,9 @@
 
 [![MIT license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Node ≥ 18](https://img.shields.io/badge/node-%E2%89%A5%2018-339933)](https://nodejs.org) [![zero dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](package.json)
 
-Let **any AI agent** drive the Chrome you're already using: your real profile, already logged in, with your open tabs, cookies and SSO. It's one small extension plus one zero-dependency Node CLI. Anything that can run a shell command can use it, with no separate browser and no MCP server to configure. Every tab the agent touches wears a 🟣 pill that shows what it's doing.
+A small, open-source CLI bridge for **shell-capable AI agents** to work in the Chrome you're already using: your open tabs, logged-in sessions and SSO. One Chrome extension connects to a local Node server and CLI with no third-party runtime dependencies. No separate browser or MCP server is required. Driven tabs show a 🟣 pill with the current action and its history.
+
+Use it to inspect a page, check a user flow, fill a form, or investigate network and performance behavior. The bridge connection is local; **your chosen AI agent may send received page content to its model provider**. Existing-browser access and CLI automation are not exclusive to Chrome Bridge; [compare the trade-offs](#how-it-compares).
 
 ![a driven tab in motion — the 🟣 pill narrates each action, a purple frame lights up while a command runs, the pointer flashes where the agent clicks](docs/demo.gif)
 
@@ -119,20 +121,20 @@ table "1. Playa Phone (playaphone.com) 122 points by cutoff 1 hour…" @e14
 
 Writing your own agent loop? Skip the CLI and send JSON to `POST http://127.0.0.1:9333/cmd`, for example `{"type": "snap", "urlMatch": "…"}`.
 
-## What people use it for
+## Example workflows
 
 - "Check my dashboard every morning and post the change to Slack." A cron-launched agent uses the tab that's already logged in. If a login wall shows up, `wait --human` hands the tab to you.
 - Fill a CMS from a CSV without logging in again.
 - Compare a staging build against the Figma mockup. [design-eye.md](design-eye.md) is the checklist, and there's an 8px alignment grid overlay.
 - See a page in a mobile view without resizing your window: `emulate <tab> 390 844 mobile`.
-- Anything where a fresh browser gets stuck and yours doesn't: SSO, bot checks, internal dashboards behind a VPN.
+- Work in an existing authenticated session, including SSO and internal dashboards behind a VPN. This does not bypass login challenges or anti-bot restrictions.
 
 A real run, checked live on GitHub: [recipes/github.com.md](recipes/github.com.md) sets a repo's social preview image.
 
 ## You stay in control
 
 - **Every tab the agent touches wears a 🟣 pill**, including tabs it only reads. The pill shows what's happening right now (`🟣 taking screenshot…`) and keeps a history of past actions. Driven tabs also join a 🟣 tab group, which a page can't fake.
-- **⏏ on the pill disconnects the agent from that tab.** This is enforced: the bridge refuses every further command on that tab until the agent takes it back with `mark`, and the agent is told to ask you first.
+- **⏏ on the pill disconnects the agent from that tab.** The bridge refuses subsequent commands until an explicit `mark`; the agent is instructed to ask you before reclaiming it. An action already running may still finish. This is a workflow control, not a security boundary against a malicious local agent.
 - **The toolbar popup releases the current tab, or every agent tab at once.**
 - **`node cli.mjs watch`** prints every command live in your terminal.
 
@@ -140,22 +142,20 @@ A real run, checked live on GitHub: [recipes/github.com.md](recipes/github.com.m
 
 ## How it compares
 
-Checked 2026-09-12 against each tool's own docs. "—" means the tool doesn't list that feature.
+Based on the linked official documentation, checked 2026-11-05. These are workflow trade-offs, not a ranking or a benchmark.
 
-| | chrome-bridge | playwright-mcp | Chrome DevTools MCP | Browser MCP / mcp-chrome | Claude for Chrome |
-|---|---|---|---|---|---|
-| Drives your real logged-in Chrome | the only mode | opt-in (extension / debugging-port attach) | opt-in (`--autoConnect`, Chrome 144+) | no — launches its own browser | yes, but only from the Claude app |
-| Needs an MCP-capable client + server config | no | yes | optional (ships a CLI) | yes | n/a |
-| Works with any agent that runs shell commands | yes | MCP clients | MCP clients | MCP clients | Claude app only |
-| You watch and can veto while it runs | 🟣 pill narrating live, action history, one-click disconnect (enforced) | — | — | — | — |
+| Option | Where it fits |
+|---|---|
+| **Chrome Bridge** | A small, MIT-licensed extension plus local Node server/CLI with no third-party runtime dependencies. Designed around existing Chrome tabs, shell commands, scoped/diff snapshots, in-page action narration, and explicit profile routing. |
+| **[Playwright extension + MCP](https://github.com/microsoft/playwright/tree/main/packages/extension#readme)** | Also connects to existing logged-in tabs. Its documented controls include connection approval, per-client tab groups and disconnection. It is a valid alternative for an MCP-based workflow. |
+| **[Playwright CLI + skills](https://github.com/microsoft/playwright-cli)** | Provides shell-based browser automation for coding agents without MCP. It supports browser sessions and persistent profiles. Playwright and its CLI are also open source (Apache-2.0). |
+| **[Claude in Chrome + Claude Code](https://code.claude.com/docs/en/chrome)** | Integrates browser testing, form filling and debugging into Claude Code, including its VS Code extension, and shares browser login state. Its documented prerequisites include a direct Anthropic plan and sign-in. |
 
-### chrome-bridge vs Playwright and playwright-mcp
+Choose Chrome Bridge if its command interface, visible action feedback and small dependency footprint suit your workflow. Agent independence is a difference from Anthropic's integration, not from Playwright. Logged-in browser access, accessibility snapshots, open source, CLI operation and human controls are not unique claims.
 
-Playwright drives a browser it launched, with a profile of its own, so the agent starts every session logged out. Attaching to your own Chrome is possible but opt-in. chrome-bridge borrows Playwright's best idea, accessibility-tree snapshots with element refs, and skips the 40 MB dependency.
+For repeatable regression tests in CI, consider [Playwright Test](https://playwright.dev/docs/intro). Chrome Bridge's interactive checks do not replace a test runner. Its setup still requires an extension, Node and a local server; some sites or commands require human intervention or a visible tab.
 
-### chrome-bridge vs MCP browser bridges, Chrome DevTools MCP, and Claude for Chrome
-
-MCP bridges need an MCP client and a configured server. Chrome DevTools MCP can attach to your profile (`--autoConnect`, Chrome 144+), but it's built for DevTools depth (performance traces, debugging). Claude for Chrome works only from the Claude app and reads pages through screenshots. Cloud browsers like Browserbase don't have your logins.
+There is no published head-to-head benchmark establishing that Chrome Bridge is faster, safer, more reliable or more token-efficient than these alternatives. The demos show capabilities on specific pages, not superiority or universal website compatibility.
 
 ### Chrome 136 broke copying (or reusing) your Chrome profile
 
