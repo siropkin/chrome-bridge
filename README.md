@@ -177,7 +177,7 @@ Commands that work on a tab take a `<match>`: part of the tab's URL or title, or
 
 - **Read:** `snap` · `shot` · `measure` · `perf` · `console` · `net` · `fetch` · `eval` · `ask`
 - **Act:** `click` · `fill` · `type` · `paste` · `press` · `hover` · `drag` · `scroll` · `upload` · `clear` · `dialog`
-- **Tabs:** `tabs` · `open` · `nav` · `close` · `activate` · `wait` (`--human` hands a tab to you)
+- **Tabs:** `tabs` · `open` · `nav` · `close` · `activate` · `wait` (`--js` polls a page condition, `--human` hands a tab to you)
 - **Device view:** `emulate` · `unemulate` · `resize` · `grid`
 - **Housekeeping:** `mark` · `release` · `note` · `watch` · `history` · `doctor` · `batch`
 - **Server:** `start` · `stop` · `health` · `profiles` · `extreload` · `swlogs`

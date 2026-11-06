@@ -219,7 +219,9 @@ async function connect() {
         else if (result && typeof result === 'object') result = { ...result, warning: msg._warn };
         else if (result !== undefined && result !== null) result = [result, msg._warn]; // primitives (eval "1+1") — the warning must not vanish
       }
-      s.send(JSON.stringify({ id: msg.id, ok: true, result }));
+      // A separate field, never merged into result: eval output stays byte-identical for scripts parsing it.
+      const pageErrors = await pageErrorsFor(msg);
+      s.send(JSON.stringify({ id: msg.id, ok: true, result, ...(pageErrors ? { pageErrors } : {}) }));
     } catch (err) {
       failed = true;
       let wrapped = wrapErr(err); // raw Chrome tab-gone noise → named cause + recovery
@@ -246,7 +248,8 @@ async function connect() {
         // instead of narrating agent-speak ('✗ clicked @e4').
         pillWrite(msg._tabId, ['✗ ' + done, lines, msg.target || null, false], worldCache.get(msg._tabId) || 'MAIN');
       }
-      s.send(JSON.stringify({ id: msg.id, ok: false, error: wrapped }));
+      const pageErrors = await pageErrorsFor(msg);
+      s.send(JSON.stringify({ id: msg.id, ok: false, error: wrapped, ...(pageErrors ? { pageErrors } : {}) }));
     } finally {
       // ✅ when a command on a driven tab lands, ✗ when it failed — the strip
       // icon must not claim success on an error. Non-driven tabs are left
@@ -835,6 +838,7 @@ function activityPhrases(msg) {
   // --pixel-change has no selector/text detail — bare 'waiting for' told the
   // human nothing about the longest watch the bridge runs.
   if (msg.type === 'wait' && msg.pixel) return { ing: 'watching for pixel changes', done: 'saw pixels change' };
+  if (msg.type === 'wait' && msg.js) return { ing: 'waiting for a page condition', done: 'saw the page condition' };
   if (msg.type === 'emulate' && msg.focus) return { ing: 'emulating focus', done: 'emulated focus' };
   let v = ACT_VERBS[msg.type] || [msg.type, msg.type];
   // dialog's --text answer stays OUT of the pill, mirroring the server's
@@ -1128,6 +1132,8 @@ chrome.tabs.onUpdated.addListener((tabId, info) => {
     chrome.scripting
       .executeScript({ target: { tabId }, func: injectBanner, args: [cdpRefs.has(tabId) || Date.now() - (dbgSince.get(tabId) || 0) < 1500] })
       .catch(() => {});
+    // New document: re-arm the error tap now, not at the next command, so errors in between are counted.
+    chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: pageErrorTap, args: [false] }).catch(() => {});
     const emoji = tabStatus.get(tabId);
     if (emoji) {
       chrome.scripting
@@ -2801,10 +2807,65 @@ async function capturePerf(tabId, duration) {
   return lines.join('\n');
 }
 
+// --- page-error tap ----------------------------------------------------------
+// Every driven tab carries a light MAIN-world tap (console.error + uncaught
+// errors/rejections) so each command's reply names the errors that are NEW
+// since the previous command — the eval → console --clear → eval loop was 20%
+// of all real traffic. Injected as a func (not eval'd source): strict-CSP pages
+// must not drag every command onto the CDP fallback. drain=false only installs.
+function pageErrorTap(drain) {
+  let s = window.__bridgeErrs;
+  if (!s || typeof s !== 'object') {
+    s = window.__bridgeErrs = { n: 0, seen: 0, ring: [] };
+    const fmt = (a) => {
+      try {
+        return typeof a === 'string' ? a : a instanceof Error ? String(a) : JSON.stringify(a);
+      } catch {
+        return String(a);
+      }
+    };
+    const push = (kind, args) => {
+      s.n++;
+      s.ring.push((kind + ' ' + args.map(fmt).join(' ')).replace(/\s+/g, ' ').slice(0, 300));
+      if (s.ring.length > 20) s.ring.shift();
+    };
+    const orig = console.error;
+    console.error = function (...a) {
+      push('error', a);
+      return orig.apply(this, a);
+    };
+    addEventListener('error', (e) => e.message && push('pageerror', [e.message]));
+    addEventListener('unhandledrejection', (e) => push('unhandledrejection', [e.reason instanceof Error ? String(e.reason) : fmt(e.reason)]));
+    return null;
+  }
+  if (!drain) return null;
+  const fresh = Number(s.n) - Number(s.seen);
+  s.seen = s.n;
+  if (!(fresh > 0)) return null;
+  return { count: fresh, lines: Array.from(s.ring || []).slice(-Math.min(fresh, 5)).map((l) => String(l).slice(0, 300)) };
+}
+
+// Commands that read the log themselves, give the tab up, or only narrate.
+const NO_ERROR_TAP = new Set(['console', 'close', 'release', 'mark', 'note']);
+async function pageErrorsFor(msg) {
+  const tabId = msg._tabId;
+  if (tabId == null || NO_ERROR_TAP.has(msg.type) || !drivenTabs.has(tabId)) return null;
+  // Bounded: a dialog the command opened (or a mid-navigation document) pends
+  // executeScript indefinitely — the reply must not wait on it.
+  const read = chrome.scripting
+    .executeScript({ target: { tabId }, world: 'MAIN', func: pageErrorTap, args: [true] })
+    .then((r) => r?.[0]?.result || null, () => null);
+  return Promise.race([read, new Promise((r) => setTimeout(() => r(null), 300))]);
+}
+
 // Console hook must run in the MAIN world — isolated worlds get their own console.
+// Its first install seeds the buffer with what the error tap already caught,
+// so the '⚠ N new page errors … console <match>' pointer never lands on an
+// empty log; reading the console counts as seeing those errors.
 const consoleSrc = (clear) => `(() => {
   if (!window.__bridgeLog) {
     const buf = (window.__bridgeLog = []);
+    if (window.__bridgeErrs && Array.isArray(window.__bridgeErrs.ring)) for (const l of window.__bridgeErrs.ring) buf.push(String(l));
     const fmt = (a) => { try { return typeof a === 'string' ? a : JSON.stringify(a); } catch { return String(a); } };
     const push = (kind, args) => { buf.push(kind + ' ' + Array.from(args).map(fmt).join(' ').slice(0, 300)); if (buf.length > 300) buf.shift(); };
     for (const k of ['error', 'warn', 'info', 'log']) {
@@ -2814,6 +2875,7 @@ const consoleSrc = (clear) => `(() => {
     window.addEventListener('error', (e) => push('pageerror', [e.message]));
     window.addEventListener('unhandledrejection', (e) => push('unhandledrejection', [String(e.reason)]));
   }
+  if (window.__bridgeErrs && typeof window.__bridgeErrs === 'object') window.__bridgeErrs.seen = window.__bridgeErrs.n;
   const out = window.__bridgeLog.join('\\n');
   if (${clear ? 'true' : 'false'}) window.__bridgeLog.length = 0;
   return out || '(empty — hook installed; captures console + page errors from now on, re-run after navigation)';
@@ -3530,6 +3592,39 @@ const waitSrc = ({ selector, text, timeout }) => `(async () => {
   const r = check();
   if (r) return r;
   throw new Error('timeout after ' + timeout + 'ms waiting for ' + (sel || JSON.stringify(text)));
+})()`;
+
+// wait --js: poll a page expression until truthy and return its value — the
+// in-page replacement for agents' sleep-inside-eval and shell polling loops.
+// Same mutation-driven cadence as waitSrc; an async predicate never overlaps
+// itself, and a throwing one counts as falsy (its last error names a timeout).
+const waitJsSrc = ({ js, timeout }) => `(async () => {
+  const pred = async () => (
+${js}
+  );
+  const timeout = ${Number(timeout) || 10000}, t0 = Date.now();
+  let last = null, lastErr = null, busy = false;
+  const check = async () => {
+    if (busy) return false;
+    busy = true;
+    try { last = await pred(); lastErr = null; } catch (e) { last = null; lastErr = e; } finally { busy = false; }
+    return !!last;
+  };
+  const shape = (v) => (typeof Element !== 'undefined' && v instanceof Element ? 'found <' + v.tagName.toLowerCase() + '>' : v === true ? 'condition met' : v);
+  if (await check()) return shape(last);
+  const met = await new Promise((resolve) => {
+    let settled = false;
+    const done = (v) => { if (settled) return; settled = true; try { mo.disconnect(); } catch {} clearInterval(iv); clearTimeout(to); resolve(v); };
+    const tick = async () => { if (await check()) done(true); };
+    const mo = new MutationObserver(tick);
+    mo.observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true });
+    const iv = setInterval(tick, 200);
+    const to = setTimeout(() => done(false), Math.max(0, timeout - (Date.now() - t0)));
+  });
+  if (met) return shape(last);
+  let lastV;
+  try { lastV = JSON.stringify(last); } catch { lastV = String(last); }
+  throw new Error('timeout after ' + timeout + 'ms waiting for the --js condition' + (lastErr ? ' — it last threw: ' + (lastErr.message || String(lastErr)) : ' (last value: ' + String(lastV).slice(0, 100) + ')'));
 })()`;
 
 // Post-action settle (chrome-devtools-mcp style): resolves once the DOM has
@@ -4928,6 +5023,7 @@ async function handle(msg) {
     const tab = await findTab(msg);
     if (msg.human) return await waitHuman(tab, msg);
     if (msg.pixel) return await waitPixel(tab, msg);
+    if (typeof msg.js === 'string' && msg.js) return await runEval(tab.id, waitJsSrc(msg), msg.world || 'auto');
     return await runEval(tab.id, waitSrc(msg));
   }
 

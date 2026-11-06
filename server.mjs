@@ -466,10 +466,13 @@ const CLI_LINES = {
       m.headers && typeof m.headers === 'object' ? Object.keys(m.headers).map((k) => ` --header ${shellq(k + ': ***')}`).join('') : ''
     }`,
   ask: (m) => `ask ${shellq(m.urlMatch)} ${shellq(m.question)}`,
+  // --js follows eval's rules: multiline/non-string code can't be one batch line.
   wait: (m) =>
-    `wait ${shellq(m.urlMatch)}${m.selector ? ' ' + shellq(m.selector) : ''}${m.text ? ' --text ' + shellq(m.text) : ''}${
-      m.human ? ' --human' : ''
-    }${m.pixel ? ' --pixel-change' : ''}${m.timeout != null && m.timeout !== 10000 && !m.human ? ' --timeout ' + m.timeout : ''}`,
+    m.js != null && (typeof m.js !== 'string' || !m.js || m.js.includes('\n') || (m.world != null && typeof m.world !== 'string'))
+      ? null
+      : `wait ${shellq(m.urlMatch)}${m.selector ? ' ' + shellq(m.selector) : ''}${m.text ? ' --text ' + shellq(m.text) : ''}${
+          m.js ? ' --js ' + shellq(m.js) + (m.world ? ' --world ' + m.world.toLowerCase() : '') : ''
+        }${m.human ? ' --human' : ''}${m.pixel ? ' --pixel-change' : ''}${m.timeout != null && m.timeout !== 10000 && !m.human ? ' --timeout ' + m.timeout : ''}`,
   // Multiline code can't be one batch line — null drops it to a comment.
   // A missing/non-string code (a raw /cmd caller sent eval without it) drops
   // to a comment too — the formatter must be total: its throw costs the ring

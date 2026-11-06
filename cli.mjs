@@ -85,6 +85,14 @@ async function cmd(msg, soft) {
   // Server hygiene warnings ride every reply (stale extension code — #63);
   // stderr, like health's version warning, so they survive stdout pipes.
   if (Array.isArray(out.warn)) for (const w of out.warn) console.error('⚠ ' + w);
+  // Page errors new since the previous command ride every tab reply (stderr —
+  // stdout stays the command's own result). Page text: control chars stripped.
+  const pe = out.pageErrors;
+  if (pe && Number(pe.count) > 0 && Array.isArray(pe.lines)) {
+    const n = Number(pe.count);
+    console.error(`⚠ ${n} new page error${n === 1 ? '' : 's'} since the last command${n > pe.lines.length ? ` (newest ${pe.lines.length})` : ''} — console <match> shows the log:`);
+    for (const l of pe.lines) console.error('  ' + String(l).replace(/[\x00-\x1f\x7f\x9b]/g, ' '));
+  }
   if (!out.ok) {
     if (soft) return { error: String(out.error) };
     if (msg.type === 'eval' && typeof msg.code === 'string' && /\bSyntaxError:/.test(String(out.error))) {
@@ -304,11 +312,15 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     apps whose input exists only at pick time)
   ask <match> <question>            (experimental) answer from page text with Chrome's
                                     built-in Gemini Nano — local, no cloud tokens
-  wait <match> <css|--text t|--human|--pixel-change> [--timeout ms]
+  wait <match> <css|--text t|--js expr|--human|--pixel-change> [--timeout ms] [--world main|isolated]
                                     wait for element or visible text (timeout default 10s,
                                     max 60s); --text takes every word up to the next flag
                                     (unquoted multi-word is fine); css/--text are
                                     alternatives — pass one, not both;
+                                    --js polls a page expression (awaited; '-' = stdin) until
+                                    truthy and prints its value — replaces sleep-in-eval and
+                                    shell polling loops; --world main sees page globals
+                                    (app state), DOM checks work in either world;
                                     --human hands the tab to the user — CAPTCHA/
                                     2FA/login walls — the pill asks them to act, the command
                                     blocks until trusted input or navigation (default 120s,
@@ -355,7 +367,10 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
   console <match> [--clear] [--ask [question]]
                                     page console + errors (hook installs on first call);
                                     --ask triages the log with local Gemini Nano — only
-                                    the verdict costs cloud tokens, not the noise
+                                    the verdict costs cloud tokens, not the noise.
+                                    No need to poll it for errors: every command on a driven
+                                    tab prints '⚠ N new page errors since the last command'
+                                    (console.error + uncaught, newest 5) to stderr on its own
   grid <match>                      toggle 8px alignment grid
   mark|release <match>              add/remove driven-tab markers; release clears emulation too
   activate <match>                  bring a background tab to the front (trusted input
@@ -1024,11 +1039,14 @@ async function runCommand(cmdName, args) {
     case 'wait': {
       const [match, ...rest] = args;
       let text = null;
+      let js = null;
+      let world = null;
       let timeout = 10000;
       let human = false;
       let pixel = false;
       const pos = [];
-      const WAIT_FLAGS = ['--text', '--timeout', '--human', '--pixel-change'];
+      const WAIT_FLAGS = ['--text', '--js', '--world', '--timeout', '--human', '--pixel-change'];
+      const USAGE_WAIT = 'usage: wait <match> [css|--text t|--js expr|--human|--pixel-change] [--timeout ms]';
       for (let i = 0; i < rest.length; i++) {
         if (rest[i] === '--text') {
           // Multi-word text joins up to the next known flag — single-token
@@ -1042,6 +1060,18 @@ async function runCommand(cmdName, args) {
           }
           text = words.join(' ');
           if (!text) fail('--text needs a value');
+        } else if (rest[i] === '--js') {
+          // Code, not words: '--'-leading tokens (x-- > 0) stay part of it.
+          const words = [];
+          while (i + 1 < rest.length && !WAIT_FLAGS.includes(rest[i + 1])) words.push(rest[++i]);
+          js = words.join(' ');
+          if (js === '-') js = await stdin();
+          js = js.trim().replace(/;+\s*$/, '');
+          if (!js) fail('--js needs an expression (or - to read it from stdin)');
+        } else if (rest[i] === '--world') {
+          const w = rest[++i]?.toUpperCase();
+          if (w !== 'MAIN' && w !== 'ISOLATED') fail('--world needs a value: main|isolated');
+          world = w;
         } else if (rest[i] === '--timeout') {
           if (rest[i + 1] === undefined) fail('--timeout needs a value (ms)');
           timeout = Number(rest[++i]);
@@ -1051,13 +1081,23 @@ async function runCommand(cmdName, args) {
         else pos.push(rest[i]);
       }
       const selector = pos[0] || null;
-      if (pos.length > 1) fail('usage: wait <match> [css|--text t|--human|--pixel-change] [--timeout ms]');
-      if (!match || (!selector && !text && !human && !pixel)) fail('usage: wait <match> [css|--text t|--human|--pixel-change] [--timeout ms]');
+      if (pos.length > 1) fail(USAGE_WAIT);
+      if (!match || (!selector && !text && !js && !human && !pixel)) fail(USAGE_WAIT);
       // The usage line shows ALTERNATIVES — the extension ORs a selector+text
       // pair, resolving early on a predicate the agent didn't intend.
       if (selector && text) fail('pass a selector OR --text, not both (they would wait on either matching — chain two waits instead)');
+      if (js && (selector || text || human || pixel)) fail('--js is its own wait mode — not combinable with a selector, --text, --human or --pixel-change (fold the checks into the expression)');
+      if (world && !js) fail('--world applies to --js only');
       if (human && pixel) fail('pass --human OR --pixel-change, not both');
       if ((human || pixel) && (selector || text)) fail('usage: wait <match> --human|--pixel-change [--timeout ms] — those wait without a page predicate');
+      if (js) {
+        try {
+          new Script(`(async () => (\n${js}\n))`, { filename: 'bridge-wait.js' });
+        } catch (cause) {
+          if (cause.name === 'SyntaxError')
+            fail('--js needs ONE expression (it runs as async () => (<expr>), awaited each poll) — statements go in an IIFE: (() => { …; return x })(). In batch, quote it as one token.');
+        }
+      }
       // Above 60s the server's 70s command cap fires first and the caller gets
       // a misleading 'extension timeout' for a healthy wait — fail here instead.
       // --human extends past that cap (server-side) but not past the CLI HTTP
@@ -1066,7 +1106,7 @@ async function runCommand(cmdName, args) {
       if (!human && timeout > 60000) fail('--timeout must be 1..60000 ms (the server kills commands at 70s)');
       if (human && timeout > 280000) fail('--timeout must be 1..280000 ms with --human (the HTTP client gives up at 5 min — start another wait for a longer handoff)');
       if (human && timeout === 10000) timeout = 120000; // a human needs more than a page does
-      print(await cmd({ type: 'wait', urlMatch: match, selector, text, timeout, ...(human ? { human: true } : {}), ...(pixel ? { pixel: true } : {}) }));
+      print(await cmd({ type: 'wait', urlMatch: match, selector, text, timeout, ...(js ? { js, ...(world ? { world } : {}) } : {}), ...(human ? { human: true } : {}), ...(pixel ? { pixel: true } : {}) }));
       break;
     }
 

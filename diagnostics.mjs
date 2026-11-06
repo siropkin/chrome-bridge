@@ -126,7 +126,7 @@ export function createDiagnostics(directory, version) {
   const command = (msg) => {
     const name = typeof msg?.type === 'string' ? msg.type : '';
     const result = { name: COMMANDS.has(name) ? name : 'unknown', requested: COMMANDS.has(name) ? undefined : textShape(name) };
-    for (const field of ['urlMatch', 'url', 'target', 'selector', 'scope', 'from', 'to', 'code', 'find', 'question', 'text', 'value', 'key']) {
+    for (const field of ['urlMatch', 'url', 'target', 'selector', 'scope', 'from', 'to', 'code', 'js', 'find', 'question', 'text', 'value', 'key']) {
       if (typeof msg?.[field] === 'string') result[field] = textShape(msg[field]);
     }
     if (typeof msg?.urlMatch === 'string') result.matchKind = /^id:\d+$/.test(msg.urlMatch) ? 'id' : 'substring';
@@ -181,6 +181,7 @@ export function createDiagnostics(directory, version) {
       summary.error = textShape(message);
     }
     if (Array.isArray(out?.warn)) summary.warningCount = out.warn.length;
+    if (Number.isInteger(out?.pageErrors?.count) && out.pageErrors.count > 0) summary.pageErrors = out.pageErrors.count;
     return summary;
   };
   return {

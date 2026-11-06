@@ -175,7 +175,7 @@ CI 中可重复执行的回归测试可考虑 [Playwright Test](https://playwrig
 
 - **读取:** `snap` · `shot` · `measure` · `perf` · `console` · `net` · `fetch` · `eval` · `ask`
 - **操作:** `click` · `fill` · `type` · `paste` · `press` · `hover` · `drag` · `scroll` · `upload` · `clear` · `dialog`
-- **标签页:** `tabs` · `open` · `nav` · `close` · `activate` · `wait`(`--human` 把标签页交给你)
+- **标签页:** `tabs` · `open` · `nav` · `close` · `activate` · `wait`(`--js` 轮询页面条件,`--human` 把标签页交给你)
 - **设备视图:** `emulate` · `unemulate` · `resize` · `grid`
 - **整理:** `mark` · `release` · `note` · `watch` · `history` · `doctor` · `batch`
 - **服务器:** `start` · `stop` · `health` · `profiles` · `extreload` · `swlogs`

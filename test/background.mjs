@@ -736,3 +736,61 @@ test('screenshot fallback never switches tabs and rejects inactive or changed ta
     assert.equal(captures, ['active', 'changed'].includes(scenario) ? 1 : 0);
   }
 });
+
+const errorTapSource = source.slice(source.indexOf('function pageErrorTap('), source.indexOf('// Commands that read the log themselves'));
+
+test('page-error tap reports only errors new since the previous drain', () => {
+  const listeners = {};
+  const page = vm.createContext({ console: { error() {} }, Error, addEventListener: (type, fn) => { listeners[type] = fn; } });
+  page.window = page;
+  vm.runInContext(errorTapSource, page);
+  assert.equal(page.pageErrorTap(true), null, 'first call only installs');
+  page.console.error('boom', { a: 1 });
+  listeners.error({ message: 'TypeError: x is undefined' });
+  listeners.error({ message: '' });
+  listeners.unhandledrejection({ reason: new Error('nope') });
+  const first = page.pageErrorTap(true);
+  assert.equal(first.count, 3);
+  assert.deepEqual([...first.lines], ['error boom {"a":1}', 'pageerror TypeError: x is undefined', 'unhandledrejection Error: nope']);
+  assert.equal(page.pageErrorTap(true), null, 'a drained error is never reported twice');
+  for (let i = 0; i < 30; i++) page.console.error('e' + i);
+  page.pageErrorTap(false);
+  const burst = page.pageErrorTap(true);
+  assert.equal(burst.count, 30);
+  assert.deepEqual([...burst.lines], ['error e25', 'error e26', 'error e27', 'error e28', 'error e29']);
+});
+
+const waitJsSrc = vm.runInNewContext(source.slice(source.indexOf('const waitJsSrc ='), source.indexOf('// Post-action settle')) + '; waitJsSrc');
+
+function waitPage() {
+  const observers = [];
+  const page = vm.createContext({
+    setInterval, clearInterval, setTimeout, clearTimeout,
+    document: { documentElement: {} },
+    MutationObserver: class { constructor(cb) { this.cb = cb; observers.push(this); } observe() {} disconnect() { this.off = true; } },
+    Element: class {},
+  });
+  return { page, mutate: () => observers.forEach((o) => !o.off && o.cb([])) };
+}
+
+test('wait --js resolves on the mutation that makes the expression truthy, with its value', async () => {
+  const { page, mutate } = waitPage();
+  page.count = 0;
+  const pending = vm.runInContext(waitJsSrc({ js: 'count >= 2 && count', timeout: 5000 }), page);
+  page.count = 1;
+  mutate();
+  await new Promise((r) => setImmediate(r));
+  page.count = 2;
+  mutate();
+  assert.equal(await pending, 2);
+  assert.equal(await vm.runInContext(waitJsSrc({ js: 'true', timeout: 100 }), page), 'condition met');
+  vm.runInContext('el = new Element(); el.tagName = "DIV"', page);
+  assert.equal(await vm.runInContext(waitJsSrc({ js: 'await Promise.resolve(el)', timeout: 100 }), page), 'found <div>');
+});
+
+test('wait --js timeout names the last value or the last error', async () => {
+  const { page } = waitPage();
+  await assert.rejects(vm.runInContext(waitJsSrc({ js: 'missing.prop', timeout: 50 }), page), /timeout after 50ms waiting for the --js condition — it last threw: missing is not defined/);
+  page.n = 0;
+  await assert.rejects(vm.runInContext(waitJsSrc({ js: 'n', timeout: 50 }), page), /\(last value: 0\)/);
+});

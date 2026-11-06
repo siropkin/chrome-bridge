@@ -315,6 +315,17 @@ s_waits() {
   "${CLI[@]}" wait "change.html?x=wait" '.never-there' --timeout 1000 >>"$OUT/05.log" 2>&1 || true
   assert_grep "css wait times out honestly" "$OUT/05.log" 'timeout after 1000ms waiting for .never-there'
   assert_ngrep "no double Error: prefix" "$OUT/05.log" 'async: Error:'
+  # wait --js: the truthy value comes back; a timeout names the last value
+  "${CLI[@]}" wait "change.html?x=wait" --js "document.querySelectorAll('#mut').length" >"$OUT/05-js.log" 2>&1
+  assert_grep "wait --js returns the truthy value" "$OUT/05-js.log" '^1$'
+  "${CLI[@]}" wait "change.html?x=wait" --js "window.__neverSet" --world main --timeout 500 >>"$OUT/05-js.log" 2>&1 || true
+  assert_grep "wait --js timeout names the last value" "$OUT/05-js.log" 'timeout after 500ms waiting for the --js condition \(last value'
+  # page errors ride the reply of the command that caused them — once
+  "${CLI[@]}" eval "change.html?x=wait" "console.error('STRESS-PAGEERR'); 'logged'" --world main >"$OUT/05-err.log" 2>&1
+  assert_grep "page error reported on the causing command" "$OUT/05-err.log" '1 new page error since the last command'
+  assert_grep "page error line carries the message" "$OUT/05-err.log" 'error STRESS-PAGEERR'
+  "${CLI[@]}" snap "change.html?x=wait" >"$OUT/05-err2.log" 2>&1
+  assert_ngrep "a reported page error is not repeated" "$OUT/05-err2.log" 'STRESS-PAGEERR'
 }
 
 # ---------------------------------------------------------------- section 6

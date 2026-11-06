@@ -187,6 +187,9 @@ try {
       // BIGEVAL: a >50K string result — the cli must cap the printout (the
       // last uncapped read was a context bomb: eval document.body.innerText).
       if (msg.code.includes('BIGEVAL')) return respond('y'.repeat(60_000));
+      // PAGEERR: the reply carries new page errors — stderr only, stdout untouched.
+      if (msg.code.includes('PAGEERR'))
+        return ext.send({ id: msg.id, ok: true, result: 'clean-result', pageErrors: { count: 7, lines: ['error boom \x1b[31mred', 'pageerror TypeError: x is undefined'] } });
       return respond({ echo: msg.code.length, world: msg.world, match: msg.urlMatch, label: msg.label || null });
     }
     if (msg.type === 'big') return respond('x'.repeat(3 * 1024 * 1024)); // 3 MB — exercises 64-bit frames
@@ -555,6 +558,34 @@ try {
   assert(waitNoText.status !== 0 && waitNoText.stderr.includes('--text needs a value'), 'cli wait --text without a value fails loud', waitNoText.stdout + waitNoText.stderr);
   const waitTextTimeout = await cli('wait', 'example.com', '--text', 'a', 'b', '--timeout', '500');
   assert(waitTextTimeout.status === 0 && waitTextTimeout.stdout.includes('"text":"a b"') && waitTextTimeout.stdout.includes('"timeout":500'), 'cli wait --text joins up to the next known flag', waitTextTimeout.stdout + waitTextTimeout.stderr);
+  // wait --js: a polled page expression — its own mode, --world rides only with it.
+  const waitJs = await cli('wait', 'example.com', '--js', "document.querySelectorAll('.row').length", '>', '2;', '--world', 'main', '--timeout', '500');
+  assert(
+    waitJs.status === 0 && waitJs.stdout.includes('"js":"document.querySelectorAll(\'.row\').length > 2"') && waitJs.stdout.includes('"world":"MAIN"') && waitJs.stdout.includes('"timeout":500'),
+    'cli wait --js joins the expression, strips a trailing semicolon, carries --world',
+    waitJs.stdout + waitJs.stderr
+  );
+  const waitJsDash = await cli('wait', 'example.com', '--js', 'x--', '>', '0');
+  assert(waitJsDash.status === 0 && waitJsDash.stdout.includes('"js":"x-- > 0"'), 'cli wait --js keeps --leading code tokens', waitJsDash.stdout + waitJsDash.stderr);
+  const waitJsStdin = await cliStdin('window.app?.ready', 'wait', 'example.com', '--js', '-');
+  assert(waitJsStdin.status === 0 && waitJsStdin.stdout.includes('"js":"window.app?.ready"'), 'cli wait --js - reads the expression from stdin', waitJsStdin.stdout + waitJsStdin.stderr);
+  const waitJsMix = await cli('wait', 'example.com', '.foo', '--js', 'true');
+  assert(waitJsMix.status !== 0 && waitJsMix.stderr.includes('--js is its own wait mode'), 'cli wait --js refuses a selector alongside', waitJsMix.stdout + waitJsMix.stderr);
+  const waitWorldNoJs = await cli('wait', 'example.com', '.foo', '--world', 'main');
+  assert(waitWorldNoJs.status !== 0 && waitWorldNoJs.stderr.includes('--world applies to --js only'), 'cli wait --world needs --js', waitWorldNoJs.stdout + waitWorldNoJs.stderr);
+  const waitJsStmt = await cli('wait', 'example.com', '--js', 'const a = 1; a');
+  assert(waitJsStmt.status !== 0 && waitJsStmt.stderr.includes('ONE expression') && !waitJsStmt.stderr.includes('const a'), 'cli wait --js: statements fail locally with the IIFE hint, code not echoed', waitJsStmt.stdout + waitJsStmt.stderr);
+  const waitJsEmpty = await cli('wait', 'example.com', '--js');
+  assert(waitJsEmpty.status !== 0 && waitJsEmpty.stderr.includes('--js needs an expression'), 'cli wait --js without a value fails loud', waitJsEmpty.stdout + waitJsEmpty.stderr);
+
+  // Page errors ride the reply envelope: stderr gets the count + lines (control
+  // chars stripped), stdout stays the command's own result.
+  const pageErr = await cli('eval', 'example.com', 'PAGEERR');
+  assert(
+    pageErr.status === 0 && pageErr.stdout.trim() === 'clean-result' && pageErr.stderr.includes('⚠ 7 new page errors since the last command (newest 2)') && pageErr.stderr.includes('pageerror TypeError: x is undefined') && !pageErr.stderr.includes('\x1b'),
+    'cli prints page errors to stderr, sanitized, stdout untouched',
+    pageErr.stdout + pageErr.stderr
+  );
 
   // tabs id:<tabId>: the exact reference every command takes must filter the
   // list too — [] for a live tab read as "gone, re-open it".
@@ -1256,6 +1287,7 @@ try {
   const htmlRun = await cli('paste', 'example.com', '--html', '--', '<b>x</b>');
   fs.writeFileSync('/tmp/chrome-bridge-selftest-upload.txt', 'x');
   const chooserRun = await cli('upload', 'example.com', '@e5', '--chooser', '/tmp/chrome-bridge-selftest-upload.txt');
+  const waitJsRun = await cli('wait', 'example.com', '--js', "document.title === 'a b'", '--world', 'main');
   const replayPath = '/tmp/chrome-bridge-selftest-replay.batch';
   const replayExport = await cli('history', '--batch', replayPath);
   const replayScript = fs.readFileSync(replayPath, 'utf8');
@@ -1278,6 +1310,11 @@ try {
       replayScript.includes('upload example.com @e5 "***" --chooser'),
     'history --batch replays emulate dsf=N, paste --html, upload --chooser (flag mirrors)',
     dsfRun.stderr + htmlRun.stderr + chooserRun.stderr + '\n' + replayScript
+  );
+  assert(
+    waitJsRun.status === 0 && replayScript.includes(`wait example.com --js "document.title === 'a b'" --world main`),
+    'history --batch replays wait --js with --world (flag mirror)',
+    waitJsRun.stderr + '\n' + replayScript
   );
   fs.unlinkSync(replayPath);
   fs.unlinkSync('/tmp/chrome-bridge-selftest-upload.txt');

@@ -161,11 +161,17 @@ scroll <match> <up|down|top|bottom|@ref|css> [--diff]
                                   changed — never read it as ok)
 ask <match> <question>              (experimental) local Gemini Nano answers from page
                                   text — no cloud tokens; pre-filter quality, not truth
-wait <match> <css|--text t|--human|--pixel-change> [--timeout ms]
+wait <match> <css|--text t|--js expr|--human|--pixel-change> [--timeout ms] [--world main|isolated]
                                   wait for element or visible text (default 10s, max 60s);
                                   --text takes every word up to the next flag (unquoted
                                   multi-word is fine); css/--text are alternatives — pass
                                   one, not both (same for --human vs --pixel-change);
+                                  --js polls a page expression until truthy and prints its
+                                  value (awaited, so async checks work; '-' reads it from
+                                  stdin; one expression — statements go in an IIFE; in batch
+                                  quote it as one token) — mutation-driven, not a sleep loop;
+                                  --world main sees page globals (app state), DOM checks
+                                  work in either world; a timeout names the last value or error;
                                   --human hands the tab to the user — CAPTCHA/2FA/login
                                   walls: the pill tells them it's their turn, the command
                                   blocks until they act (trusted input or navigation;
@@ -209,7 +215,10 @@ perf <match> [--dur ms]           CPU over a window (default 5s, max 30s; CDP): 
                                   repaint every frame. Warns when the tab is hidden
 measure <match> <css>             rect + computed styles as JSON
 console <match> [--clear] [--ask [q]]   page console + errors (hook installs on first call);
-                                  --ask triages the log with local Nano — only the verdict costs cloud tokens
+                                  --ask triages the log with local Nano — only the verdict costs cloud tokens.
+                                  Polling it is unnecessary: every command on a driven tab prints
+                                  '⚠ N new page errors since the last command' (console.error +
+                                  uncaught errors/rejections, newest 5) to stderr by itself
 grid <match>                      toggle 8px alignment grid
 mark|release <match>              add/remove driven-tab markers; release clears emulation too
 activate <match>                  bring a background tab to the front (trusted input needs it);
@@ -296,7 +305,13 @@ After Chrome reports a `SyntaxError`, the CLI attempts a local compile-only chec
 
 ### Check a page for JS errors
 
-`console <match>` — the first call installs the hook and captures from then on; re-run after every navigation (the hook dies on reload).
+New errors come to you without asking: every command on a driven tab prints `⚠ N new page errors since the last command` to stderr, listing the newest 5. It covers `console.error` plus uncaught errors and rejections, and stdout stays the command's own result. The tap re-arms on each load of a driven tab, but anything thrown before that load completes is missed. It wraps `console.error`, so DevTools attributes those lines to the bridge wrapper.
+
+`console <match>` gives the full log (log/info/warn too). The first call installs that hook, seeded with the errors already caught, and it captures from then on. Re-run it after every navigation, because the hook dies on reload. Reading it counts as seeing the pending errors.
+
+### Wait for app state, not time
+
+`wait <match> --js "<expr>"` re-evaluates the expression on every DOM mutation, with a 200ms backstop, until it is truthy. It then prints the value (`condition met` for `true`, `found <tag>` for an element). Use it for any condition `--text` and css can't express: counts, attribute values, app-store fields with `--world main`, or `await fetch(…)` status checks. It replaces the `eval "await new Promise(r => setTimeout(r, 3000)); …"` pattern and shell `while eval …; sleep` loops. Those burn a tool call per poll and guess at timing; this returns the moment the state lands. A timeout reports the last value, or the predicate's last error.
 
 ### Fill a React form
 
