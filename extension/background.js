@@ -791,8 +791,9 @@ function recordActivity(tabId, msg) {
 // while the command runs ("taking screenshot…"), past tense for the tooltip
 // history ring. The user glances at the tab to see what the agent is doing
 // RIGHT NOW — agent-speak like "click @e4" doesn't answer that.
-// Adding a command? SEVEN registries stay in sync (a missing one fails SILENTLY):
-// cli.mjs USAGE · cli.mjs run() · server.mjs CLI_LINES · server.mjs route() (only if it
+// Adding a command? EIGHT registries stay in sync (a missing one fails SILENTLY):
+// cli.mjs USAGE · extension/commands.js REGISTRY + parse() (or cli.mjs run() for the
+// commands the CLI handles itself) · server.mjs CLI_LINES · server.mjs route() (only if it
 // needs special routing) · background.js handle() · ACT_VERBS (pill narration) · MUTATING.
 const ACT_VERBS = {
   open: ['opening page', 'opened page'],
@@ -4183,8 +4184,9 @@ async function waitPixel(tab, msg) {
 // still a failure the human needs to see). fetch is in the set for the same
 // reason it used to auto-mark: it issues a request in the user's name (a GET
 // can be a mutation on some servers).
-// Adding a command? SEVEN registries stay in sync (a missing one fails SILENTLY):
-// cli.mjs USAGE · cli.mjs run() · server.mjs CLI_LINES · server.mjs route() (only if it
+// Adding a command? EIGHT registries stay in sync (a missing one fails SILENTLY):
+// cli.mjs USAGE · extension/commands.js REGISTRY + parse() (or cli.mjs run() for the
+// commands the CLI handles itself) · server.mjs CLI_LINES · server.mjs route() (only if it
 // needs special routing) · background.js handle() · ACT_VERBS (pill narration) · MUTATING.
 const MUTATING = new Set(['click', 'fill', 'clear', 'paste', 'type', 'press', 'upload', 'eval', 'hover', 'scroll', 'grid', 'emulate', 'resize', 'drag', 'dialog', 'fetch']);
 
@@ -4720,8 +4722,9 @@ async function cmdShot(tab, msg) {
   }
 }
 
-// Adding a command? SEVEN registries stay in sync (a missing one fails SILENTLY):
-// cli.mjs USAGE · cli.mjs run() · server.mjs CLI_LINES · server.mjs route() (only if it
+// Adding a command? EIGHT registries stay in sync (a missing one fails SILENTLY):
+// cli.mjs USAGE · extension/commands.js REGISTRY + parse() (or cli.mjs run() for the
+// commands the CLI handles itself) · server.mjs CLI_LINES · server.mjs route() (only if it
 // needs special routing) · background.js handle() · ACT_VERBS (pill narration) · MUTATING.
 async function handle(msg) {
   // State maps hydrate from storage.session — no command may run against

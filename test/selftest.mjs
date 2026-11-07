@@ -5,6 +5,7 @@ import net from 'node:net';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import vm from 'node:vm';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -139,8 +140,8 @@ await Promise.race([
 ]);
 
 try {
-  const diagnosticTests = spawnSync(process.execPath, ['--test', `${ROOT}/test/diagnostics.mjs`, `${ROOT}/test/background.mjs`, `${ROOT}/test/drift.mjs`], { encoding: 'utf8' });
-  assert(diagnosticTests.status === 0, 'diagnostics: collector, popup, and version-drift unit tests', diagnosticTests.stdout + diagnosticTests.stderr);
+  const diagnosticTests = spawnSync(process.execPath, ['--test', `${ROOT}/test/diagnostics.mjs`, `${ROOT}/test/background.mjs`, `${ROOT}/test/drift.mjs`, `${ROOT}/test/commands.mjs`], { encoding: 'utf8' });
+  assert(diagnosticTests.status === 0, 'diagnostics: collector, popup, version-drift and command-grammar unit tests', diagnosticTests.stdout + diagnosticTests.stderr);
   // The version lives in TWO files (package.json, extension/manifest.json) and
   // nothing but this check compares them — the v1.6.0 eager-clear bug shipped
   // precisely because same-version drift was invisible everywhere else.
@@ -874,7 +875,9 @@ try {
   // worker's own guards can't be executed here — assert them at source level.
   {
     const bg = fs.readFileSync(`${ROOT}extension/background.js`, 'utf8');
-    const cliSrc = fs.readFileSync(`${ROOT}cli.mjs`, 'utf8');
+    // The CLI's grammar spans two files: cli.mjs and the shared command module.
+    const cmdSrc = fs.readFileSync(`${ROOT}extension/commands.js`, 'utf8');
+    const cliSrc = fs.readFileSync(`${ROOT}cli.mjs`, 'utf8') + cmdSrc;
     const serverSrc = fs.readFileSync(`${ROOT}/server.mjs`, 'utf8');
     // CDP debugger refcount: every attach/detach must route through the two
     // helpers. A raw chrome.debugger.attach/detach elsewhere races under
@@ -1071,6 +1074,42 @@ try {
       'drift: cli USAGE commands vs handle() types',
       `usage: ${[...usageWire].sort()} handle: ${[...handleTypes].sort()}`
     );
+    // The command registry (extension/commands.js) is what the cloud link will
+    // build its tools from: same names as USAGE, and each usage line is that
+    // command's USAGE synopsis (a shared 'mark|release <match>' line counts
+    // for both). Loaded the way the service worker will load it: a classic
+    // script in a bare global, no Node APIs.
+    const sandbox = vm.createContext({});
+    vm.runInContext(cmdSrc, sandbox);
+    const registry = sandbox.BridgeCommands.REGISTRY;
+    assert(
+      registry.map((e) => e.name).sort().join() === [...usageCmds].sort().join(),
+      'drift: commands.js REGISTRY names vs cli USAGE commands',
+      `registry: ${registry.map((e) => e.name).sort()} usage: ${[...usageCmds].sort()}`
+    );
+    const synopses = new Map();
+    for (const m of usageBlock.matchAll(/^  (\S.*)$/gm)) {
+      const syn = m[1].split(/\s{2,}/)[0];
+      const head = syn.split(' ')[0];
+      for (const name of head.split('|')) synopses.set(name, name + syn.slice(head.length));
+    }
+    const usageDrift = registry.filter((e) => synopses.get(e.name) !== e.usage).map((e) => `${e.name}: registry '${e.usage}' vs USAGE '${synopses.get(e.name)}'`);
+    assert(usageDrift.length === 0, 'drift: commands.js REGISTRY usage lines match the cli USAGE synopses', usageDrift.join('\n'));
+    assert(registry.some((e) => e.aliases.includes('navigate') && e.name === 'nav'), 'commands.js: nav carries its navigate alias (the wire type)');
+    // MUTATING (extension) = acts as the user or runs page code — never a read-only tool.
+    const mutating = [...bg.slice(bg.indexOf('const MUTATING'), bg.indexOf(']);', bg.indexOf('const MUTATING'))).matchAll(/'(\w+)'/g)].map((m) => m[1]);
+    const readOnlyMutating = mutating.filter((t) => registry.find((e) => e.name === t || e.aliases.includes(t))?.readOnly !== false);
+    assert(mutating.length > 10 && readOnlyMutating.length === 0, 'drift: every MUTATING command is non-readOnly in the commands.js REGISTRY', `readOnly or missing: ${readOnlyMutating}`);
+    // Caller JavaScript reaches the page on exactly two paths — eval's code and
+    // wait --js. Both must carry pageCode (policy treats them alike) and never
+    // read as readOnly; a third path fails here until the registry knows it.
+    const pageCodeSites = bg.match(/runEval\(tab\.id, (?:msg\.code|waitJsSrc\(msg\))/g) || [];
+    const pageCode = registry.filter((e) => e.pageCode).map((e) => e.name);
+    assert(
+      pageCodeSites.length === 2 && pageCode.sort().join() === 'eval,wait' && registry.filter((e) => e.pageCode && e.readOnly).length === 0,
+      'drift: caller-JS commands (eval, wait --js) carry pageCode in the commands.js REGISTRY and are not readOnly',
+      `runEval caller-code sites: ${pageCodeSites.length}, pageCode: ${pageCode}`
+    );
     // The label back-channel is gone — pill labels come from ACT_VERBS only.
     assert(!bg.includes('msg.label'), 'ext: no msg.label special-case (measure/grid are real types now)');
     // snap never prints a password field's value (autofilled credentials
@@ -1210,6 +1249,7 @@ try {
     // — a syntax error in it would otherwise ship green, as would one in
     // install.sh (the first file a new user runs; nothing else even bash -ns it).
     assert(spawnSync('node', ['--check', `${ROOT}extension/background.js`]).status === 0, 'ext: background.js parses (node --check)');
+    assert(spawnSync('node', ['--check', `${ROOT}extension/commands.js`]).status === 0, 'ext: commands.js parses (node --check)');
     assert(spawnSync('bash', ['-n', `${ROOT}install.sh`]).status === 0, 'install.sh parses (bash -n)');
 
     // The toolbar popup (copy tab reference): the manifest must point at real
@@ -1756,7 +1796,7 @@ try {
     };
     const work = join(tmp, 'work');
     fs.mkdirSync(join(work, 'extension'), { recursive: true });
-    for (const f of ['cli.mjs', 'drift.mjs']) fs.copyFileSync(join(ROOT, f), join(work, f));
+    for (const f of ['cli.mjs', 'drift.mjs', 'extension/commands.js']) fs.copyFileSync(join(ROOT, f), join(work, f));
     const setV = (dir, v) => {
       fs.writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'x', version: v, type: 'module' }));
       fs.writeFileSync(join(dir, 'extension', 'manifest.json'), JSON.stringify({ version: v }));

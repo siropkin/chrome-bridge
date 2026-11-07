@@ -216,8 +216,9 @@ async function seatByProfileGrace(want) {
 }
 
 // Route one command to exactly one profile's seat.
-// Adding a command? SEVEN registries stay in sync (a missing one fails SILENTLY):
-// cli.mjs USAGE · cli.mjs run() · server.mjs CLI_LINES · server.mjs route() (only if it
+// Adding a command? EIGHT registries stay in sync (a missing one fails SILENTLY):
+// cli.mjs USAGE · extension/commands.js REGISTRY + parse() (or cli.mjs run() for the
+// commands the CLI handles itself) · server.mjs CLI_LINES · server.mjs route() (only if it
 // needs special routing) · background.js handle() · ACT_VERBS (pill narration) · MUTATING.
 async function route(msg, dispatch) {
   if (msg.type === 'tabs') {
@@ -425,11 +426,13 @@ const shellq = (s) => {
   return /[\s'"#\\]/.test(s) || /^--/.test(s) ? JSON.stringify(s) : s;
 };
 const D = (m) => (m.diff ? ' --diff' : '');
-// Adding a command? SEVEN registries stay in sync (a missing one fails SILENTLY):
-// cli.mjs USAGE · cli.mjs run() · server.mjs CLI_LINES · server.mjs route() (only if it
+// Adding a command? EIGHT registries stay in sync (a missing one fails SILENTLY):
+// cli.mjs USAGE · extension/commands.js REGISTRY + parse() (or cli.mjs run() for the
+// commands the CLI handles itself) · server.mjs CLI_LINES · server.mjs route() (only if it
 // needs special routing) · background.js handle() · ACT_VERBS (pill narration) · MUTATING.
-// CLI_LINES mirrors the flag parsers in cli.mjs run() flag-for-flag — an
-// unmirrored flag is silently dropped from history --batch replays.
+// CLI_LINES mirrors the flag parsers (extension/commands.js parse(), cli.mjs
+// run()) flag-for-flag — an unmirrored flag is silently dropped from history
+// --batch replays.
 const CLI_LINES = {
   open: (m) => `open ${shellq(m.url)}`,
   navigate: (m) => `nav ${shellq(m.urlMatch)} ${shellq(m.url)}${D(m)}`,
