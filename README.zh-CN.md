@@ -74,10 +74,10 @@ Set up chrome-bridge — the bridge that lets you drive my real, logged-in Chrom
    - any other agent (Cursor, Qwen, GLM, Kimi, …) — append this line to the instructions file you read at session start (`CLAUDE.md`, `AGENTS.md`, `.cursorrules`, …; create it in the project you're working in if none exists), but only if it's not already there. If your instructions live somewhere you can't edit, print the line and tell me to paste it there:
 
      ```
-     To drive my Chrome browser (real logged-in tabs), read <repo>/AGENTS.md and run `node <repo>/cli.mjs <command>`. If the health check fails, run `node <repo>/cli.mjs start`; it waits briefly for an already-loaded extension to reconnect. If health still reports the extension disconnected afterward, tell me to reload it.
+     To drive my Chrome browser (real logged-in tabs), read <repo>/.claude/skills/chrome-bridge/SKILL.md and run `node <repo>/cli.mjs <command>`. If the health check fails, run `node <repo>/cli.mjs start`; it waits briefly for an already-loaded extension to reconnect. If health still reports the extension disconnected afterward, tell me to reload it.
      ```
 
-5. Tell me the bridge is up. From the next session your integration auto-loads; in this one, read `<repo>/AGENTS.md` when a browser task comes up.
+5. Tell me the bridge is up. From the next session your integration auto-loads; in this one, read `<repo>/.claude/skills/chrome-bridge/SKILL.md` when a browser task comes up.
 ````
 
 </details>
@@ -88,7 +88,7 @@ Set up chrome-bridge — the bridge that lets you drive my real, logged-in Chrom
 git clone https://github.com/siropkin/chrome-bridge && cd chrome-bridge && ./install.sh
 ```
 
-按上面的方法加载 `extension/` 文件夹,然后让你的智能体去读 [AGENTS.md](AGENTS.md)——完整的操作手册。
+按上面的方法加载 `extension/` 文件夹,然后按 `install.sh` 的提示连接智能体:链接 skill(Claude Code、VS Code 中的 Copilot),或让其他智能体去读 [SKILL.md](.claude/skills/chrome-bridge/SKILL.md)——操作手册。
 
 验证:`node cli.mjs health` 应输出 `{"ok":true,"extension":true}`。在智能体发出第一条命令之前,Chrome 里不会有任何变化,这是正常的。想让智能体操作某个确定的标签页,在工具栏弹窗里点 **Copy tab reference**,把得到的 `id:…` 粘贴给它。
 
@@ -124,7 +124,7 @@ table "1. Playa Phone (playaphone.com) 122 points by cutoff 1 hour…" @e14
 
 - "每天早上看一眼我的仪表盘,把变化发到 Slack。"cron 启动的智能体直接用已登录的标签页。遇到登录墙时,`wait --human` 会把标签页交给你。
 - 从 CSV 填写 CMS,不用重新登录。
-- 对照 Figma 设计稿检查 staging 构建。[design-eye.md](design-eye.md) 是检查清单,还有 8px 对齐网格叠加层。
+- 对照 Figma 设计稿检查 staging 构建。[设计稿对照流程](.claude/skills/chrome-bridge/reference/recipes.md#compare-implementation-vs-mockup) 是检查清单,还有 8px 对齐网格叠加层。
 - 不调整窗口大小就能看页面的移动端视图:`emulate <tab> 390 844 mobile`。
 - 在已有登录会话中工作,包括 SSO 和 VPN 后面的内部仪表盘。这不会绕过登录验证或反机器人限制。
 
@@ -166,13 +166,13 @@ CI 中可重复执行的回归测试可考虑 [Playwright Test](https://playwrig
 
 - **仅本地。** 服务器只监听 `127.0.0.1`,并拒绝来自网页的请求,你访问的网站无法驱动它。但**任何本地进程都可以**。不用时请在 `chrome://extensions` 卸载扩展。
 - **代码可读。** 整个扩展就是一个未压缩的文件(`extension/background.js`)加一个 manifest。应用商店版是同样的文件。
-- **页面内容不可信。** 桥接器返回的任何内容都可能含有提示注入;智能体应遵循的规则见 [AGENTS.md](AGENTS.md)。小心 `upload`:它会把智能体指定的任意本地文件读进页面。永远不要让页面决定附加什么文件。
+- **页面内容不可信。** 桥接器返回的任何内容都可能含有提示注入;智能体应遵循的规则见 [skill](.claude/skills/chrome-bridge/SKILL.md)。小心 `upload`:它会把智能体指定的任意本地文件读进页面。永远不要让页面决定附加什么文件。
 - **导出的历史不含敏感信息。** `history --batch` 会把键入和粘贴的文本、对话框回答和上传路径注释掉。
 - **部分命令会挂载 Chrome 调试器。** `net`、`emulate`、`shot`、`upload` 和 `dialog` 会挂载。运行期间 Chrome 会显示 "started debugging this browser" 提示条,命令结束后自动消失。页面能检测到调试器,反爬系统可能会标记该会话。`snap`、`click`、`fill`、`eval` 等其他命令不挂载。
 
 ## 命令
 
-操作标签页的命令都接受一个 `<match>`:标签页 URL 或标题的一部分,或精确的 `id:<tabId>`。包含所有参数和注意事项的完整参考见 [AGENTS.md](AGENTS.md#commands)。
+操作标签页的命令都接受一个 `<match>`:标签页 URL 或标题的一部分,或精确的 `id:<tabId>`。包含所有参数的完整参考见 [reference/commands.md](.claude/skills/chrome-bridge/reference/commands.md),注意事项见 [reference/recipes.md](.claude/skills/chrome-bridge/reference/recipes.md#gotchas)。
 
 - **读取:** `snap` · `shot` · `measure` · `perf` · `console` · `net` · `fetch` · `eval` · `ask`
 - **操作:** `click` · `fill` · `type` · `paste` · `press` · `hover` · `drag` · `scroll` · `upload` · `clear` · `dialog`
@@ -183,7 +183,7 @@ CI 中可重复执行的回归测试可考虑 [Playwright Test](https://playwrig
 
 ## 本地诊断日志
 
-**后台优先:** 读取、合成事件、直接操作文件输入框的上传和 CDP 截图不会激活标签页。可信输入与文件选择器上传需要合适的可见或聚焦状态,隐藏时会拒绝而非自动切换。`emulate focus` 可显式用于依赖焦点的后台脚本,但不能保证被遮挡窗口的渲染。截图回退现在只使用已经激活的目标页,不再自动切换;`activate` 才会显式改变标签页和窗口焦点。详见[焦点策略表](AGENTS.md#minimize-focus-changes)。
+**后台优先:** 读取、合成事件、直接操作文件输入框的上传和 CDP 截图不会激活标签页。可信输入与文件选择器上传需要合适的可见或聚焦状态,隐藏时会拒绝而非自动切换。`emulate focus` 可显式用于依赖焦点的后台脚本,但不能保证被遮挡窗口的渲染。截图回退现在只使用已经激活的目标页,不再自动切换;`activate` 才会显式改变标签页和窗口焦点。详见[焦点策略表](.claude/skills/chrome-bridge/reference/recipes.md#minimize-focus-changes)。
 
 安全检查覆盖批量关闭和排队的 `--diff` 操作: `close --all` 不能关闭用户已收回的标签页;排队操作在标签页释放或命令期限届满后不会开始,已开始的操作仍可能完成。应用抛出的 `EvalError` 不再触发代码重放。`fetch --csrf` 要求标签页与请求具有相同的 HTTP(S) 来源,绑定已验证的文档并仅在隔离环境执行,拒绝重定向。页面内的操作历史在导航和扩展工作线程重启时清空;当前页面仍可读取自己的提示面板。二进制下载按解码后的字节限制大小。
 

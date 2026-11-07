@@ -1184,7 +1184,7 @@ try {
     // no repo), gated on health, ends by proving no residue via doctor.
     const setupPrompt = fs.existsSync(`${ROOT}extension/setup-prompt.txt`) ? fs.readFileSync(`${ROOT}extension/setup-prompt.txt`, 'utf8') : '';
     assert(
-      setupPrompt.includes('cli.mjs health') && setupPrompt.includes('AGENTS.md') && setupPrompt.includes('cli.mjs doctor') && setupPrompt.includes('archive/refs/heads/master.tar.gz'),
+      setupPrompt.includes('cli.mjs health') && setupPrompt.includes('.claude/skills/chrome-bridge/SKILL.md') && setupPrompt.includes('cli.mjs doctor') && setupPrompt.includes('archive/refs/heads/master.tar.gz'),
       'onboarding: setup-prompt.txt covers download, health gate, manual, doctor'
     );
     const popupSrc = fs.readFileSync(`${ROOT}extension/popup.js`, 'utf8');
@@ -1202,15 +1202,20 @@ try {
     assert(bg.includes("function journal(") && bg.includes("msg.type === 'doctor'"), 'ext: journal helper + doctor handler');
     assert(bg.includes("journal('reap'") && bg.includes("journal('boot'") && bg.includes("journal('mark'") && bg.includes("journal('release'"), 'ext: journal call sites (reap/boot/mark/release)');
 
-    // The per-domain recipe convention (#19): AGENTS.md points agents at
+    // The per-domain recipe convention (#19): the skill points agents at
     // recipes/<domain>.md before acting — a missing dir/file 404s the
     // convention for every agent that reads the manual.
+    const SKILL_DIR = `${ROOT}.claude/skills/chrome-bridge/`;
     assert(
-      fs.existsSync(`${ROOT}recipes/README.md`) && fs.readFileSync(`${ROOT}AGENTS.md`, 'utf8').includes('recipes/README.md'),
-      'recipes: the convention file exists and AGENTS.md points at it'
+      fs.existsSync(`${ROOT}recipes/README.md`) && fs.readFileSync(`${SKILL_DIR}SKILL.md`, 'utf8').includes('recipes/README.md'),
+      'recipes: the convention file exists and SKILL.md points at it'
     );
+    // SKILL.md is the whole user-facing manual's entry point — its relative
+    // links into reference/ must resolve (a symlinked install follows them).
+    for (const link of fs.readFileSync(`${SKILL_DIR}SKILL.md`, 'utf8').matchAll(/\]\((reference\/[^)#]+)/g))
+      assert(fs.existsSync(SKILL_DIR + link[1]), `skill: SKILL.md link ${link[1]} resolves`);
     // The agent-setup paste text is THE install interface (both READMEs embed it
-    // as the quick start) — same drift logic as AGENTS.md below: a stale copy
+    // as the quick start) — same drift logic as the commands block below: a stale copy
     // ships broken install instructions to every new user.
     const setupMd = fs.readFileSync(`${ROOT}docs/agent-setup.md`, 'utf8').trim();
     for (const f of ['README.md', 'README.zh-CN.md']) {
@@ -1221,11 +1226,11 @@ try {
       );
     }
 
-    // AGENTS.md's fenced Commands block is the agent-facing command list —
+    // reference/commands.md's fenced Commands block is the agent-facing command list —
     // doc drift is a real bug class here (the --profile name landed without
     // touching any doc), so it must name exactly the cli USAGE commands.
-    const agentsMd = fs.readFileSync(`${ROOT}AGENTS.md`, 'utf8');
-    const cmdSec = agentsMd.slice(agentsMd.indexOf('## Commands'));
+    const commandsMd = fs.readFileSync(`${SKILL_DIR}reference/commands.md`, 'utf8');
+    const cmdSec = commandsMd.slice(commandsMd.indexOf('## Commands'));
     const fenceStart = cmdSec.indexOf('```');
     const cmdFence = cmdSec.slice(fenceStart + 3, cmdSec.indexOf('```', fenceStart + 3));
     const docCmds = new Set(
@@ -1233,7 +1238,7 @@ try {
     );
     assert(
       [...usageCmds].sort().join() === [...docCmds].sort().join(),
-      'drift: AGENTS.md Commands block vs cli USAGE commands',
+      'drift: reference/commands.md Commands block vs cli USAGE commands',
       `usage: ${[...usageCmds].sort()} docs: ${[...docCmds].sort()}`
     );
 
@@ -1241,11 +1246,11 @@ try {
     // it: it shipped '--diff is its only option' for upload a full release
     // after --chooser landed (#56), found by a manual audit (v1.26.2). It is a
     // summary, not a mirror: every command must be NAMED unless an explicit
-    // omission list keeps it AGENTS.md-only, and a few load-bearing flags must
+    // omission list keeps it reference-only, and a few load-bearing flags must
     // appear. A new command/flag fails here until the skill rides along (or the
     // omission is chosen deliberately).
-    const skillMd = fs.readFileSync(`${ROOT}.claude/skills/chrome-bridge/SKILL.md`, 'utf8');
-    const SKILL_OMITS = ['grid', 'resize', 'stop']; // niche/rare — AGENTS.md-only by design
+    const skillMd = fs.readFileSync(`${SKILL_DIR}SKILL.md`, 'utf8');
+    const SKILL_OMITS = ['grid', 'resize', 'stop']; // niche/rare — reference/commands.md-only by design
     const skillMissing = [...usageCmds].filter((c) => !SKILL_OMITS.includes(c) && !new RegExp(`\\b${c}\\b`).test(skillMd));
     assert(skillMissing.length === 0, 'drift: SKILL.md names every cli USAGE command (else list it in SKILL_OMITS)', `missing: ${skillMissing.sort()}`);
     for (const flag of ['--chooser', '--csrf', '--world', '--trusted', '--profile'])
@@ -1608,6 +1613,22 @@ try {
     assert(xr.status !== 0 && xr.stderr.includes('updates via the store'), 'extreload refuses a store-installed extension', xr.stdout + xr.stderr);
     extS.socket.destroy();
     await new Promise((r) => setTimeout(r, 100)); // let the seat drop before later sections probe
+  }
+
+  // A store build NEWER than the checkout (Chrome auto-updated it, nobody
+  // pulled): health must name the pull + restart, not "nothing to reload".
+  {
+    const extN = await wsClient(PORT, 'delta-newer', undefined, 'store', '999.0.0');
+    extN.onMessage((msg) => extN.send({ id: msg.id, ok: true, result: msg.type === 'ping' ? 'pong' : null }));
+    await new Promise((r) => setTimeout(r, 100));
+    const hn = await cli('health');
+    assert(
+      hn.stderr.includes('is newer than this bridge download') && hn.stderr.includes('pull --ff-only') && hn.stderr.includes('cli.mjs" start'),
+      'health: a store build newer than the checkout says to pull + restart',
+      hn.stderr
+    );
+    extN.socket.destroy();
+    await new Promise((r) => setTimeout(r, 100));
   }
 
   // ?boot= handshake (#63): a dev seat whose load predates the newest mtime

@@ -59,7 +59,7 @@ echo "Connect your AI agent — pick ONE:"
 echo "  Claude Code / GitHub Copilot in VS Code — link the skill:"
 echo "    mkdir -p ~/.claude/skills && ln -sfn $ROOT/.claude/skills/chrome-bridge ~/.claude/skills/chrome-bridge"
 echo "  any other agent — add this line to its instructions (AGENTS.md, CLAUDE.md, .cursorrules, system prompt, …):"
-echo "    To drive my Chrome browser (real logged-in tabs), read $ROOT/AGENTS.md and run \`node $ROOT/cli.mjs <command>\`. If the health check fails, run \`node $ROOT/cli.mjs start\`; if the extension is disconnected, tell me to reload it."
+echo "    To drive my Chrome browser (real logged-in tabs), read $ROOT/.claude/skills/chrome-bridge/SKILL.md and run \`node $ROOT/cli.mjs <command>\`. If the health check fails, run \`node $ROOT/cli.mjs start\`; if the extension is disconnected, tell me to reload it."
 
 # Don't leave the user guessing whether the manual step worked — the server
 # already knows (health.extension); poll until the extension says hello.

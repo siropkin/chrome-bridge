@@ -61,6 +61,12 @@ const imgDims = (b) => {
   return null;
 };
 
+const versionNewer = (a, b) => {
+  const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
+  return false;
+};
+
 // soft: return { error } instead of exiting — for callers that translate a
 // known server-side failure into their own advice (extreload's bootstrap).
 async function cmd(msg, soft) {
@@ -479,6 +485,14 @@ async function runCommand(cmdName, args) {
               // A store install can't reload from disk: its update comes
               // through the Web Store — say so instead of offering extreload.
               if (p.install === 'store') {
+                // Chrome auto-updates the store build; the checkout (CLI, server, skill) only moves on a pull.
+                if (versionNewer(p.v, mine)) {
+                  const repo = fileURLToPath(new URL('.', import.meta.url)).replace(/[\\/]$/, '');
+                  console.error(
+                    `⚠ extension ${p.v} (Chrome Web Store, profile ${p.name || p.id.slice(0, 4)}) is newer than this bridge download (${mine}) — update it: git -C "${repo}" pull --ff-only && node "${repo}/cli.mjs" stop && node "${repo}/cli.mjs" start`
+                  );
+                  continue;
+                }
                 console.error(
                   `⚠ extension ${p.v} is loaded (profile ${p.name || p.id.slice(0, 4)}), the bridge download has ${mine} — store installs update via the Chrome Web Store; nothing to reload`
                 );

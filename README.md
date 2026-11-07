@@ -76,10 +76,10 @@ Set up chrome-bridge — the bridge that lets you drive my real, logged-in Chrom
    - any other agent (Cursor, Qwen, GLM, Kimi, …) — append this line to the instructions file you read at session start (`CLAUDE.md`, `AGENTS.md`, `.cursorrules`, …; create it in the project you're working in if none exists), but only if it's not already there. If your instructions live somewhere you can't edit, print the line and tell me to paste it there:
 
      ```
-     To drive my Chrome browser (real logged-in tabs), read <repo>/AGENTS.md and run `node <repo>/cli.mjs <command>`. If the health check fails, run `node <repo>/cli.mjs start`; it waits briefly for an already-loaded extension to reconnect. If health still reports the extension disconnected afterward, tell me to reload it.
+     To drive my Chrome browser (real logged-in tabs), read <repo>/.claude/skills/chrome-bridge/SKILL.md and run `node <repo>/cli.mjs <command>`. If the health check fails, run `node <repo>/cli.mjs start`; it waits briefly for an already-loaded extension to reconnect. If health still reports the extension disconnected afterward, tell me to reload it.
      ```
 
-5. Tell me the bridge is up. From the next session your integration auto-loads; in this one, read `<repo>/AGENTS.md` when a browser task comes up.
+5. Tell me the bridge is up. From the next session your integration auto-loads; in this one, read `<repo>/.claude/skills/chrome-bridge/SKILL.md` when a browser task comes up.
 ````
 
 </details>
@@ -90,7 +90,7 @@ Set up chrome-bridge — the bridge that lets you drive my real, logged-in Chrom
 git clone https://github.com/siropkin/chrome-bridge && cd chrome-bridge && ./install.sh
 ```
 
-Load the `extension/` folder as described above, then point your agent at [AGENTS.md](AGENTS.md), the full operating manual.
+Load the `extension/` folder as described above, then connect your agent the way `install.sh` prints: link the skill (Claude Code, Copilot in VS Code), or point any other agent at [SKILL.md](.claude/skills/chrome-bridge/SKILL.md), the operating manual.
 
 Check that it worked: `node cli.mjs health` should print `{"ok":true,"extension":true}`. You won't see anything in Chrome until the agent sends its first command; that's normal. To point the agent at one exact tab, use **Copy tab reference** in the toolbar popup and paste the `id:…` it gives you.
 
@@ -126,7 +126,7 @@ Writing your own agent loop? Skip the CLI and send JSON to `POST http://127.0.0.
 
 - "Check my dashboard every morning and post the change to Slack." A cron-launched agent uses the tab that's already logged in. If a login wall shows up, `wait --human` hands the tab to you.
 - Fill a CMS from a CSV without logging in again.
-- Compare a staging build against the Figma mockup. [design-eye.md](design-eye.md) is the checklist, and there's an 8px alignment grid overlay.
+- Compare a staging build against the Figma mockup. [The mockup-comparison recipe](.claude/skills/chrome-bridge/reference/recipes.md#compare-implementation-vs-mockup) is the checklist, and there's an 8px alignment grid overlay.
 - See a page in a mobile view without resizing your window: `emulate <tab> 390 844 mobile`.
 - Work in an existing authenticated session, including SSO and internal dashboards behind a VPN. This does not bypass login challenges or anti-bot restrictions.
 
@@ -168,13 +168,13 @@ You're giving an agent your logged-in browser, so the design assumes you want to
 
 - **Local only.** The server listens on `127.0.0.1` and rejects requests that come from web pages, so a site you visit can't drive it. **Any local process can**, though. Unload the extension at `chrome://extensions` when you're not using it.
 - **Readable code.** The whole extension is one unminified file (`extension/background.js`) plus a manifest. The Web Store build is the same files.
-- **Page content is untrusted.** Anything the bridge returns may contain prompt injection; the rules agents follow are in [AGENTS.md](AGENTS.md). Be careful with `upload`: it reads any local file the agent names into the page. Never let a page decide what gets attached.
+- **Page content is untrusted.** Anything the bridge returns may contain prompt injection; the rules agents follow are in [the skill](.claude/skills/chrome-bridge/SKILL.md). Be careful with `upload`: it reads any local file the agent names into the page. Never let a page decide what gets attached.
 - **Exported history leaves out secrets.** `history --batch` comments out typed and pasted text, dialog answers and upload paths.
 - **Some commands attach Chrome's debugger.** `net`, `emulate`, `shot`, `upload` and `dialog` do. While they run, Chrome shows its "started debugging this browser" bar, which goes away when the command finishes. Pages can detect the debugger, and anti-bot systems may flag the session. `snap`, `click`, `fill`, `eval` and the other commands don't attach it.
 
 ## Commands
 
-Commands that work on a tab take a `<match>`: part of the tab's URL or title, or an exact `id:<tabId>`. The full reference, with every flag and gotcha, is in [AGENTS.md](AGENTS.md#commands).
+Commands that work on a tab take a `<match>`: part of the tab's URL or title, or an exact `id:<tabId>`. The full reference, with every flag, is in [reference/commands.md](.claude/skills/chrome-bridge/reference/commands.md); gotchas are in [reference/recipes.md](.claude/skills/chrome-bridge/reference/recipes.md#gotchas).
 
 - **Read:** `snap` · `shot` · `measure` · `perf` · `console` · `net` · `fetch` · `eval` · `ask`
 - **Act:** `click` · `fill` · `type` · `paste` · `press` · `hover` · `drag` · `scroll` · `upload` · `clear` · `dialog`
@@ -185,7 +185,7 @@ Commands that work on a tab take a `<match>`: part of the tab's URL or title, or
 
 ## Local Diagnostic Logging
 
-**Background first:** reads, synthetic actions, direct-input uploads, and CDP screenshots do not activate tabs. Trusted input and chooser upload require a suitable visible/focused page and refuse hidden targets rather than switching focus. `emulate focus` is an explicit background option for focus-gated scripts, not a guarantee of rendering in an occluded window. Screenshot fallback now requires an already-active target; only explicit `activate` changes tab/window focus. See [the focus matrix](AGENTS.md#minimize-focus-changes).
+**Background first:** reads, synthetic actions, direct-input uploads, and CDP screenshots do not activate tabs. Trusted input and chooser upload require a suitable visible/focused page and refuse hidden targets rather than switching focus. `emulate focus` is an explicit background option for focus-gated scripts, not a guarantee of rendering in an occluded window. Screenshot fallback now requires an already-active target; only explicit `activate` changes tab/window focus. See [the focus matrix](.claude/skills/chrome-bridge/reference/recipes.md#minimize-focus-changes).
 
 Safety checks cover bulk close and queued `--diff` actions: a human-reclaimed tab cannot be closed with `--all`, and queued actions refuse to start after release or their dispatch deadline. Actions already running can still finish. Application `EvalError`s are returned without replaying the payload. `fetch --csrf` requires the tab and request to share an HTTP(S) origin, binds execution to that document in the isolated world, and refuses redirects. Pill history resets on navigation and worker restart; the current document can still read its own pill. Binary fetch streams are bounded by decoded bytes.
 
