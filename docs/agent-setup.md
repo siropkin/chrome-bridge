@@ -46,4 +46,4 @@ Set up chrome-bridge — the bridge that lets you drive my real, logged-in Chrom
      To drive my Chrome browser (real logged-in tabs), read <repo>/.claude/skills/chrome-bridge/SKILL.md and run `node <repo>/cli.mjs <command>`. If the health check fails, run `node <repo>/cli.mjs start`; it waits briefly for an already-loaded extension to reconnect. If health still reports the extension disconnected afterward, tell me to reload it.
      ```
 
-5. Tell me the bridge is up. From the next session your integration auto-loads; in this one, read `<repo>/.claude/skills/chrome-bridge/SKILL.md` when a browser task comes up.
+5. Tell me the bridge is up. From the next session your integration auto-loads; in this one, read `<repo>/.claude/skills/chrome-bridge/SKILL.md` when a browser task comes up. Later updates are one command: `node <repo>/cli.mjs update` — it brings the checkout to the code matching my extension (the branch for an unpacked build, the matching release for a Chrome Web Store one) and restarts the bridge; run it whenever health warns that the bridge and the extension are out of step.

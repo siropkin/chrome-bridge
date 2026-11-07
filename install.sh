@@ -27,7 +27,7 @@ if body=$(probe "$HEALTH") && [[ $body =~ $OK ]]; then
   echo "✓ server already running (localhost:$PORT)"
   # The running server is the one from when it was started — if the repo was
   # upgraded since, it's old code with a passing health check. Say so.
-  echo "  just upgraded? restart it:  node cli.mjs stop && node cli.mjs start"
+  echo "  updating? node cli.mjs update  (matches the checkout to your extension and restarts the server)"
 else
   nohup node server.mjs >> server.log 2>&1 &
   for ((i=0;i<20;i++)); do

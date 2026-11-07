@@ -4,10 +4,11 @@
 import fs from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Script } from 'node:vm';
+import { updateTarget } from './drift.mjs';
 
 // Port 9333 is hardcoded in FOUR places: extension/background.js (WS_URL —
 // the extension can't read BRIDGE_PORT), server.mjs, extension/popup.js, here. Change all four.
@@ -59,12 +60,6 @@ const imgDims = (b) => {
     if (b[i + 1] >= 0xc0 && b[i + 1] <= 0xcf && b[i + 1] !== 0xc4 && b[i + 1] !== 0xc8 && b[i + 1] !== 0xcc)
       return `${b.readUInt16BE(i + 7)}x${b.readUInt16BE(i + 5)}`;
   return null;
-};
-
-const versionNewer = (a, b) => {
-  const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
-  for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
-  return false;
 };
 
 // soft: return { error } instead of exiting — for callers that translate a
@@ -422,7 +417,15 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     does NOT render an occluded window)
   unemulate <match>                 clear emulation + detach debugger
   resize <match> <w> <h>            resize the window
-  health                            server + extension status
+  health                            server + extension status; ⚠ lines on stderr name any
+                                    version drift (server vs its checkout, extension vs repo)
+  update [--check]                  bring this checkout to the code matching the connected
+                                    extension and restart the server on it: a Chrome Web
+                                    Store install pins to that extension's release tag, an
+                                    unpacked one pulls the branch (git ff-only, or a fresh
+                                    download without git; local commits/edits are never
+                                    moved). Restarting drops other sessions' in-flight
+                                    commands. --check prints the plan, changes nothing
   start                             start the server (detached) if it's down
   stop                              stop the server
 
@@ -480,42 +483,20 @@ async function runCommand(cmdName, args) {
         // failed stays readable — and the stale-version warnings above ride
         // stderr either way.
         if (!h.extension) process.exitCode = 1;
-        // A loaded-but-stale extension still passes health (the SW seat is old
-        // code — README's upgrade trap). Each profile self-reports its version
-        // on the WS handshake; compare them with the manifest on disk.
-        if (h.extension && h.profiles?.length) {
+        // Version drift (server vs its checkout, each extension vs the
+        // manifest) is computed server-side (drift.mjs) and arrives in h.warn.
+        // A server without h.v predates that — it is old code by definition.
+        if (!h.v) console.error('⚠ the running server predates version reporting — it is old code: run `cli.mjs update` (or `cli.mjs stop && cli.mjs start`)');
+        else {
+          // This CLI may belong to another checkout than the running server.
           let mine = null;
           try {
-            mine = JSON.parse(fs.readFileSync(fileURLToPath(new URL('./extension/manifest.json', import.meta.url)), 'utf8')).version;
+            mine = JSON.parse(fs.readFileSync(fileURLToPath(new URL('./package.json', import.meta.url)), 'utf8')).version;
           } catch {}
-          for (const p of h.profiles) {
-            if (mine && p.v && p.v !== mine) {
-              // Bare extreload is refused when several profiles are connected
-              // (route() can't pick one) — name the stale profile in the fix.
-              // A store install can't reload from disk: its update comes
-              // through the Web Store — say so instead of offering extreload.
-              if (p.install === 'store') {
-                // Chrome auto-updates the store build; the checkout (CLI, server, skill) only moves on a pull.
-                if (versionNewer(p.v, mine)) {
-                  const repo = fileURLToPath(new URL('.', import.meta.url)).replace(/[\\/]$/, '');
-                  const update = fs.existsSync(join(repo, '.git'))
-                    ? `git -C "${repo}" pull --ff-only`
-                    : `curl -fsSL https://github.com/siropkin/chrome-bridge/archive/refs/heads/master.tar.gz | tar xz --strip-components=1 -C "${repo}"`;
-                  console.error(
-                    `⚠ extension ${p.v} (Chrome Web Store, profile ${p.name || p.id.slice(0, 4)}) is newer than this bridge download (${mine}) — update it: ${update} && node "${repo}/cli.mjs" stop && node "${repo}/cli.mjs" start`
-                  );
-                  continue;
-                }
-                console.error(
-                  `⚠ extension ${p.v} is loaded (profile ${p.name || p.id.slice(0, 4)}), the bridge download has ${mine} — store installs update via the Chrome Web Store; nothing to reload`
-                );
-                continue;
-              }
-              const fix =
-                h.profiles.length > 1 ? `cli.mjs extreload --profile ${JSON.stringify(p.name || p.id.slice(0, 4))}` : 'cli.mjs extreload';
-              console.error(`⚠ extension ${p.v} is loaded (profile ${p.name || p.id.slice(0, 4)}), the repo has ${mine} — run \`${fix}\` (or reload at chrome://extensions)`);
-            }
-          }
+          const here = fileURLToPath(new URL('.', import.meta.url));
+          const differ = process.platform === 'win32' ? String(h.repo).toLowerCase() !== here.toLowerCase() : h.repo !== here;
+          if (mine && h.repo && differ && mine !== h.v)
+            console.error(`⚠ this CLI (${mine}, ${here}) talks to a server from another checkout (${h.v}, ${h.repo}) — run that checkout's cli.mjs, or stop it and start this one`);
         }
         // Same drift class for the installed Claude Code skill: a `cp -r`
         // copy goes stale on every repo update (health is the natural place
@@ -598,6 +579,125 @@ async function runCommand(cmdName, args) {
           ? 'started (log: ' + logPath + ') — extension connected'
           : 'started (log: ' + logPath + ') — server ready; extension not connected yet (if it was already loaded, run health again in a moment)'
       );
+      break;
+    }
+
+    case 'update': {
+      // Move THIS checkout to the code matching the connected extension, then
+      // restart the server on it. Store install → the release tag of the
+      // extension Chrome runs, so the skill and CLI document exactly that
+      // build (master runs ahead of the store while a release is in review).
+      // Unpacked → the branch: that extension loads from this checkout.
+      // Unpacked extensions are NOT reloaded here — extreload wipes driven-tab
+      // memory that other agent sessions may hold; health names the fix.
+      if (args.some((a) => a !== '--check')) fail('usage: update [--check]');
+      const check = args.includes('--check');
+      const repo = fileURLToPath(new URL('.', import.meta.url)).replace(/[\\/]$/, '');
+      const self = fileURLToPath(import.meta.url);
+      // Child CLI runs pick up the NEW code once the files moved.
+      const runCli = (...a) => spawnSync(process.execPath, [self, ...a], { encoding: 'utf8', env: process.env });
+      const pkgVersion = () => {
+        try {
+          return JSON.parse(fs.readFileSync(join(repo, 'package.json'), 'utf8')).version;
+        } catch {
+          return null;
+        }
+      };
+      const getHealth = () => fetch(`${BASE}/health`).then((r) => r.json()).then((x) => (x?.ok === true ? x : null)).catch(() => null);
+      let h = await getHealth();
+      if (!h && !check) {
+        runCli('start');
+        h = await getHealth();
+      }
+      if (!h) fail("bridge server not running — update reads the connected extension's version from it: node cli.mjs start");
+      const plan = updateTarget((h.profiles || []).map((p) => ({ pid: p.id, name: p.name, v: p.v, install: p.install })));
+      if (plan.error) fail(plan.error);
+      const target = plan.target === 'tag' ? plan.tag : 'the branch';
+      // win32 paths compare case-insensitively (c:\ vs C:\ from how the CLI was invoked)
+      const samePath = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
+      const serverHere = !!h.repo && samePath(String(h.repo).replace(/[\\/]$/, ''), repo);
+      const before = pkgVersion();
+      const steps = [];
+      let changed = false;
+      const isGit = fs.existsSync(join(repo, '.git'));
+      if (isGit) {
+        const git = (...a) => spawnSync('git', ['-C', repo, ...a], { encoding: 'utf8' });
+        if (git('--version').error) fail('git not found — install git, or remove .git to update by download');
+        if (git('status', '--porcelain', '--untracked-files=no').stdout.trim()) fail(`local edits to tracked files in ${repo} — commit or stash them, then re-run update (nothing changed)`);
+        const head0 = git('rev-parse', 'HEAD').stdout.trim();
+        if (plan.target === 'branch') {
+          if (check) steps.push('git pull --ff-only');
+          else {
+            const r = git('pull', '--ff-only', '--quiet');
+            if (r.status) fail('git pull --ff-only failed — nothing changed:\n' + (r.stderr || r.stdout).trim());
+          }
+        } else {
+          const tag = plan.tag;
+          const shallow = git('rev-parse', '--is-shallow-repository').stdout.trim() === 'true';
+          const hasTag = git('rev-parse', '-q', '--verify', `refs/tags/${tag}`).status === 0;
+          if (check && !hasTag) steps.push(`fetch ${tag} from origin, then fast-forward to it, or move back to it if nothing local would move`);
+          else {
+            // --check never fetches (it changes nothing); a real run never
+            // force-moves a local tag — git refuses to clobber one, so do we.
+            if (!check) {
+              const f = git('fetch', '--quiet', ...(shallow ? ['--depth', '1'] : []), 'origin', `refs/tags/${tag}:refs/tags/${tag}`);
+              if (f.status) fail(`could not fetch ${tag} from origin (or a local ${tag} tag points elsewhere) — nothing changed:\n${(f.stderr || '').trim()}`);
+            }
+            const want = git('rev-parse', `${tag}^{commit}`).stdout.trim();
+            if (head0 === want) steps.push(`already at ${tag}`);
+            else if (git('merge-base', '--is-ancestor', 'HEAD', tag).status === 0) {
+              if (check) steps.push(`git merge --ff-only ${tag}`);
+              else if (git('merge', '--ff-only', '--quiet', tag).status) fail(`fast-forward to ${tag} failed — nothing changed`);
+            } else {
+              // Ahead of the store's release (or a shallow clone that can't
+              // tell). Moving is safe only when every commit HEAD has stays
+              // reachable from origin or a tag — a fresh clone of master, or a
+              // previous release pin; local commits (someone's recipes) stay put.
+              const localOnly = Number(git('rev-list', '--count', 'HEAD', '--not', '--remotes', '--tags').stdout.trim() || 0);
+              if (localOnly) fail(`${repo} has ${localOnly} local commit(s) not on origin — left as is; it can't be matched to ${tag} without moving them`);
+              if (check) steps.push(`git reset --keep ${tag} (nothing local is lost — every commit stays on origin or a tag)`);
+              else if (git('reset', '--keep', '--quiet', tag).status) fail(`moving to ${tag} failed — nothing changed`);
+            }
+          }
+        }
+        changed = !check && git('rev-parse', 'HEAD').stdout.trim() !== head0;
+        if (changed) steps.push(`checkout moved to ${target}`);
+        else if (!check && !steps.length) steps.push(`already up to date with ${target}`);
+      } else {
+        const ref = plan.target === 'tag' ? `refs/tags/${plan.tag}` : 'refs/heads/master';
+        const url = `https://github.com/siropkin/chrome-bridge/archive/${ref}.tar.gz`;
+        if (check) steps.push('download ' + url);
+        else {
+          const res = await fetch(url).catch(() => null);
+          if (!res?.ok) fail(`download failed (${res?.status || 'network error'}): ${url} — nothing changed`);
+          const tmp = join(tmpdir(), `chrome-bridge-${process.pid}.tar.gz`);
+          fs.writeFileSync(tmp, Buffer.from(await res.arrayBuffer()));
+          const t = spawnSync('tar', ['xzf', tmp, '--strip-components=1', '-C', repo], { encoding: 'utf8' });
+          fs.rmSync(tmp, { force: true });
+          if (t.status) fail('unpacking failed — the download may be partly applied; re-run update:\n' + (t.stderr || '').trim());
+          changed = true;
+          steps.push(`downloaded ${target === 'the branch' ? 'master' : target}`);
+        }
+      }
+      const after = check ? before : pkgVersion();
+      const serverDrift = !h.v || (h.warn || []).some((w) => /^this server runs|^server code on disk/.test(w));
+      const restart = serverHere && (changed || h.v !== after || serverDrift);
+      // A server too old to report its checkout can't be matched to this one.
+      const elsewhere = h.repo ? `it runs from ${h.repo}; run that checkout's cli.mjs update` : "it predates checkout reporting — restart it yourself: cli.mjs stop && cli.mjs start";
+      if (check) {
+        print({ repo, target, via: isGit ? 'git' : 'download', steps, restart: serverHere ? 'when anything changed or the server runs older code' : `no — ${elsewhere}`, ...(plan.note ? { note: plan.note } : {}) });
+        break;
+      }
+      // A restart drops in-flight commands of every session on this server.
+      if (restart) {
+        runCli('stop');
+        steps.push('server restarted — ' + runCli('start').stdout.trim());
+      } else if (!serverHere) steps.push(`server not restarted — ${elsewhere}`);
+      print({ repo, from: before, to: after, steps });
+      if (plan.note) console.error('⚠ ' + plan.note);
+      // Health on the NEW code: whatever is still out of step (an unpacked
+      // build to extreload, a copied skill) prints its own fix.
+      process.stderr.write(runCli('health').stderr || '');
       break;
     }
 

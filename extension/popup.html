@@ -25,6 +25,11 @@
   /* bridge down: the setup prompt is the next step, a tab reference has no one to read it */
   #setup.primary { background: linear-gradient(135deg, #7c3aed, #4f46e5, #0e7490); color: #fff; border: 0; }
   #copy.secondary { background: #fff; color: #7c3aed; border: 1px solid #7c3aed; }
+  /* the extension and the bridge on disk are out of step — amber, not error red: it still works, partly */
+  #update { background: #fef3c7; color: #78350f; border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; font-size: 12px; }
+  #copy-update { margin-top: 6px; background: #fff; color: #78350f; border: 1px solid #b45309; }
+  #update-status { margin-top: 4px; }
+  #update-status:empty { margin-top: 0; }
   .hint { margin-top: 6px; color: #6b5f85; font-size: 11px; } /* AA on white — #8a7ca8 was 3.8:1 */
   .divider { border-top: 1px solid #ede9fe; margin: 10px 0; }
   #rate { display: block; margin-top: 8px; text-align: center; color: #7c3aed; font-size: 11px; text-decoration: none; }
@@ -38,6 +43,11 @@
   #logging-confirm { margin-top: 6px; background: #b91c1c; }
 </style>
 <div id="bridge-status" role="status"><span class="dot"></span><span id="status-text">checking…</span></div>
+<div id="update" hidden>
+  <div id="update-text"></div>
+  <button id="copy-update">Copy update prompt for your AI agent</button>
+  <div id="update-status" role="status"></div>
+</div>
 <div id="title">…</div>
 <div id="ref"></div>
 <div id="profile" class="hint" title="Pass this name as --profile when several Chrome profiles are connected" hidden>Profile: <b id="profile-name"></b> · what your agent calls this profile</div>

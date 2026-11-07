@@ -42,11 +42,41 @@ function renderStatus() {
   el.className = 'ok';
   $('status-text').textContent = 'bridge ready';
 }
+
+// Version drift banner: Chrome auto-updates a store extension, but the bridge
+// on disk (server, CLI, the agent's skill) only moves when someone runs
+// `cli.mjs update` — the human sees it here and hands the fix to their agent.
+// A server without h.v predates version reporting: no banner (health warns).
+let updatePrompt = '';
+function renderUpdate() {
+  const own = chrome.runtime.getManifest?.().version;
+  const h = bridgeHealth;
+  if (!own || !h?.v) return;
+  let text = null;
+  if (h.v !== own) text = `This extension is ${own}; the bridge on your computer is ${h.v}.`;
+  else if (h.disk && h.disk !== h.v) text = `The bridge on your computer was updated to ${h.disk} but still runs ${h.v}.`;
+  if (!text) return;
+  const cli = `${String(h.repo || '').replace(/[\\/]$/, '')}/cli.mjs`;
+  updatePrompt = `My chrome-bridge is out of step: ${text} Run node "${cli}" update, then node "${cli}" health, and tell me what changed and whether anything still needs me (for example, reloading the extension at chrome://extensions).`;
+  $('update-text').textContent = text + ' Your agent can update it.';
+  $('update').hidden = false;
+}
+$('copy-update').addEventListener('click', () => {
+  navigator.clipboard.writeText(updatePrompt).then(
+    () => {
+      $('update-status').textContent = 'Copied ✓ — paste it to your agent';
+    },
+    (e) => {
+      $('update-status').textContent = 'Copy failed: ' + e;
+    }
+  );
+});
 fetch('http://127.0.0.1:9333/health', { signal: AbortSignal.timeout(4000) }) // 2s was tight enough to false-negative on a busy server mid-screenshot
   .then((r) => r.json())
   .then((h) => {
     bridgeHealth = h;
     renderStatus();
+    renderUpdate();
   })
   .catch(() => {
     $('bridge-status').className = 'down';

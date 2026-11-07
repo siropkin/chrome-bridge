@@ -7,6 +7,8 @@ npx @siropkin/chrome-bridge          # install + start, print next steps
 npx @siropkin/chrome-bridge health   # then it IS the CLI — args forward to it
 ```
 
+Update later with `npx @siropkin/chrome-bridge update`: it brings the checkout to the code matching your extension (the matching release for a Chrome Web Store install) and restarts the server.
+
 What it does: clones the repo into `~/.chrome-bridge` (override with `CHROME_BRIDGE_HOME`), starts the local server (127.0.0.1:9333), then forwards your args to the real CLI. A bare `npx @siropkin/chrome-bridge` (no args) also freshens the checkout with a best-effort `git pull` — forwarded commands never pull, so a running server and its CLI can't silently drift apart mid-session. The Chrome half is the [Chrome Web Store extension](https://chromewebstore.google.com/detail/chrome-bridge/kmhjlnokjigmnimgjjmiahlinjbcebkg) (or load `~/.chrome-bridge/extension` unpacked).
 
 This package is intentionally thin — the npm version can lag the repo harmlessly since the install refreshes itself from git. The canonical source, docs, and issue tracker are the GitHub repo.

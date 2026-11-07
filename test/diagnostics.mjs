@@ -252,10 +252,11 @@ test('popup setup restarts fetched code and reloads stale extensions', () => {
   const prompt = fs.readFileSync(new URL('../extension/setup-prompt.txt', import.meta.url), 'utf8');
   assert.match(prompt, /cli\.mjs stop && node ~\/chrome-bridge\/cli\.mjs start/);
   assert.match(prompt, /cli\.mjs extreload/);
+  assert.match(prompt, /cli\.mjs update — it moves the download to the release of this extension/);
   assert.match(prompt, /Preserve existing diagnostic logs and settings/);
 });
 
-function popupHarness(sendMessage, { tab, health = { ok: true, extension: true }, healthDown = false } = {}) {
+function popupHarness(sendMessage, { tab, health = { ok: true, extension: true }, healthDown = false, manifestVersion, clipboard } = {}) {
   const elements = new Map();
   const element = (id) => {
     if (!elements.has(id)) elements.set(id, { value: '', checked: false, hidden: true, handlers: {}, addEventListener(type, handler) { this.handlers[type] = handler; } });
@@ -265,7 +266,8 @@ function popupHarness(sendMessage, { tab, health = { ok: true, extension: true }
     document: { getElementById: element },
     fetch: async () => { if (healthDown) throw new Error('connection refused'); return { json: async () => health }; },
     AbortSignal,
-    chrome: { tabs: { query: async () => tab ? [tab] : [] }, runtime: { sendMessage } },
+    ...(clipboard ? { navigator: { clipboard } } : {}),
+    chrome: { tabs: { query: async () => tab ? [tab] : [] }, runtime: { sendMessage, ...(manifestVersion ? { getManifest: () => ({ version: manifestVersion }) } : {}) } },
   });
   const settle = () => new Promise((resolve) => setImmediate(resolve));
   const open = async () => {
@@ -410,6 +412,30 @@ test('popup leads with the setup prompt when the bridge is down, and shows the f
   assert.equal(up.element('status-text').textContent, 'bridge ready');
   assert.notEqual(up.element('setup').className, 'primary');
   assert.equal(up.element('ref').textContent, 'id:7 --profile poplar');
+});
+
+test('popup update banner: version drift shows it with a copyable update prompt; in step or an old server stays quiet', async () => {
+  const state = async () => ({ count: 0, active: false, connected: true, profile: 'poplar' });
+  const health = (extra) => ({ ok: true, extension: true, repo: '/home/u/chrome-bridge/', ...extra });
+  let copied = '';
+  const clipboard = { writeText: async (t) => { copied = t; } };
+  const older = popupHarness(state, { tab: { id: 7 }, health: health({ v: '1.30.6', disk: '1.30.6' }), manifestVersion: '1.30.5', clipboard });
+  await older.settle();
+  assert.equal(older.element('update').hidden, false);
+  assert.match(older.element('update-text').textContent, /This extension is 1\.30\.5; the bridge on your computer is 1\.30\.6\./);
+  await older.element('copy-update').handlers.click();
+  await older.settle();
+  assert.match(copied, /node "\/home\/u\/chrome-bridge\/cli\.mjs" update/);
+  assert.match(older.element('update-status').textContent, /Copied/);
+  const restart = popupHarness(state, { tab: { id: 7 }, health: health({ v: '1.30.6', disk: '1.30.7' }), manifestVersion: '1.30.6' });
+  await restart.settle();
+  assert.match(restart.element('update-text').textContent, /updated to 1\.30\.7 but still runs 1\.30\.6/);
+  const inStep = popupHarness(state, { tab: { id: 7 }, health: health({ v: '1.30.6', disk: '1.30.6' }), manifestVersion: '1.30.6' });
+  await inStep.settle();
+  assert.equal(inStep.element('update').hidden, true);
+  const oldServer = popupHarness(state, { tab: { id: 7 }, health: health({}), manifestVersion: '1.30.6' });
+  await oldServer.settle();
+  assert.equal(oldServer.element('update').hidden, true);
 });
 
 test('popup release errors and missing acknowledgements never claim success', async () => {

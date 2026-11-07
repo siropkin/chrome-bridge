@@ -213,7 +213,15 @@ emulate <match> <w> <h> [mobile] [dsf=N]   CDP device view (no window resize); d
                                   it does NOT render an occluded window
 unemulate <match>                 clear emulation + detach debugger
 resize <match> <w> <h>            resize the window
-health                            server + extension status
+health                            server + extension status; ⚠ lines on stderr name any
+                                  version drift (server vs its checkout, extension vs repo)
+update [--check]                  bring this checkout to the code matching the connected
+                                  extension and restart the server on it: a Chrome Web
+                                  Store install pins to that extension's release tag, an
+                                  unpacked one pulls the branch (git ff-only, or a fresh
+                                  download without git; local commits/edits are never
+                                  moved). Restarting drops other sessions' in-flight
+                                  commands. --check prints the plan, changes nothing
 start                             start the server (detached) if it's down
 stop                              stop the server
 ```
@@ -237,4 +245,5 @@ stop                              stop the server
 - `emulate` — `dsf=2` = retina-crisp `shot` on any display. Plain `emulate <match> <w> <h>` pins dsf=1, so screenshots drop to 1x on a retina screen until `unemulate`; the reply's `dsf` field says which factor is in effect.
 - `shot` — `--crop x,y,w,h` is in CSS px, viewport-relative (straight from `measure`); the saved file is crop × devicePixelRatio. The crop renders beyond the viewport, so an element below the fold or taller than the window captures whole without scrolling — no `emulate <w> <tall h>` needed. Missing output folders are created.
 - `doctor` — `--fix` releases leftover markers (driven tabs untouched).
+- `update` — Web Store install: the checkout goes to the tag `v<extension version>`. It fast-forwards when behind. When ahead, it moves back with `git reset --keep`, but only if every newer commit is upstream. Local commits or tracked edits make it refuse, and nothing moves. Unpacked install: `git pull --ff-only`. No `.git`: it downloads the matching archive over the checkout. It restarts the server only when the server runs from this checkout and something changed (or the server runs older code). It never reloads an extension: `extreload` wipes driven-tab memory other sessions may hold, so the health it prints at the end names that fix.
 - `history` — `--batch out` exports a replayable script; typed/pasted text, dialog answers and upload paths are redacted, single-line eval code is kept verbatim: never embed secrets in eval.

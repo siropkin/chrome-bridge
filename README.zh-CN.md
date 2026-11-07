@@ -78,7 +78,7 @@ Set up chrome-bridge — the bridge that lets you drive my real, logged-in Chrom
      To drive my Chrome browser (real logged-in tabs), read <repo>/.claude/skills/chrome-bridge/SKILL.md and run `node <repo>/cli.mjs <command>`. If the health check fails, run `node <repo>/cli.mjs start`; it waits briefly for an already-loaded extension to reconnect. If health still reports the extension disconnected afterward, tell me to reload it.
      ```
 
-5. Tell me the bridge is up. From the next session your integration auto-loads; in this one, read `<repo>/.claude/skills/chrome-bridge/SKILL.md` when a browser task comes up.
+5. Tell me the bridge is up. From the next session your integration auto-loads; in this one, read `<repo>/.claude/skills/chrome-bridge/SKILL.md` when a browser task comes up. Later updates are one command: `node <repo>/cli.mjs update` — it brings the checkout to the code matching my extension (the branch for an unpacked build, the matching release for a Chrome Web Store one) and restarts the bridge; run it whenever health warns that the bridge and the extension are out of step.
 ````
 
 </details>
@@ -201,16 +201,16 @@ CI 中可重复执行的回归测试可考虑 [Playwright Test](https://playwrig
 <details>
 <summary>升级、端口、Windows、多个 Chrome 配置</summary>
 
-**升级。** `git pull` 之后要重启服务器并重新加载扩展。旧服务器会继续运行旧代码,而且 `health` 依然通过,没有别的东西会提醒你:
+**升级。** 一条命令即可更新下载的代码,并让服务器在新代码上重启:
 
 ```bash
-node cli.mjs stop && node cli.mjs start
-node cli.mjs extreload
+node cli.mjs update
+node cli.mjs extreload   # 仅限解压安装,且 health 提示时才需要
 ```
 
-加载的扩展比仓库旧时,`health` 会发出警告。
+`update` 会让代码与你的扩展保持一致:解压安装跟随分支;应用商店安装则切换到与 Chrome 已装扩展相同的发布版本,因为最新代码可能领先于应用商店。它从不移动本地修改或提交,`update --check` 可先查看计划。任何不一致 `health` 都会提示:拉取代码后服务器仍在运行旧代码,或扩展比下载的代码旧或新。
 
-**应用商店安装。** Chrome 会自动更新扩展,但不会更新你下载的桥接器。扩展版本更新时,`health` 会提示并给出更新加重启的命令;智能体会执行它。
+**应用商店安装。** Chrome 会自动更新扩展,但不会更新你下载的桥接器。两者不一致时,`health`(以及该配置文件上的每条命令)都会提示,弹窗也会显示横幅,并提供 **Copy update prompt** 按钮,方便交给智能体。解决办法是 `node cli.mjs update`。
 
 **服务器停了。** 服务器挂掉或机器重启后,智能体的 health 检查会失败,智能体会用 `node cli.mjs start` 自行重启。
 

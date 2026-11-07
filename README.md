@@ -80,7 +80,7 @@ Set up chrome-bridge — the bridge that lets you drive my real, logged-in Chrom
      To drive my Chrome browser (real logged-in tabs), read <repo>/.claude/skills/chrome-bridge/SKILL.md and run `node <repo>/cli.mjs <command>`. If the health check fails, run `node <repo>/cli.mjs start`; it waits briefly for an already-loaded extension to reconnect. If health still reports the extension disconnected afterward, tell me to reload it.
      ```
 
-5. Tell me the bridge is up. From the next session your integration auto-loads; in this one, read `<repo>/.claude/skills/chrome-bridge/SKILL.md` when a browser task comes up.
+5. Tell me the bridge is up. From the next session your integration auto-loads; in this one, read `<repo>/.claude/skills/chrome-bridge/SKILL.md` when a browser task comes up. Later updates are one command: `node <repo>/cli.mjs update` — it brings the checkout to the code matching my extension (the branch for an unpacked build, the matching release for a Chrome Web Store one) and restarts the bridge; run it whenever health warns that the bridge and the extension are out of step.
 ````
 
 </details>
@@ -203,16 +203,16 @@ Popup controls work from Chrome 117. After an uncertain settings write, the popu
 <details>
 <summary>Upgrades, port, Windows, several Chrome profiles</summary>
 
-**Upgrading.** After `git pull`, restart the server and reload the extension. The old server keeps running the old code, and `health` still passes, so nothing else reminds you:
+**Upgrading.** One command updates the checkout and restarts the server on the new code:
 
 ```bash
-node cli.mjs stop && node cli.mjs start
-node cli.mjs extreload
+node cli.mjs update
+node cli.mjs extreload   # unpacked install only, when health asks for it
 ```
 
-`health` warns when the loaded extension is older than the repo.
+`update` matches the checkout to your extension. An unpacked build follows the branch; a Web Store build gets the release that matches the extension Chrome installed, since the latest code can be ahead of the store. It never moves local edits or commits, and `update --check` shows the plan first. `health` warns about anything out of step: a server still running old code after a pull, an extension older or newer than the checkout.
 
-**Web Store install.** Chrome updates the extension by itself, but not your bridge download. When the extension gets ahead, `health` says so and prints the update + restart line; the agent runs it.
+**Web Store install.** Chrome updates the extension by itself, but not your bridge download. When they differ, `health` (and every command on that profile) says so, and the popup shows a banner with a **Copy update prompt** button for your agent. The fix is `node cli.mjs update`.
 
 **Server stopped.** If the server dies or the machine reboots, the agent's health check fails and the agent restarts it with `node cli.mjs start`.
 

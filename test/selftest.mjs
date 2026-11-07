@@ -139,8 +139,8 @@ await Promise.race([
 ]);
 
 try {
-  const diagnosticTests = spawnSync(process.execPath, ['--test', `${ROOT}/test/diagnostics.mjs`, `${ROOT}/test/background.mjs`], { encoding: 'utf8' });
-  assert(diagnosticTests.status === 0, 'diagnostics: collector and popup unit tests', diagnosticTests.stdout + diagnosticTests.stderr);
+  const diagnosticTests = spawnSync(process.execPath, ['--test', `${ROOT}/test/diagnostics.mjs`, `${ROOT}/test/background.mjs`, `${ROOT}/test/drift.mjs`], { encoding: 'utf8' });
+  assert(diagnosticTests.status === 0, 'diagnostics: collector, popup, and version-drift unit tests', diagnosticTests.stdout + diagnosticTests.stderr);
   // The version lives in TWO files (package.json, extension/manifest.json) and
   // nothing but this check compares them — the v1.6.0 eager-clear bug shipped
   // precisely because same-version drift was invisible everywhere else.
@@ -1064,7 +1064,7 @@ try {
     );
     // CLI-local commands (no wire type), the nav→navigate alias, and probe
     // (a server-internal routing query — no CLI surface).
-    const CLI_LOCAL = ['batch', 'health', 'start', 'stop', 'watch', 'history', 'profiles', 'probe'];
+    const CLI_LOCAL = ['batch', 'health', 'start', 'stop', 'update', 'watch', 'history', 'profiles', 'probe'];
     const usageWire = new Set([...usageCmds].filter((c) => !CLI_LOCAL.includes(c)).map((c) => (c === 'nav' ? 'navigate' : c)));
     assert(
       [...usageWire].sort().join() === [...handleTypes].filter((t) => t !== 'ping' && t !== 'probe').sort().join(),
@@ -1651,7 +1651,7 @@ try {
     await new Promise((r) => setTimeout(r, 100));
     const hh = await cli('health');
     assert(JSON.parse(hh.stdout).profiles.find((p) => p.id === 'delta-store')?.install === 'store', 'health reports install=store from the handshake', hh.stdout);
-    assert(hh.stderr.includes('store installs update via the Chrome Web Store') && !hh.stderr.includes('extreload'), 'health: store seats get store advice, not extreload', hh.stderr);
+    assert(hh.stderr.includes('is ahead of the Chrome Web Store extension 0.0.0-test') && hh.stderr.includes('cli.mjs update') && !hh.stderr.includes('extreload'), 'health: a store seat older than the checkout gets update advice (match it), not extreload', hh.stderr);
     const xr = await cli('extreload', '--profile', 'delta-store');
     assert(xr.status !== 0 && xr.stderr.includes('updates via the store'), 'extreload refuses a store-installed extension', xr.stdout + xr.stderr);
     extS.socket.destroy();
@@ -1659,17 +1659,22 @@ try {
   }
 
   // A store build NEWER than the checkout (Chrome auto-updated it, nobody
-  // pulled): health must name the pull + restart, not "nothing to reload".
+  // pulled): health must name update, not "nothing to reload".
   {
     const extN = await wsClient(PORT, 'delta-newer', undefined, 'store', '999.0.0');
     extN.onMessage((msg) => extN.send({ id: msg.id, ok: true, result: msg.type === 'ping' ? 'pong' : null }));
     await new Promise((r) => setTimeout(r, 100));
     const hn = await cli('health');
     assert(
-      hn.stderr.includes('is newer than this bridge download') && hn.stderr.includes('pull --ff-only') && hn.stderr.includes('cli.mjs" start'),
-      'health: a store build newer than the checkout says to pull + restart',
+      hn.stderr.includes('is newer than this bridge download') && hn.stderr.includes('cli.mjs update'),
+      'health: a store build newer than the checkout says to run update',
       hn.stderr
     );
+    // the same warning rides a command routed to that profile — and only that one
+    const tn = await cli('tabs', '--profile', 'delta-newer');
+    assert(tn.stderr.includes('is newer than this bridge download'), 'drift warning rides commands on the drifted profile', tn.stderr);
+    const tOther = await cli('tabs', '--profile', 'alpha-test');
+    assert(!tOther.stderr.includes('999.0.0'), "another profile's drift stays out of this profile's command replies", tOther.stderr);
     extN.socket.destroy();
     await new Promise((r) => setTimeout(r, 100));
   }
@@ -1732,6 +1737,122 @@ try {
   await new Promise((r) => setTimeout(r, 500));
   h = await cli('health');
   assert(h.status !== 0 && JSON.parse(h.stdout).extension === false, 'health: extension false after disconnect — exit 1 (a disconnected bridge must not pass a `health && …` preflight)', h.stdout + h.stderr);
+
+  // health carries the server's own version (A): the code it runs vs disk.
+  {
+    const hj = JSON.parse(h.stdout);
+    assert(hj.v === PKG_V && hj.disk === PKG_V, 'health reports the running server version and the checkout version', h.stdout);
+  }
+
+  // cli update against a throwaway origin: a CLI copy in a temp clone updates
+  // ITS checkout (never this repo). Store seat → pinned to v<ext version>;
+  // unpacked → branch; local commits / tracked edits / no extension refuse.
+  {
+    const tmp = fs.mkdtempSync(join(tmpdir(), 'bridge-update-'));
+    const git = (cwd, ...a) => {
+      const r = spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', '-c', 'init.defaultBranch=master', ...a], { cwd, encoding: 'utf8' });
+      if (r.status) throw new Error('git ' + a.join(' ') + ': ' + r.stderr);
+      return r.stdout.trim();
+    };
+    const work = join(tmp, 'work');
+    fs.mkdirSync(join(work, 'extension'), { recursive: true });
+    for (const f of ['cli.mjs', 'drift.mjs']) fs.copyFileSync(join(ROOT, f), join(work, f));
+    const setV = (dir, v) => {
+      fs.writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'x', version: v, type: 'module' }));
+      fs.writeFileSync(join(dir, 'extension', 'manifest.json'), JSON.stringify({ version: v }));
+    };
+    setV(work, '1.0.0');
+    git(work, 'init', '-q');
+    git(work, 'add', '-A');
+    git(work, 'commit', '-qm', 'v1.0.0');
+    git(work, 'tag', '-a', 'v1.0.0', '-m', 'v1.0.0');
+    setV(work, '1.0.1');
+    git(work, 'commit', '-qam', 'v1.0.1');
+    git(tmp, 'clone', '-q', '--bare', work, join(tmp, 'origin.git'));
+    const clone = join(tmp, 'clone');
+    git(tmp, 'clone', '-q', join(tmp, 'origin.git'), clone);
+    const cloneV = () => JSON.parse(fs.readFileSync(join(clone, 'package.json'), 'utf8')).version;
+    const upd = (...a) =>
+      new Promise((resolve) => {
+        const p = spawn('node', [join(clone, 'cli.mjs'), 'update', ...a], { env });
+        let stdout = '', stderr = '';
+        p.stdout.on('data', (c) => (stdout += c));
+        p.stderr.on('data', (c) => (stderr += c));
+        p.on('close', (status) => resolve({ status, stdout, stderr }));
+      });
+    const seat = async (id, install, v) => {
+      const e = await wsClient(PORT, id, id, install, v);
+      e.onMessage((msg) => e.send({ id: msg.id, ok: true, result: msg.type === 'ping' ? 'pong' : null }));
+      await new Promise((r) => setTimeout(r, 100));
+      return e;
+    };
+    try {
+      const none = await upd();
+      assert(none.status !== 0 && none.stderr.includes('no extension connected'), 'update refuses with no extension connected (nothing to match)', none.stdout + none.stderr);
+
+      let s = await seat('upd-store', 'store', '1.0.0');
+      const plan = await upd('--check');
+      assert(
+        plan.status === 0 && plan.stdout.includes('"target":"v1.0.0"') && plan.stdout.includes('git reset --keep v1.0.0') && plan.stdout.includes('it runs from') && cloneV() === '1.0.1',
+        'update --check: a store seat pins to its release tag, prints the plan, changes nothing',
+        plan.stdout + plan.stderr
+      );
+      const pin = await upd();
+      assert(
+        pin.status === 0 && cloneV() === '1.0.0' && pin.stdout.includes('checkout moved to v1.0.0') && pin.stdout.includes('server not restarted'),
+        'update: a clone ahead of the store release moves back to it (all newer commits upstream); a foreign server is not restarted',
+        pin.stdout + pin.stderr
+      );
+      s.socket.destroy();
+
+      s = await seat('upd-dev', 'dev', '1.0.1');
+      const pull = await upd();
+      assert(pull.status === 0 && cloneV() === '1.0.1' && pull.stdout.includes('checkout moved to the branch'), 'update: an unpacked seat follows the branch (ff-only pull)', pull.stdout + pull.stderr);
+      s.socket.destroy();
+
+      s = await seat('upd-store2', 'store', '1.0.0');
+      fs.writeFileSync(join(clone, 'recipe.md'), 'mine');
+      git(clone, 'add', 'recipe.md');
+      git(clone, 'commit', '-qm', 'my recipe');
+      const mine = await upd();
+      assert(mine.status !== 0 && mine.stderr.includes('local commit(s) not on origin') && fs.existsSync(join(clone, 'recipe.md')), 'update refuses to move local commits (recipes stay)', mine.stdout + mine.stderr);
+      fs.appendFileSync(join(clone, 'drift.mjs'), '\n// local edit\n');
+      const dirty = await upd();
+      assert(dirty.status !== 0 && dirty.stderr.includes('local edits to tracked files'), 'update refuses with local edits to tracked files', dirty.stdout + dirty.stderr);
+      s.socket.destroy();
+      await new Promise((r) => setTimeout(r, 100));
+
+      // Shallow clones (the npm launcher clones --depth 1): after one pin,
+      // the next store release must still apply — the old release commit is
+      // tag-reachable, not a "local commit" (review catch: stuck for good).
+      const shallow = join(tmp, 'shallow');
+      git(tmp, 'clone', '-q', '--depth', '1', 'file://' + join(tmp, 'origin.git'), shallow);
+      const updIn = (dir) =>
+        new Promise((resolve) => {
+          const p = spawn('node', [join(dir, 'cli.mjs'), 'update'], { env });
+          let stdout = '', stderr = '';
+          p.stdout.on('data', (c) => (stdout += c));
+          p.stderr.on('data', (c) => (stderr += c));
+          p.on('close', (status) => resolve({ status, stdout, stderr }));
+        });
+      const shallowV = () => JSON.parse(fs.readFileSync(join(shallow, 'package.json'), 'utf8')).version;
+      s = await seat('upd-store-shallow', 'store', '1.0.0');
+      const first = await updIn(shallow);
+      assert(first.status === 0 && shallowV() === '1.0.0', 'update: a shallow clone pins to the store release', first.stdout + first.stderr);
+      s.socket.destroy();
+      setV(work, '1.0.2');
+      git(work, 'commit', '-qam', 'v1.0.2');
+      git(work, 'tag', '-a', 'v1.0.2', '-m', 'v1.0.2');
+      git(work, 'push', '-q', join(tmp, 'origin.git'), 'master', 'v1.0.2');
+      s = await seat('upd-store3', 'store', '1.0.2');
+      const second = await updIn(shallow);
+      assert(second.status === 0 && shallowV() === '1.0.2', 'update: the next store release applies to a shallow clone pinned before', second.stdout + second.stderr);
+      s.socket.destroy();
+      await new Promise((r) => setTimeout(r, 100));
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
 
   // stop → health fails → start (detached) → health recovers. Runs last: it
   // kills the test server for real, and `start` spawns a detached replacement
