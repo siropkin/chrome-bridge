@@ -159,6 +159,10 @@ try {
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==',
     'base64'
   );
+  // Same bytes, IHDR rewritten to 1280x800 — a capture that hit the default --max cap.
+  const PNG_WIDE = Buffer.from(PNG1x1);
+  PNG_WIDE.writeUInt32BE(1280, 16);
+  PNG_WIDE.writeUInt32BE(800, 20);
   ext.onMessage((msg) => {
     if (msg.type === 'diagnostics-result') return;
     const respond = (result) => ext.send({ id: msg.id, ok: true, result });
@@ -198,6 +202,7 @@ try {
       // --diff returns the {note, data} shape the CLI writes to the file
       // (crop on change, full capture on baseline/no-change).
       if (msg.diff) return respond({ note: 'diff: 2.1% of pixels changed — the saved file is the changed region', data: 'data:image/png;base64,' + PNG1x1.toString('base64') });
+      if (msg.urlMatch === 'wide.example') return respond('data:image/png;base64,' + PNG_WIDE.toString('base64'));
       return respond('data:image/png;base64,' + PNG1x1.toString('base64'));
     }
     if (msg.type === 'ansierr') return ext.send({ id: msg.id, ok: false, error: 'bad \x1b[31mRED\x1b[0m\nforged line' });
@@ -335,6 +340,13 @@ try {
   const shotPath = '/tmp/chrome-bridge-selftest.png';
   const shot = await cli('shot', 'example.com', shotPath);
   assert(shot.status === 0 && fs.readFileSync(shotPath).equals(PNG1x1) && shot.stdout.includes(', 1x1'), 'cli shot writes file + prints parsed dimensions', shot.stdout + shot.stderr);
+
+  // A default shot that hit the 1280 cap reminds the agent that human-facing shots need --max 0.
+  assert(!shot.stderr.includes('--max 0'), 'cli shot: no cap reminder below the cap', shot.stderr);
+  const shotWide = await cli('shot', 'wide.example', shotPath);
+  assert(shotWide.status === 0 && shotWide.stdout.includes(', 1280x800') && shotWide.stderr.includes('re-run with --max 0'), 'cli shot: default cap hit prints the --max 0 reminder on stderr', shotWide.stdout + shotWide.stderr);
+  const shotWideMax = await cli('shot', 'wide.example', shotPath, '--max', '1280');
+  assert(shotWideMax.status === 0 && !shotWideMax.stderr.includes('--max 0'), 'cli shot: an explicit --max stays quiet', shotWideMax.stderr);
 
   // --full is boolean: it must not swallow the next flag's value
   const shotFull = await cli('shot', 'example.com', shotPath, '--full', '--scale', '2');

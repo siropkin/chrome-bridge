@@ -332,7 +332,9 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     top-level const/let are scoped to each call — re-running
                                     the same snippet never collides (set globals via window.x)
   shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full] [--diff]
-                                    --max caps the long edge (default 1280, 0 = native res);
+                                    --max caps the long edge (default 1280, sized for agent
+                                    reading; 0 = native res — use it for any screenshot a
+                                    human will see: PRs, issues, chat, docs);
                                     --diff compares against the previous --diff shot and, on
                                     change, saves ONLY the changed region (canvas/pixel changes
                                     the tree can't see)
@@ -1181,6 +1183,9 @@ async function runCommand(cmdName, args) {
       const d = imgDims(buf);
       if (note) console.log(note);
       console.log(`saved ${out} (${Math.round(buf.length / 1024)} KB${d ? `, ${d}` : ''})`);
+      // Default cap hit = probably downscaled; agents otherwise ship blurry PR/chat screenshots.
+      if (!note && msg.max === undefined && d && Math.abs(Math.max(...d.split('x').map(Number)) - 1280) <= 1)
+        console.error('note: long edge capped at the 1280px default (sized for agent reading) — a screenshot for a human (PR, issue, chat, docs)? re-run with --max 0 for native resolution');
       break;
     }
 
