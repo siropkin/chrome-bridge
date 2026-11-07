@@ -13,7 +13,7 @@ import { updateTarget } from './drift.mjs';
 // script the extension can load too, so it publishes a global, not exports.
 import './extension/commands.js';
 
-const { lookup, splitLine, splitDashDash, parse, render, replyWarnings } = globalThis.BridgeCommands;
+const { lookup, splitLine, parse, render, replyWarnings } = globalThis.BridgeCommands;
 
 // Port 9333 is hardcoded in FOUR places: extension/background.js (WS_URL —
 // the extension can't read BRIDGE_PORT), server.mjs, extension/popup.js, here. Change all four.
@@ -142,6 +142,42 @@ function readClipboard() {
   // Linux: neither ships everywhere — try both.
   return run('xclip', ['-selection', 'clipboard', '-o']) ?? run('xsel', ['--clipboard', '--output']);
 }
+
+// The I/O extension/commands.js's parse() needs for the handful of commands
+// that touch the disk/clipboard/stdin — this is the only surface that has
+// all four; the cloud link (C1) will pass a narrower object and let parse()'s
+// next-step errors cover the gaps.
+const io = {
+  stdin,
+  clipboard: () => {
+    const text = readClipboard();
+    if (text == null) fail(`cannot read the clipboard on ${process.platform} — install xclip/xsel, or pass the text: paste <match> <ref> -- <text>`);
+    return text;
+  },
+  // wait --js's client-side pre-check: the extension's CSP forbids eval/new
+  // Function, so commands.js can't run this itself — only whether it's ONE
+  // expression matters here (cause.name), the message text stays put.
+  syntaxError: (src) => {
+    try {
+      new Script(src, { filename: 'bridge-wait.js' });
+      return false;
+    } catch (cause) {
+      return cause.name === 'SyntaxError';
+    }
+  },
+  // Resolve to an absolute path here — Chrome (not this process) opens it,
+  // so a relative path would mean nothing on the other side of the WS.
+  resolveFile: (f) => {
+    let p;
+    try {
+      p = fs.realpathSync(f);
+    } catch {
+      fail(`file not found: ${f}`);
+    }
+    if (!fs.statSync(p).isFile()) fail(`not a file: ${f}`);
+    return p;
+  },
+};
 
 // Adding a command? EIGHT registries stay in sync (a missing one fails SILENTLY):
 // cli.mjs USAGE · extension/commands.js REGISTRY + parse() (or cli.mjs run() for the
@@ -729,7 +765,7 @@ async function runCommand(cmdName, args) {
     }
 
     case 'doctor': {
-      const parsed = parse([cmdName, ...args]);
+      const parsed = await parse([cmdName, ...args], io);
       const rows = await cmd(parsed.msg);
       if (parsed.msg.fix) {
         // Clean Chrome-side residue through the normal, tested release path —
@@ -772,83 +808,21 @@ async function runCommand(cmdName, args) {
     }
 
     case 'paste': {
-      // '--' = the text (may itself start with '--'), same separator as fill.
-      // Without it, the OS clipboard is the source — the agent usually HAS
-      // the text, but "paste what I just copied" needs the real clipboard.
-      const { sep, flagged, valuePart } = splitDashDash(args);
-      const rest = flagged.filter((a) => a !== '--diff' && a !== '--html');
-      if (!rest[0] || rest[2] !== undefined || (sep >= 0 && !valuePart.length))
-        fail('usage: paste <match> [@ref|css] [--diff] [--html] [-- <text>] — without -- <text> it reads the OS clipboard');
-      const value = valuePart.join(' ');
-      let clip = false;
-      let text = value;
-      if (!text) {
-        text = readClipboard();
-        if (text == null) fail(`cannot read the clipboard on ${process.platform} — install xclip/xsel, or pass the text: paste <match> <ref> -- <text>`);
-        if (!text) fail('clipboard is empty — copy something, or pass the text: paste <match> <ref> -- <text>');
-        clip = true;
-      }
-      // The clipboard read is the plain flavor only — markup must be given.
-      if (flagged.includes('--html') && clip)
-        fail('paste --html needs the markup after -- (the OS clipboard read is plain text only)');
-      print(await cmd({ type: 'paste', urlMatch: rest[0], target: rest[1] || null, value: text, clip, ...(flagged.includes('--html') ? { html: true } : {}), ...(flagged.includes('--diff') ? { diff: true } : {}) }));
+      const parsed = await parse([cmdName, ...args], io);
+      print(await cmd(parsed.msg));
       break;
     }
 
     case 'upload': {
-      const rest = args.filter((a) => a !== '--diff' && a !== '--chooser');
-      if (!rest[0] || !rest[1] || !rest[2]) fail('usage: upload <match> <@ref|css> <file...> [--chooser] [--diff]');
-      const stray = rest.slice(2).find((a) => a.startsWith('--'));
-      if (stray) fail(`unknown flag ${stray} (flags: --chooser, --diff)`);
-      // Resolve to absolute paths here — Chrome (not this process) opens them,
-      // so a relative path would mean nothing on the other side of the WS.
-      const files = rest.slice(2).map((f) => {
-        let p;
-        try {
-          p = fs.realpathSync(f);
-        } catch {
-          fail(`file not found: ${f}`);
-        }
-        if (!fs.statSync(p).isFile()) fail(`not a file: ${f}`);
-        return p;
-      });
-      print(await cmd({ type: 'upload', urlMatch: rest[0], target: rest[1], files, ...(args.includes('--chooser') ? { chooser: true } : {}), ...(args.includes('--diff') ? { diff: true } : {}) }));
+      const parsed = await parse([cmdName, ...args], io);
+      print(await cmd(parsed.msg));
       break;
     }
 
     case 'net': {
-      const [match, ...rest] = args;
-      let duration = null;
-      let filter = null;
-      let body = null;
-      let har = null;
-      let ws = false;
-      for (let i = 0; i < rest.length; i++) {
-        if (rest[i] === '--dur') {
-          duration = Number(rest[++i]);
-          if (!Number.isFinite(duration) || duration < 0) fail('--dur needs a number (ms)');
-          // The extension silently clamps at 30s — fail here instead so the
-          // agent doesn't read "no requests" for a window it believes it watched.
-          if (duration > 30000) fail('--dur max is 30000 ms — run successive captures for longer windows');
-        } else if (rest[i] === '--filter') {
-          // Missing value must fail loud: a trailing --filter used to yield
-          // undefined and the capture ran UNFILTERED — on a busy tab the
-          // 100-line cap then buried the lines the agent asked for.
-          filter = rest[++i];
-          if (filter === undefined) fail('--filter needs a value');
-        } else if (rest[i] === '--body') {
-          body = rest[++i];
-          if (body === undefined) fail('--body needs a value');
-        }
-        else if (rest[i] === '--ws') ws = true;
-        else if (rest[i] === '--har') {
-          har = rest[++i];
-          if (har === undefined) fail('--har needs a file path');
-        } else fail(`unknown flag ${rest[i]}`);
-      }
-      if (!match) fail('usage: net <match> [--dur ms] [--filter s] [--body s] [--ws] [--har out.har]');
-      if (body && !filter) filter = body; // --body implies you only want those lines
-      const out = await cmd({ type: 'net', urlMatch: match, duration, filter, body, ...(ws ? { ws: true } : {}), ...(har ? { har: true } : {}) });
+      const parsed = await parse([cmdName, ...args], io);
+      const out = await cmd(parsed.msg);
+      const har = parsed.view.har;
       if (har) {
         // The capture as a persisted, shareable HAR 1.2 — DevTools/Burp/Caido
         // open it; text/JSON response bodies land in the file (50 max), the
@@ -866,140 +840,21 @@ async function runCommand(cmdName, args) {
     }
 
     case 'wait': {
-      const [match, ...rest] = args;
-      let text = null;
-      let js = null;
-      let world = null;
-      let timeout = 10000;
-      let human = false;
-      let pixel = false;
-      const pos = [];
-      const WAIT_FLAGS = ['--text', '--js', '--world', '--timeout', '--human', '--pixel-change'];
-      const USAGE_WAIT = 'usage: wait <match> [css|--text t|--js expr|--human|--pixel-change] [--timeout ms]';
-      for (let i = 0; i < rest.length; i++) {
-        if (rest[i] === '--text') {
-          // Multi-word text joins up to the next known flag — single-token
-          // reads turned '--text Saved successfully' into a wait for 'Saved'
-          // plus the leftover words OR'd in as a CSS selector: a false
-          // "page ready" signal from a predicate the agent never wrote.
-          const words = [];
-          while (i + 1 < rest.length && !WAIT_FLAGS.includes(rest[i + 1])) {
-            if (rest[i + 1].startsWith('--')) fail(`unknown flag ${rest[i + 1]} (flags: ${WAIT_FLAGS.join(', ')})`);
-            words.push(rest[++i]);
-          }
-          text = words.join(' ');
-          if (!text) fail('--text needs a value');
-        } else if (rest[i] === '--js') {
-          // Code, not words: '--'-leading tokens (x-- > 0) stay part of it.
-          const words = [];
-          while (i + 1 < rest.length && !WAIT_FLAGS.includes(rest[i + 1])) words.push(rest[++i]);
-          js = words.join(' ');
-          if (js === '-') js = await stdin();
-          js = js.trim().replace(/;+\s*$/, '');
-          if (!js) fail('--js needs an expression (or - to read it from stdin)');
-        } else if (rest[i] === '--world') {
-          const w = rest[++i]?.toUpperCase();
-          if (w !== 'MAIN' && w !== 'ISOLATED') fail('--world needs a value: main|isolated');
-          world = w;
-        } else if (rest[i] === '--timeout') {
-          if (rest[i + 1] === undefined) fail('--timeout needs a value (ms)');
-          timeout = Number(rest[++i]);
-        } else if (rest[i] === '--human') human = true;
-        else if (rest[i] === '--pixel-change') pixel = true;
-        else if (rest[i].startsWith('--')) fail(`unknown flag ${rest[i]} (flags: ${WAIT_FLAGS.join(', ')})`);
-        else pos.push(rest[i]);
-      }
-      const selector = pos[0] || null;
-      if (pos.length > 1) fail(USAGE_WAIT);
-      if (!match || (!selector && !text && !js && !human && !pixel)) fail(USAGE_WAIT);
-      // The usage line shows ALTERNATIVES — the extension ORs a selector+text
-      // pair, resolving early on a predicate the agent didn't intend.
-      if (selector && text) fail('pass a selector OR --text, not both (they would wait on either matching — chain two waits instead)');
-      if (js && (selector || text || human || pixel)) fail('--js is its own wait mode — not combinable with a selector, --text, --human or --pixel-change (fold the checks into the expression)');
-      if (world && !js) fail('--world applies to --js only');
-      if (human && pixel) fail('pass --human OR --pixel-change, not both');
-      if ((human || pixel) && (selector || text)) fail('usage: wait <match> --human|--pixel-change [--timeout ms] — those wait without a page predicate');
-      if (js) {
-        try {
-          new Script(`(async () => (\n${js}\n))`, { filename: 'bridge-wait.js' });
-        } catch (cause) {
-          if (cause.name === 'SyntaxError')
-            fail('--js needs ONE expression (it runs as async () => (<expr>), awaited each poll) — statements go in an IIFE: (() => { …; return x })(). In batch, quote it as one token.');
-        }
-      }
-      // Above 60s the server's 70s command cap fires first and the caller gets
-      // a misleading 'extension timeout' for a healthy wait — fail here instead.
-      // --human extends past that cap (server-side) but not past the CLI HTTP
-      // client's 5-min wall — a longer handoff is a second wait command.
-      if (!Number.isFinite(timeout) || timeout < 1) fail('--timeout must be at least 1 ms');
-      if (!human && timeout > 60000) fail('--timeout must be 1..60000 ms (the server kills commands at 70s)');
-      if (human && timeout > 280000) fail('--timeout must be 1..280000 ms with --human (the HTTP client gives up at 5 min — start another wait for a longer handoff)');
-      if (human && timeout === 10000) timeout = 120000; // a human needs more than a page does
-      print(await cmd({ type: 'wait', urlMatch: match, selector, text, timeout, ...(js ? { js, ...(world ? { world } : {}) } : {}), ...(human ? { human: true } : {}), ...(pixel ? { pixel: true } : {}) }));
+      const parsed = await parse([cmdName, ...args], io);
+      print(await cmd(parsed.msg));
       break;
     }
 
     case 'eval': {
-      // --world is extracted from the whole arg list first: flags must work in
-      // any position ('eval --world main <match> …' and '<match> … --world main'
-      // both parse), or an improvising agent eats 'no tab matching "--world"'.
-      const rest = [...args];
-      let world = 'auto';
-      for (let i = 0; i < rest.length; i++) {
-        if (rest[i] !== '--world') continue;
-        const w = rest[i + 1]?.toUpperCase();
-        if (w !== 'MAIN' && w !== 'ISOLATED') fail('--world needs a value: main|isolated');
-        world = w; // last --world wins, like the net/wait/shot flag loops
-        rest.splice(i, 2);
-        i--;
-      }
-      const match = rest.shift();
-      let code = rest.join(' ');
-      if (code === '-') code = await stdin();
-      if (!match || !code) fail('usage: eval <match> <js|-> [--world main|isolated]');
-      const out = await cmd({ type: 'eval', urlMatch: match, code, world });
-      // The last uncapped read: `eval <m> document.body.innerText` on a real
-      // page dumps hundreds of KB into context. Same truncation pattern as
-      // fetch — the bytes are gone, the note names the remedy.
-      let s = typeof out === 'string' ? out : JSON.stringify(out) ?? String(out);
-      if (s.length > 50_000)
-        s = s.slice(0, 50_000) + '\n… eval output truncated at 50000 chars — return less (select narrower, slice in-page) or fetch --out the data instead';
-      print(s);
+      const parsed = await parse([cmdName, ...args], io);
+      emit(render(parsed, await cmd(parsed.msg)));
       break;
     }
 
     case 'shot': {
-      const [match, out, ...rest] = args;
-      if (!match || !out) fail('usage: shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full] [--diff]');
-      const msg = { type: 'shot', urlMatch: match };
-      for (let i = 0; i < rest.length; i++) {
-        const k = rest[i];
-        if (k === '--full') { msg.full = true; continue; }
-        if (k === '--diff') { msg.diff = true; continue; }
-        const v = rest[++i];
-        if (v === undefined || v.startsWith('--')) fail(`flag ${k} needs a value`);
-        if (k === '--max') msg.max = Number(v);
-        else if (k === '--scale') msg.scale = Number(v);
-        else if (k === '--format') msg.format = v;
-        else if (k === '--quality') msg.quality = Number(v);
-        else if (k === '--crop') msg.crop = v.split(',').map(Number);
-        else fail(`unknown flag ${k}`);
-      }
-      if (msg.full && msg.crop) fail('--full and --crop are mutually exclusive');
-      // --diff compares whole-viewport shots — crop/full have no baseline to diff
-      if (msg.diff && (msg.full || msg.crop)) fail('--diff is exclusive with --full/--crop');
-      // The diff path always captures png — jpeg/quality would be silently dropped.
-      if (msg.diff && (msg.format === 'jpeg' || msg.quality !== undefined)) fail('--diff is exclusive with --format jpeg/--quality (the diff captures png)');
-      for (const k of ['max', 'scale', 'quality']) if (msg[k] !== undefined && !Number.isFinite(msg[k])) fail(`flag --${k} needs a number`);
-      // Ranges, mirroring emulate/wait/net: out-of-range values used to pass
-      // and silently degrade to a different screenshot on the CDP fallback path.
-      if (msg.max !== undefined && msg.max < 0) fail('--max must be >= 0 (0 = native res)');
-      if (msg.scale !== undefined && msg.scale <= 0) fail('--scale must be > 0');
-      if (msg.quality !== undefined && (msg.quality < 1 || msg.quality > 100)) fail('--quality must be 1..100');
-      if (msg.format && !['png', 'jpeg'].includes(msg.format)) fail('--format must be png|jpeg');
-      if (msg.crop && (msg.crop.length !== 4 || msg.crop.some((n) => !Number.isFinite(n)))) fail('--crop needs 4 numbers: x,y,w,h');
-      if (msg.crop && (msg.crop[0] < 0 || msg.crop[1] < 0 || msg.crop[2] < 1 || msg.crop[3] < 1)) fail('--crop needs x,y >= 0 and w,h >= 1');
-      const result = await cmd(msg);
+      const parsed = await parse([cmdName, ...args], io);
+      const out = parsed.view.out;
+      const result = await cmd(parsed.msg);
       // --diff returns { note, data } — the note explains what the file holds
       // (baseline / full capture / the changed region only).
       const note = result && typeof result === 'object' ? result.note : null;
@@ -1012,44 +867,16 @@ async function runCommand(cmdName, args) {
       if (note) console.log(note);
       console.log(`saved ${out} (${Math.round(buf.length / 1024)} KB${d ? `, ${d}` : ''})`);
       // Default cap hit = probably downscaled; agents otherwise ship blurry PR/chat screenshots.
-      if (!note && msg.max === undefined && d && Math.abs(Math.max(...d.split('x').map(Number)) - 1280) <= 1)
+      if (!note && parsed.view.max === undefined && d && Math.abs(Math.max(...d.split('x').map(Number)) - 1280) <= 1)
         console.error('note: long edge capped at the 1280px default (sized for agent reading) — a screenshot for a human (PR, issue, chat, docs)? re-run with --max 0 for native resolution');
       break;
     }
 
     case 'fetch': {
-      // In-page fetch riding the logged-in session: the request runs in the
-      // page (credentials ride), so login-walled JSON/feeds answer it without
-      // the agent hand-rolling eval fetch plumbing. The response is untrusted
-      // page content like everything else the bridge returns.
-      const [match, url, ...rest] = args;
-      let outFile = null, keep = false, csrf = false;
-      const headers = {};
-      for (let i = 0; i < rest.length; i++) {
-        if (rest[i] === '--out') {
-          outFile = rest[++i];
-          if (outFile === undefined) fail('usage: fetch <match> <url> [--out file] [--keep] [--header "k: v"]... [--csrf]');
-        } else if (rest[i] === '--keep') keep = true;
-        else if (rest[i] === '--csrf') csrf = true;
-        else if (rest[i] === '--header') {
-          const h = rest[++i];
-          if (h === undefined) fail('--header needs a value: --header "name: value"');
-          const ci = h.indexOf(':');
-          if (ci < 1) fail(`--header needs "name: value" (got ${JSON.stringify(h)})`);
-          headers[h.slice(0, ci).trim()] = h.slice(ci + 1).trim();
-        } else fail(`unknown flag ${rest[i]} (flags: --out file, --keep, --header "k: v", --csrf)`);
-      }
-      if (!match || !url) fail('usage: fetch <match> <url> [--out file] [--keep] [--header "k: v"]... [--csrf]');
-      let u;
-      try {
-        u = new URL(url);
-      } catch {}
-      if (!u || !/^https?:$/.test(u.protocol)) fail('fetch needs a full http(s) URL');
-      // --header/--csrf must ride BOTH the direct fetch and the scratch-tab
-      // retry below — a headerless retry of a CSRF-checked API is a 403 that
-      // reads as "the API is broken", not "the flag got dropped".
-      const extra = { ...(Object.keys(headers).length ? { headers } : {}), ...(csrf ? { csrf: true } : {}) };
-      let res = await cmd({ type: 'fetch', urlMatch: match, url, ...extra }, true);
+      const parsed = await parse([cmdName, ...args], io);
+      const { urlMatch: match, url } = parsed.msg;
+      const { outFile, keep, host } = parsed.view;
+      let res = await cmd(parsed.msg, true);
       // #35: no matching tab → ride a throwaway tab on the TARGET'S origin
       // (fetching from an unrelated tab is cross-origin and dies on CORS).
       // open → retry by id → close; --keep leaves it for follow-up fetches.
@@ -1058,9 +885,9 @@ async function runCommand(cmdName, args) {
       // pick a seat there — the routing error already names the --profile
       // remedy, so don't narrate a scratch tab that can't open.
       if (res && res.error && res.error.includes('no tab matching') && !res.error.includes('in any connected profile')) {
-        console.error(`no tab matching "${match}" — opening a scratch tab on ${u.host} for this fetch${keep ? ' (kept open)' : ''}`);
+        console.error(`no tab matching "${match}" — opening a scratch tab on ${host} for this fetch${keep ? ' (kept open)' : ''}`);
         const opened = await cmd({ type: 'open', url });
-        res = await cmd({ type: 'fetch', urlMatch: `id:${opened.id}`, url, ...extra }, true);
+        res = await cmd({ ...parsed.msg, urlMatch: `id:${opened.id}` }, true);
         if (!keep) await cmd({ type: 'close', urlMatch: `id:${opened.id}` }, true);
       }
       if (res && res.error) fail(res.error);
@@ -1086,7 +913,7 @@ async function runCommand(cmdName, args) {
       // Browser commands: the shared grammar (extension/commands.js) parses
       // and renders; this side owns the transport and the printing.
       if (lookup(cmdName)?.scope !== 'browser') fail(`unknown command: ${cmdName}\n\n${USAGE}`);
-      const parsed = parse([cmdName, ...args]);
+      const parsed = await parse([cmdName, ...args], io);
       emit(render(parsed, await cmd(parsed.msg)));
     }
   }

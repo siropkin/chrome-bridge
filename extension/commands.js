@@ -230,11 +230,21 @@
   };
 
   // argv ([command, ...args]) → { name, msg, view }: msg is the wire message,
-  // view holds what only render() needs (it never goes on the wire).
+  // view holds what only render() needs, or what the caller's own post-cmd
+  // logic needs (a disk path, a retry hint) — either way it never goes on the
+  // wire.
   // New flags parsed here must also land in server.mjs CLI_LINES — history
   // --batch rebuilds replay lines there, and an unmirrored flag is silently
   // dropped at replay.
-  function parse(argv) {
+  //
+  // io: injected I/O for the handful of commands that need it — stdin(),
+  // clipboard(), syntaxError(src) (true if src doesn't parse), resolveFile(path)
+  // (→ an absolute, existing-file path, or throws). A surface with no fs/stdin/
+  // clipboard of its own (the cloud link) omits the member(s) it can't offer;
+  // the parser then fails with a next-step error naming what to do instead,
+  // AT THE SAME POINT the member would otherwise have been used — so the error
+  // order a user sees stays identical to a surface that has full io.
+  async function parse(argv, io = {}) {
     const [word, ...args] = argv;
     const e = lookup(word);
     if (!e) fail(`unknown command: ${word}`);
@@ -457,6 +467,240 @@
         if (dsf !== undefined && (!Number.isFinite(dsf) || dsf < 0.1 || dsf > 4)) fail('emulate dsf must be 0.1–4');
         return out({ type: cmdName, urlMatch: args[0], width: w, height: h, ...(cmdName === 'emulate' ? { mobile: mods.includes('mobile'), ...(dsf !== undefined ? { dsf } : {}) } : {}) });
       }
+
+      case 'paste': {
+        // '--' = the text (may itself start with '--'), same separator as fill.
+        // Without it, the OS clipboard is the source — the agent usually HAS
+        // the text, but "paste what I just copied" needs the real clipboard.
+        const { sep, flagged, valuePart } = splitDashDash(args);
+        const rest = flagged.filter((a) => a !== '--diff' && a !== '--html');
+        if (!rest[0] || rest[2] !== undefined || (sep >= 0 && !valuePart.length))
+          fail('usage: paste <match> [@ref|css] [--diff] [--html] [-- <text>] — without -- <text> it reads the OS clipboard');
+        const value = valuePart.join(' ');
+        let clip = false;
+        let text = value;
+        if (!text) {
+          if (!io.clipboard) fail('reading the OS clipboard is not available here — pass the text: paste <match> <ref> -- <text>');
+          text = await io.clipboard();
+          if (!text) fail('clipboard is empty — copy something, or pass the text: paste <match> <ref> -- <text>');
+          clip = true;
+        }
+        // The clipboard read is the plain flavor only — markup must be given.
+        if (flagged.includes('--html') && clip)
+          fail('paste --html needs the markup after -- (the OS clipboard read is plain text only)');
+        return out({ type: 'paste', urlMatch: rest[0], target: rest[1] || null, value: text, clip, ...(flagged.includes('--html') ? { html: true } : {}), ...(flagged.includes('--diff') ? { diff: true } : {}) });
+      }
+
+      case 'upload': {
+        const rest = args.filter((a) => a !== '--diff' && a !== '--chooser');
+        if (!rest[0] || !rest[1] || !rest[2]) fail('usage: upload <match> <@ref|css> <file...> [--chooser] [--diff]');
+        const stray = rest.slice(2).find((a) => a.startsWith('--'));
+        if (stray) fail(`unknown flag ${stray} (flags: --chooser, --diff)`);
+        if (!io.resolveFile) fail('file uploads are not available here — run upload from the local CLI');
+        // Resolve to absolute paths here — Chrome (not this process) opens them,
+        // so a relative path would mean nothing on the other side of the WS.
+        const files = [];
+        for (const f of rest.slice(2)) files.push(await io.resolveFile(f));
+        return out({ type: 'upload', urlMatch: rest[0], target: rest[1], files, ...(args.includes('--chooser') ? { chooser: true } : {}), ...(args.includes('--diff') ? { diff: true } : {}) });
+      }
+
+      case 'net': {
+        const [match, ...rest] = args;
+        let duration = null;
+        let filter = null;
+        let body = null;
+        let har = null;
+        let ws = false;
+        for (let i = 0; i < rest.length; i++) {
+          if (rest[i] === '--dur') {
+            duration = Number(rest[++i]);
+            if (!Number.isFinite(duration) || duration < 0) fail('--dur needs a number (ms)');
+            // The extension silently clamps at 30s — fail here instead so the
+            // agent doesn't read "no requests" for a window it believes it watched.
+            if (duration > 30000) fail('--dur max is 30000 ms — run successive captures for longer windows');
+          } else if (rest[i] === '--filter') {
+            // Missing value must fail loud: a trailing --filter used to yield
+            // undefined and the capture ran UNFILTERED — on a busy tab the
+            // 100-line cap then buried the lines the agent asked for.
+            filter = rest[++i];
+            if (filter === undefined) fail('--filter needs a value');
+          } else if (rest[i] === '--body') {
+            body = rest[++i];
+            if (body === undefined) fail('--body needs a value');
+          } else if (rest[i] === '--ws') ws = true;
+          else if (rest[i] === '--har') {
+            har = rest[++i];
+            if (har === undefined) fail('--har needs a file path');
+          } else fail(`unknown flag ${rest[i]}`);
+        }
+        if (!match) fail('usage: net <match> [--dur ms] [--filter s] [--body s] [--ws] [--har out.har]');
+        if (body && !filter) filter = body; // --body implies you only want those lines
+        return out({ type: 'net', urlMatch: match, duration, filter, body, ...(ws ? { ws: true } : {}), ...(har ? { har: true } : {}) }, { har });
+      }
+
+      case 'wait': {
+        const [match, ...rest] = args;
+        let text = null;
+        let js = null;
+        let world = null;
+        let timeout = 10000;
+        let human = false;
+        let pixel = false;
+        const pos = [];
+        const WAIT_FLAGS = ['--text', '--js', '--world', '--timeout', '--human', '--pixel-change'];
+        const USAGE_WAIT = 'usage: wait <match> [css|--text t|--js expr|--human|--pixel-change] [--timeout ms]';
+        for (let i = 0; i < rest.length; i++) {
+          if (rest[i] === '--text') {
+            // Multi-word text joins up to the next known flag — single-token
+            // reads turned '--text Saved successfully' into a wait for 'Saved'
+            // plus the leftover words OR'd in as a CSS selector: a false
+            // "page ready" signal from a predicate the agent never wrote.
+            const words = [];
+            while (i + 1 < rest.length && !WAIT_FLAGS.includes(rest[i + 1])) {
+              if (rest[i + 1].startsWith('--')) fail(`unknown flag ${rest[i + 1]} (flags: ${WAIT_FLAGS.join(', ')})`);
+              words.push(rest[++i]);
+            }
+            text = words.join(' ');
+            if (!text) fail('--text needs a value');
+          } else if (rest[i] === '--js') {
+            // Code, not words: '--'-leading tokens (x-- > 0) stay part of it.
+            const words = [];
+            while (i + 1 < rest.length && !WAIT_FLAGS.includes(rest[i + 1])) words.push(rest[++i]);
+            js = words.join(' ');
+            if (js === '-') {
+              if (!io.stdin) fail('reading from stdin is not available here — pass the expression directly: wait <match> --js <expr>');
+              js = await io.stdin();
+            }
+            js = js.trim().replace(/;+\s*$/, '');
+            if (!js) fail('--js needs an expression (or - to read it from stdin)');
+          } else if (rest[i] === '--world') {
+            const w = rest[++i]?.toUpperCase();
+            if (w !== 'MAIN' && w !== 'ISOLATED') fail('--world needs a value: main|isolated');
+            world = w;
+          } else if (rest[i] === '--timeout') {
+            if (rest[i + 1] === undefined) fail('--timeout needs a value (ms)');
+            timeout = Number(rest[++i]);
+          } else if (rest[i] === '--human') human = true;
+          else if (rest[i] === '--pixel-change') pixel = true;
+          else if (rest[i].startsWith('--')) fail(`unknown flag ${rest[i]} (flags: ${WAIT_FLAGS.join(', ')})`);
+          else pos.push(rest[i]);
+        }
+        const selector = pos[0] || null;
+        if (pos.length > 1) fail(USAGE_WAIT);
+        if (!match || (!selector && !text && !js && !human && !pixel)) fail(USAGE_WAIT);
+        // The usage line shows ALTERNATIVES — the extension ORs a selector+text
+        // pair, resolving early on a predicate the agent didn't intend.
+        if (selector && text) fail('pass a selector OR --text, not both (they would wait on either matching — chain two waits instead)');
+        if (js && (selector || text || human || pixel)) fail('--js is its own wait mode — not combinable with a selector, --text, --human or --pixel-change (fold the checks into the expression)');
+        if (world && !js) fail('--world applies to --js only');
+        if (human && pixel) fail('pass --human OR --pixel-change, not both');
+        if ((human || pixel) && (selector || text)) fail('usage: wait <match> --human|--pixel-change [--timeout ms] — those wait without a page predicate');
+        if (js && io.syntaxError && io.syntaxError(`(async () => (\n${js}\n))`))
+          fail('--js needs ONE expression (it runs as async () => (<expr>), awaited each poll) — statements go in an IIFE: (() => { …; return x })(). In batch, quote it as one token.');
+        // Above 60s the server's 70s command cap fires first and the caller gets
+        // a misleading 'extension timeout' for a healthy wait — fail here instead.
+        // --human extends past that cap (server-side) but not past the CLI HTTP
+        // client's 5-min wall — a longer handoff is a second wait command.
+        if (!Number.isFinite(timeout) || timeout < 1) fail('--timeout must be at least 1 ms');
+        if (!human && timeout > 60000) fail('--timeout must be 1..60000 ms (the server kills commands at 70s)');
+        if (human && timeout > 280000) fail('--timeout must be 1..280000 ms with --human (the HTTP client gives up at 5 min — start another wait for a longer handoff)');
+        if (human && timeout === 10000) timeout = 120000; // a human needs more than a page does
+        return out({ type: 'wait', urlMatch: match, selector, text, timeout, ...(js ? { js, ...(world ? { world } : {}) } : {}), ...(human ? { human: true } : {}), ...(pixel ? { pixel: true } : {}) });
+      }
+
+      case 'eval': {
+        // --world is extracted from the whole arg list first: flags must work in
+        // any position ('eval --world main <match> …' and '<match> … --world main'
+        // both parse), or an improvising agent eats 'no tab matching "--world"'.
+        const rest = [...args];
+        let world = 'auto';
+        for (let i = 0; i < rest.length; i++) {
+          if (rest[i] !== '--world') continue;
+          const w = rest[i + 1]?.toUpperCase();
+          if (w !== 'MAIN' && w !== 'ISOLATED') fail('--world needs a value: main|isolated');
+          world = w; // last --world wins, like the net/wait/shot flag loops
+          rest.splice(i, 2);
+          i--;
+        }
+        const match = rest.shift();
+        let code = rest.join(' ');
+        if (code === '-') {
+          if (!io.stdin) fail('reading from stdin is not available here — pass the code directly: eval <match> <js>');
+          code = await io.stdin();
+        }
+        if (!match || !code) fail('usage: eval <match> <js|-> [--world main|isolated]');
+        return out({ type: 'eval', urlMatch: match, code, world });
+      }
+
+      case 'shot': {
+        const [match, shotOut, ...rest] = args;
+        if (!match || !shotOut) fail('usage: shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full] [--diff]');
+        const msg = { type: 'shot', urlMatch: match };
+        for (let i = 0; i < rest.length; i++) {
+          const k = rest[i];
+          if (k === '--full') { msg.full = true; continue; }
+          if (k === '--diff') { msg.diff = true; continue; }
+          const v = rest[++i];
+          if (v === undefined || v.startsWith('--')) fail(`flag ${k} needs a value`);
+          if (k === '--max') msg.max = Number(v);
+          else if (k === '--scale') msg.scale = Number(v);
+          else if (k === '--format') msg.format = v;
+          else if (k === '--quality') msg.quality = Number(v);
+          else if (k === '--crop') msg.crop = v.split(',').map(Number);
+          else fail(`unknown flag ${k}`);
+        }
+        if (msg.full && msg.crop) fail('--full and --crop are mutually exclusive');
+        // --diff compares whole-viewport shots — crop/full have no baseline to diff
+        if (msg.diff && (msg.full || msg.crop)) fail('--diff is exclusive with --full/--crop');
+        // The diff path always captures png — jpeg/quality would be silently dropped.
+        if (msg.diff && (msg.format === 'jpeg' || msg.quality !== undefined)) fail('--diff is exclusive with --format jpeg/--quality (the diff captures png)');
+        for (const k of ['max', 'scale', 'quality']) if (msg[k] !== undefined && !Number.isFinite(msg[k])) fail(`flag --${k} needs a number`);
+        // Ranges, mirroring emulate/wait/net: out-of-range values used to pass
+        // and silently degrade to a different screenshot on the CDP fallback path.
+        if (msg.max !== undefined && msg.max < 0) fail('--max must be >= 0 (0 = native res)');
+        if (msg.scale !== undefined && msg.scale <= 0) fail('--scale must be > 0');
+        if (msg.quality !== undefined && (msg.quality < 1 || msg.quality > 100)) fail('--quality must be 1..100');
+        if (msg.format && !['png', 'jpeg'].includes(msg.format)) fail('--format must be png|jpeg');
+        if (msg.crop && (msg.crop.length !== 4 || msg.crop.some((n) => !Number.isFinite(n)))) fail('--crop needs 4 numbers: x,y,w,h');
+        if (msg.crop && (msg.crop[0] < 0 || msg.crop[1] < 0 || msg.crop[2] < 1 || msg.crop[3] < 1)) fail('--crop needs x,y >= 0 and w,h >= 1');
+        return out(msg, { out: shotOut, max: msg.max });
+      }
+
+      case 'fetch': {
+        // In-page fetch riding the logged-in session: the request runs in the
+        // page (credentials ride), so login-walled JSON/feeds answer it without
+        // the agent hand-rolling eval fetch plumbing. The response is untrusted
+        // page content like everything else the bridge returns.
+        const [match, url, ...rest] = args;
+        let outFile = null, keep = false, csrf = false;
+        const headers = {};
+        for (let i = 0; i < rest.length; i++) {
+          if (rest[i] === '--out') {
+            outFile = rest[++i];
+            if (outFile === undefined) fail('usage: fetch <match> <url> [--out file] [--keep] [--header "k: v"]... [--csrf]');
+          } else if (rest[i] === '--keep') keep = true;
+          else if (rest[i] === '--csrf') csrf = true;
+          else if (rest[i] === '--header') {
+            const h = rest[++i];
+            if (h === undefined) fail('--header needs a value: --header "name: value"');
+            const ci = h.indexOf(':');
+            if (ci < 1) fail(`--header needs "name: value" (got ${JSON.stringify(h)})`);
+            headers[h.slice(0, ci).trim()] = h.slice(ci + 1).trim();
+          } else fail(`unknown flag ${rest[i]} (flags: --out file, --keep, --header "k: v", --csrf)`);
+        }
+        if (!match || !url) fail('usage: fetch <match> <url> [--out file] [--keep] [--header "k: v"]... [--csrf]');
+        let u;
+        try {
+          u = new URL(url);
+        } catch {}
+        if (!u || !/^https?:$/.test(u.protocol)) fail('fetch needs a full http(s) URL');
+        // --header/--csrf must ride BOTH the direct fetch and the scratch-tab
+        // retry — a headerless retry of a CSRF-checked API is a 403 that reads
+        // as "the API is broken", not "the flag got dropped" (cli.mjs clones
+        // this msg for the retry, so they can't drift apart).
+        const extra = { ...(Object.keys(headers).length ? { headers } : {}), ...(csrf ? { csrf: true } : {}) };
+        return out({ type: 'fetch', urlMatch: match, url, ...extra }, { outFile, keep, host: u.host });
+      }
     }
     if (e.scope === 'local-only') fail(`${cmdName} is local-only — it manages the bridge on the user's machine: node cli.mjs ${cmdName}`);
     fail(`no parser for ${cmdName}`);
@@ -500,7 +744,13 @@
         break;
       }
     }
-    return { text: fmt(result), warnings };
+    let text = fmt(result);
+    // The last uncapped read: `eval <m> document.body.innerText` on a real
+    // page dumps hundreds of KB into context. Same truncation pattern as
+    // fetch — the bytes are gone, the note names the remedy.
+    if (name === 'eval' && text.length > 50_000)
+      text = text.slice(0, 50_000) + '\n… eval output truncated at 50000 chars — return less (select narrower, slice in-page) or fetch --out the data instead';
+    return { text, warnings };
   }
 
   // Warnings that ride the reply envelope itself, in print order: server
@@ -518,5 +768,5 @@
     return lines;
   }
 
-  globalThis.BridgeCommands = Object.freeze({ GROUPS, REGISTRY, lookup, tokenize, splitLine, splitDashDash, parse, render, replyWarnings });
+  globalThis.BridgeCommands = Object.freeze({ GROUPS, REGISTRY, lookup, tokenize, splitLine, parse, render, replyWarnings });
 })();
