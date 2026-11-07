@@ -1,7 +1,7 @@
 # Chrome Web Store listing — canonical copy
 
 Paste-ready text for the Chrome Web Store console (no API for these fields — copy by hand).
-Keep in sync with README.md's pitch sections. Last synced: 2026-11-05 (accurate workflow positioning, setup requirements, and agent/website data boundaries; no unsupported competitor or benchmark claims).
+Keep in sync with README.md's pitch sections. Last synced: 2026-11-07 for v1.30.6 (tab reference carries the profile name, setup prompt sits under Install, new STAYING UP TO DATE section for the update banner + `cli.mjs update`).
 
 ## Title (= manifest `name`, ships with the extension — not a console field)
 
@@ -23,7 +23,7 @@ WHAT YOU CAN DO
 • Check a user flow, fill a form, and verify the resulting page or server response.
 • Inspect network requests, console output, layout measurements and page-performance signals.
 • Use screenshots, mobile emulation and trusted input when a task needs them.
-• Work with a specific existing tab by copying its id:… reference from the extension popup.
+• Work with a specific existing tab by copying its reference (id:… plus the Chrome profile name) from the extension popup.
 
 VISIBLE BROWSER FEEDBACK
 
@@ -36,10 +36,14 @@ GETTING STARTED
 Requires Chrome 117 or newer, Node.js 18 or newer, and an AI agent that can run local shell commands. Documented setup supports macOS and Linux; Windows setup uses Git Bash.
 
 1. Install this extension.
-2. Click its toolbar button and press "Copy setup prompt for your AI agent".
+2. Click its toolbar button and press "Copy setup prompt for your AI agent" (under Install).
 3. Paste that text to your agent (Claude Code, Cursor, or any agent that can run shell commands).
 
 The agent downloads the bridge, starts the local server and checks the connection. Follow any permission or login prompts yourself. Setup time depends on your environment; the popup indicates when the bridge is connected.
+
+STAYING UP TO DATE
+
+Chrome updates this extension automatically; the bridge on your computer changes only when your agent runs its update command. When the two differ, the agent's health check says so and the popup shows a banner with a "Copy update prompt" button. Paste it to your agent: it brings the bridge to the release that matches this extension and restarts it, without touching your own changes.
 
 Chrome Bridge is free and MIT-licensed. Its focus is an inspectable, command-line workflow with visible browser feedback, not a claim to be faster, safer or more reliable than other automation tools. Interactive checks are not a replacement for a repeatable CI test suite.
 
@@ -68,4 +72,4 @@ Developer Tools (or Productivity — Developer Tools is the honest fit)
 - The first four reuse verified local-test frames from the [four public demos](https://github.com/siropkin/chrome-bridge/discussions/69), without stretching the 1280×720 capture; an 80px editorial heading sits above it. The fifth copies the live control DOM and its unmodified history text for an explicitly enlarged view. No fabricated chat, network entries, receipts or human-release event.
 - Refresh captures when the demonstrated behavior or control UI changes. The older `hero.html` / `panel.html` mocks and `screenshot-1-pill.png` / `screenshot-2-history.png` are not the source of this set. `shot` deliberately hides the bridge overlay; capture actual controls separately rather than inventing a history.
 - Render text in Chrome, emulate the exact canvas size and use `shot --max 1280`. Verify final PNG dimensions, no alpha, complete text rows and no overlapping controls before upload. These assets do not imply the store draft has been saved or submitted.
-- The single-purpose statement and permission justifications already filed cover the existing permission set; clipboardWrite (since v1.19.0) is for the popup's user-clicked Copy button — nothing is read.
+- The single-purpose statement and permission justifications already filed cover the existing permission set; clipboardWrite (since v1.19.0) is for the popup's user-clicked Copy buttons (tab reference, setup prompt, update prompt) — nothing is read.
