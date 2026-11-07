@@ -974,6 +974,10 @@ async function runCommand(cmdName, args) {
       // takeFlags scans from slot 2: a stray '--x' there used to slip through
       // as the optional target (the hand-copied scan started one slot late).
       const rest = takeFlags(args, ['--diff', '--trusted'], 2, 'press <match> <key> [@ref|css] [--diff] [--trusted]', 3);
+      // `press <match> @eN Enter` — the act-by-ref order every other verb
+      // uses (and the skill's core loop shows) — read the key as a selector
+      // and failed 'element not found: Enter'. No key looks like a ref.
+      if (/^@e\d+$/.test(rest[1] || '') && rest[2]) [rest[1], rest[2]] = [rest[2], rest[1]];
       print(await cmd({ type: 'press', urlMatch: rest[0], key: rest[1], target: rest[2] || null, ...(args.includes('--diff') ? { diff: true } : {}), ...(args.includes('--trusted') ? { trusted: true } : {}) }));
       break;
     }

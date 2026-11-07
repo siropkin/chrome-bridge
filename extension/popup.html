@@ -10,6 +10,7 @@
   #bridge-status.down { color: #71717a; }
   #title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 8px; }
   #ref { font: 12px ui-monospace, monospace; background: #ede9fe; color: #5b21b6; border-radius: 6px; padding: 6px 8px; margin-bottom: 8px; }
+  #profile { margin: -2px 0 8px; }
   /* Same violet→indigo→cyan gradient as the in-page pill; a 1px border can't
      hold a gradient (border-image would kill the radius), so secondary buttons
      anchor on the gradient's violet stop instead. */
@@ -34,6 +35,7 @@
 <div id="bridge-status" role="status"><span class="dot"></span><span id="status-text">checking…</span></div>
 <div id="title">…</div>
 <div id="ref"></div>
+<div id="profile" class="hint" hidden>Profile: <b id="profile-name"></b> — the name your agent uses for this Chrome profile</div>
 <button id="copy">Copy tab reference</button>
 <div id="driven" hidden>
   <div class="divider"></div>

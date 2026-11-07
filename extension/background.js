@@ -1255,7 +1255,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // connected: THIS profile's own socket — the popup's "bridge ready" must
     // not ride /health's any-seat flag (another profile's live seat says
     // nothing about this one).
-    ready.then(() => ({ count: drivenTabs.size, active: msg.tabId != null && drivenTabs.has(msg.tabId), connected: !!(ws && ws.readyState === WebSocket.OPEN) }))
+    // profile: the popup shows it and puts it in the copied tab reference —
+    // the human never sees the code name anywhere else.
+    Promise.all([ready, idReady]).then(() => ({ count: drivenTabs.size, active: msg.tabId != null && drivenTabs.has(msg.tabId), connected: !!(ws && ws.readyState === WebSocket.OPEN), profile: PROFILE_NAME }))
       .then(sendResponse, (error) => sendResponse({ error: String(error) }));
     return true;
   }
@@ -1972,6 +1974,21 @@ const REFKEY_SRC = `
     }
     if (role === 'img') return el.alt || '';
     if (el.tagName === 'IFRAME') return (el.getAttribute('src') || '').slice(0, 60); // a cross-origin frame is otherwise a black hole in the tree
+    // label for= / a wrapping label: the visible name real forms rely on —
+    // without it a field read as its name attribute (textbox "n") and a select
+    // as all its options. The control's own text is skipped, or a wrapped
+    // select would name itself after its options again.
+    if (el.labels && el.labels.length && el.tagName !== 'BUTTON') {
+      let t = '';
+      const walk = (n) => {
+        if (n === el) return;
+        if (n.nodeType === 3) t += n.textContent + ' ';
+        else if (n.nodeType === 1 && !/^(SELECT|TEXTAREA|INPUT|BUTTON|SCRIPT|STYLE)$/.test(n.tagName)) n.childNodes.forEach(walk);
+      };
+      for (const l of el.labels) walk(l);
+      t = t.replace(/\\s+/g, ' ').trim();
+      if (t) return clip(t);
+    }
     if (el.tagName === 'INPUT') return el.placeholder || el.name || '';
     const text = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
     if (text) return clip(text);
@@ -3785,6 +3802,10 @@ async function runEval(tabId, code, world = 'auto') {
   if (world === 'ISOLATED') throw new Error('ISOLATED world blocked by page CSP — refusing CDP fallback (it would run in the main world)');
   await attachDbg(tabId);
   try {
+    // A strict-CSP page (HN, MDN, GitHub) routes every action here, and a
+    // link click tears the context down before CDP's reply lands: Chrome
+    // rejects with 'Inspected target navigated or closed' although the code
+    // ran — a raw error an agent reads as "retry" (double click). Tag it.
     const res = await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
       // Block-wrapped (#48): bare Runtime.evaluate runs at GLOBAL scope, so a
       // snippet's top-level const/let leak into the global lexical environment
@@ -3796,6 +3817,11 @@ async function runEval(tabId, code, world = 'auto') {
       expression: '{\n' + code + '\n}',
       awaitPromise: true,
       returnByValue: true,
+    }).catch((e) => {
+      if (!/Inspected target navigated or closed/.test(String(e?.message || e))) throw e;
+      const err = new Error('the page navigated while the command ran (after dispatch) — inspect the tab (tabs <match> / snap) before retrying');
+      err.navigated = true;
+      throw err;
     });
     if (res.exceptionDetails) {
       const ex = res.exceptionDetails;
@@ -4980,7 +5006,14 @@ async function handle(msg) {
       msg.type === 'type' ? typeSrc(msg.target, msg.value) :
       msg.type === 'press' ? pressSrc(msg.key, msg.target) :
       hoverSrc(msg.target);
-    return await actAndVerify(tab.id, msg, () => runEval(tab.id, src));
+    // A strict-CSP page answers a navigating click/Enter with runEval's
+    // navigated error (see its CDP fallback) — the action landed: report it
+    // the way the scripting-world path does, so --diff reads the new page.
+    const landed = (e) => {
+      if (!e?.navigated || (msg.type !== 'click' && msg.type !== 'press')) throw e;
+      return (msg.type === 'click' ? `clicked ${msg.target}${msg.dbl ? ' (double)' : ''}` : `pressed ${msg.key}${msg.target ? ' on ' + msg.target : ''}`) + ' — page navigating';
+    };
+    return await actAndVerify(tab.id, msg, () => runEval(tab.id, src).catch(landed));
   }
 
   if (msg.type === 'paste') {

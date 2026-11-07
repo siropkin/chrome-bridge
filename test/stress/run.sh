@@ -3,7 +3,8 @@
 # Usage: test/stress/run.sh [section ...]   (no args = all sections)
 #
 # Preconditions:
-#   - two Chrome profiles connected (multi-profile sections; else they SKIP)
+#   - two Chrome profiles connected (multi-profile sections; else they SKIP);
+#     profile 1 = first connected, or pin it by name: STRESS_P1=<name>
 #   - the profile-1 Chrome window must be VISIBLE (pixel/shot/dialog sections
 #     need a rendering window — occluded windows suspend rendering)
 #   - node test/stress/server.mjs running on :9334 (run.sh starts it if down)
@@ -32,7 +33,13 @@ P1=""; P2=""
 detect_profiles() {
   local profs
   profs=$("${CLI[@]}" profiles 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).map(p=>p.name).join(" "))}catch{console.log("")}})')
-  P1=$(echo "$profs" | awk '{print $1}'); P2=$(echo "$profs" | awk '{print $2}')
+  if [ -n "${STRESS_P1:-}" ]; then
+    # connect order picks P1 by default, and any reload/restart reshuffles it
+    echo " $profs " | grep -qF " $STRESS_P1 " || { echo "STRESS_P1=$STRESS_P1 is not connected (have: $profs)" >&2; return 1; }
+    P1=$STRESS_P1; P2=$(echo "$profs" | tr ' ' '\n' | grep -vxF "$STRESS_P1" | head -1)
+  else
+    P1=$(echo "$profs" | awk '{print $1}'); P2=$(echo "$profs" | awk '{print $2}')
+  fi
   [ -n "$P1" ]
 }
 need2() { [ -n "$P2" ]; } # multi-profile sections skip silently via the caller
@@ -65,18 +72,19 @@ s_profiles() {
   # refusal: same URL in both profiles, NO --profile → refused, naming both
   "${CLI[@]}" eval "static.html?a=dual" "1" --profile "$P1" >/dev/null 2>&1 || true
   "${CLI[@]}" eval "static.html?a=dual" "1" >"$OUT/refuse.log" 2>&1
-  if grep -qE "matches tabs in 2 profiles.*$P1.*$P2" "$OUT/refuse.log"; then ok "cross-profile refusal names both"; else bad "cross-profile refusal text"; fi
+  if grep -qE "matches tabs in 2 profiles \(($P1, $P2|$P2, $P1)\)" "$OUT/refuse.log"; then ok "cross-profile refusal names both"; else bad "cross-profile refusal text"; fi
   # parallel second session: 15 increments on P2 while this one does 15 on P1
   # (reset both counters first — the interleave batch above left them at 5)
-  rm -f "$OUT/parallel-p1.log" "$OUT/parallel-p2.log"
+  # stderr apart: a stale-code ⚠ on P2 (never reloaded) is not a counter value
+  rm -f "$OUT/parallel-p1.log" "$OUT/parallel-p2.log" "$OUT/parallel.err"
   "${CLI[@]}" eval "counter.html?a=p1" "document.getElementById('c').textContent='0'" --profile "$P1" >/dev/null 2>&1
   "${CLI[@]}" eval "counter.html?a=p2" "document.getElementById('c').textContent='0'" --profile "$P2" >/dev/null 2>&1
   for i in $(seq 1 15); do
-    "${CLI[@]}" eval "counter.html?a=p2" "const el=document.getElementById('c');el.textContent=String(+el.textContent+1);el.textContent" --profile "$P2" >>"$OUT/parallel-p2.log" 2>&1
+    "${CLI[@]}" eval "counter.html?a=p2" "const el=document.getElementById('c');el.textContent=String(+el.textContent+1);el.textContent" --profile "$P2" >>"$OUT/parallel-p2.log" 2>>"$OUT/parallel.err"
   done &
   local BGPID=$!
   for i in $(seq 1 15); do
-    "${CLI[@]}" eval "counter.html?a=p1" "const el=document.getElementById('c');el.textContent=String(+el.textContent+1);el.textContent" --profile "$P1" >>"$OUT/parallel-p1.log" 2>&1
+    "${CLI[@]}" eval "counter.html?a=p1" "const el=document.getElementById('c');el.textContent=String(+el.textContent+1);el.textContent" --profile "$P1" >>"$OUT/parallel-p1.log" 2>>"$OUT/parallel.err"
   done
   wait $BGPID
   if [ "$(sort -n "$OUT/parallel-p1.log" | tr '\n' ' ')" = "$(seq 1 15 | tr '\n' ' ')" ] \
@@ -170,6 +178,13 @@ s_interact() {
   # shadow DOM: ref + piercing CSS (the ref belongs to the textbox INSIDE the
   # label, not the label line itself; the button needs its own ref too)
   assert_grep "shadow DOM elements in tree" "$log" 'Shadow button'
+  # labels name their controls (wrapping label / for=) — a field read as its
+  # name attribute (textbox "n") and a select as its options (e2e run)
+  local LTREE want
+  LTREE=$("${CLI[@]}" snap rich.html '#f' 2>/dev/null)
+  for want in 'textbox "Name"' 'textbox "Notes"' 'checkbox "Check me"' 'radio "Two"' 'combobox "Select"'; do
+    echo "$LTREE" | grep -qF "$want" && ok "label names the control: $want" || bad "label names the control: $want"
+  done
   local STREE sref bref
   STREE=$("${CLI[@]}" snap rich.html 2>/dev/null)
   sref=$(echo "$STREE" | grep -A1 '"Shadow input"' | grep -m1 'textbox' | grep -o '@e[0-9]*' | tr -d '@')
@@ -557,6 +572,16 @@ s_edges() {
   assert_grep "eval on strict-CSP page (world fallback)" "$OUT/09.log" '^5$'
   "${CLI[@]}" click csp.html '#csp-btn' --diff >>"$OUT/09.log" 2>&1
   assert_grep "click + diff on CSP page" "$OUT/09.log" 'csp: clicked'
+  # a navigating click on a strict-CSP page runs over CDP, whose reply loses
+  # the race with the teardown — it answered a raw 'Inspected target navigated
+  # or closed' (exit 1) for a click that worked (HN/MDN/GitHub links, e2e run)
+  "${CLI[@]}" click csp.html '#csp-link' --diff --profile "$P1" >"$OUT/09-cspnav.log" 2>&1
+  assert_grep "navigating --diff click on CSP page reports the navigation" "$OUT/09-cspnav.log" 'succeeded · clicked #csp-link — page navigating — navigated to'
+  "${CLI[@]}" nav "x=cspnav" "$FX/csp.html" --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" click csp.html '#csp-link' --profile "$P1" >>"$OUT/09-cspnav.log" 2>&1
+  assert_grep "navigating plain click on CSP page answers, exit 0" "$OUT/09-cspnav.log" '^clicked #csp-link — page navigating$'
+  assert_ngrep "no raw CDP navigation error" "$OUT/09-cspnav.log" 'Inspected target'
+  "${CLI[@]}" nav "x=cspnav" "$FX/csp.html" --profile "$P1" >/dev/null 2>&1
   # #27: errors from the CDP fallback lead with the message, once — the old
   # shape duplicated it (ex.text + description) and could read as a bare
   # stack tail.
@@ -864,7 +889,9 @@ s_doctor() {
   "${CLI[@]}" open "$FX/static.html?x=doctor" --profile "$P1" >/dev/null
   "${CLI[@]}" tabs "x=doctor" | grep -q '"group":"🟣 Bridge"' && ok "tab grouped while driven" || bad "driven tab not grouped"
   "${CLI[@]}" extreload --profile "$P1" >/dev/null 2>&1
-  need2 && "${CLI[@]}" extreload --profile "$P2" >/dev/null 2>&1 # keep both profiles on this code — a stale seat answers doctor with an error row
+  # P2 is never reloaded and doctor stays on P1: P2 may be a profile another
+  # session is driving — a reload killed its in-flight command mid-run (e2e
+  # run, 07:03), and a profile-wide doctor --fix touched its tabs too.
   # reconnect + hydration + the boot reap — poll, don't sleep: a cold CI
   # profile takes far longer than 5s, and the ngrep asserts below PASS
   # vacuously on "extension not connected" output (the blind spot this closes)
@@ -877,9 +904,9 @@ s_doctor() {
   "${CLI[@]}" tabs "x=doctor" >"$OUT/doctor-1.log" 2>&1
   assert_ngrep "boot reaps the dead-session group membership" "$OUT/doctor-1.log" '🟣 Bridge'
   assert_ngrep "boot reap clears driven state" "$OUT/doctor-1.log" '"driven":true'
-  "${CLI[@]}" doctor >"$OUT/doctor-2.log" 2>&1
+  "${CLI[@]}" doctor --profile "$P1" >"$OUT/doctor-2.log" 2>&1
   assert_ngrep "doctor: no residue rows after the reap" "$OUT/doctor-2.log" 'static.html'
-  "${CLI[@]}" doctor --fix >"$OUT/doctor-3.log" 2>&1
+  "${CLI[@]}" doctor --fix --profile "$P1" >"$OUT/doctor-3.log" 2>&1
   assert_ngrep "doctor --fix on a clean browser releases nothing" "$OUT/doctor-3.log" '"fixed":"released"'
   "${CLI[@]}" close "static.html?x=doctor" --profile "$P1" >/dev/null 2>&1
 }

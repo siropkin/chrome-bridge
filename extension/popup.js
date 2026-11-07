@@ -60,9 +60,13 @@ chrome.tabs.query({ active: true, currentWindow: true }).then(async ([tab]) => {
     return;
   }
   $('title').textContent = tab.title || tab.url || '(untitled)';
-  $('ref').textContent = 'id:' + tab.id;
+  // The reference names the profile once the worker says which it is: with
+  // several profiles connected an agent otherwise has to ask, and the human
+  // only knows their profiles by Chrome's names, never the bridge's.
+  let ref = 'id:' + tab.id;
+  $('ref').textContent = ref;
   $('copy').addEventListener('click', () => {
-    navigator.clipboard.writeText('id:' + tab.id).then(
+    navigator.clipboard.writeText(ref).then(
       () => {
         $('status').textContent = 'Copied ✓';
       },
@@ -77,6 +81,12 @@ chrome.tabs.query({ active: true, currentWindow: true }).then(async ([tab]) => {
     const state = await chrome.runtime.sendMessage({ type: 'bridge-state', tabId: tab.id });
     if (state?.error || !Number.isInteger(state?.count) || state.count < 0 || typeof state.active !== 'boolean') throw new Error(state?.error || 'Tab state unavailable');
     bridgeState = state;
+    if (typeof state.profile === 'string' && /^[a-z]+$/.test(state.profile)) {
+      ref = `id:${tab.id} --profile ${state.profile}`;
+      $('ref').textContent = ref;
+      $('profile-name').textContent = state.profile;
+      $('profile').hidden = false;
+    }
     renderStatus();
     $('driven').hidden = state.count === 0;
     $('driven-count').textContent = `🟣 ${state.count} tab${state.count > 1 ? 's' : ''} driven by your AI agent`;

@@ -7,7 +7,8 @@
 # honest-timeout isolation, and a server restart mid-storm.
 #
 # Preconditions (same as run.sh):
-#   - two Chrome profiles connected (multi-profile sections SKIP with one)
+#   - two Chrome profiles connected (multi-profile sections SKIP with one);
+#     STRESS_P1=<name> pins profile 1 (default: first connected)
 #   - the profile-1 Chrome window should be VISIBLE (shots on occluded windows
 #     can come back blank — payload integrity is still asserted, pixels aren't)
 #   - node test/stress/server.mjs on :9334 (started here if down)
@@ -54,7 +55,12 @@ P1=""; P2=""
 detect_profiles() {
   local profs
   profs=$("${CLI[@]}" profiles 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).map(p=>p.name).join(" "))}catch{console.log("")}})')
-  P1=$(echo "$profs" | awk '{print $1}'); P2=$(echo "$profs" | awk '{print $2}')
+  if [ -n "${STRESS_P1:-}" ]; then # pin profile 1 by name — see run.sh
+    echo " $profs " | grep -qF " $STRESS_P1 " || { echo "STRESS_P1=$STRESS_P1 is not connected (have: $profs)" >&2; return 1; }
+    P1=$STRESS_P1; P2=$(echo "$profs" | tr ' ' '\n' | grep -vxF "$STRESS_P1" | head -1)
+  else
+    P1=$(echo "$profs" | awk '{print $1}'); P2=$(echo "$profs" | awk '{print $2}')
+  fi
   [ -n "$P1" ]
 }
 need2() { [ -n "$P2" ]; }

@@ -33,7 +33,7 @@ function popupListener({ failedTab, ready = Promise.resolve() } = {}) {
   const sender = { id: 'bridge', url: 'chrome-extension://bridge/popup.html' };
   vm.runInNewContext(listenerSource, {
     chrome: { runtime: { id: 'bridge', getURL: (path) => 'chrome-extension://bridge/' + path, onMessage: { addListener: (handler) => { listener = handler; } } } },
-    ready, drivenTabs, humanReclaimed, ws: { readyState: 1 }, WebSocket: { OPEN: 1 },
+    ready, idReady: Promise.resolve(), PROFILE_NAME: 'poplar', drivenTabs, humanReclaimed, ws: { readyState: 1 }, WebSocket: { OPEN: 1 },
     requestDiagnostics: async (message) => { diagnostics.push(message); return { ok: true, result: { enabled: false } }; },
     releaseTab: async (tabId) => {
       if (tabId === failedTab) throw new Error('release unavailable');
@@ -68,6 +68,7 @@ test('popup listener supports callback-only Chrome runtime for every async reque
   assert.equal(initial.count, 2);
   assert.equal(initial.active, true);
   assert.equal(initial.connected, true);
+  assert.equal(initial.profile, 'poplar', 'the popup shows the profile name and puts it in the copied reference');
   assert.equal((await send({ type: 'release-active', tabId: 7 })).count, 1);
   assert.equal((await send({ type: 'bridge-state', tabId: 7 })).active, false);
   assert.equal((await send({ type: 'release-all' })).count, 1);

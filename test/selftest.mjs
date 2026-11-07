@@ -460,6 +460,14 @@ try {
 
   const press = await cli('press', 'example.com', 'Enter', '@e3');
   assert(press.status === 0 && press.stdout.includes('"key":"Enter"') && press.stdout.includes('"target":"@e3"'), 'cli press passes key+target', press.stdout + press.stderr);
+  // ref-first — the act-by-ref order of every other verb — used to send the
+  // key as the selector ('element not found: Control+k', e2e run)
+  const pressRefFirst = await cli('press', 'example.com', '@e3', 'Control+k', '--diff');
+  assert(
+    pressRefFirst.status === 0 && pressRefFirst.stdout.includes('"key":"Control+k"') && pressRefFirst.stdout.includes('"target":"@e3"'),
+    'cli press accepts the ref before the key',
+    pressRefFirst.stdout + pressRefFirst.stderr
+  );
 
   const typ = await cli('type', 'example.com', '@e2', 'hello', 'world');
   assert(typ.status === 0 && typ.stdout.includes('"value":"hello world"'), 'cli type joins text args', typ.stdout + typ.stderr);
