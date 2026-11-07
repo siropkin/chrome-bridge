@@ -16,8 +16,7 @@
      anchor on the gradient's violet stop instead. */
   button { width: 100%; padding: 7px 0; border: 0; border-radius: 8px; background: linear-gradient(135deg, #7c3aed, #4f46e5, #0e7490); color: #fff; font: 600 13px system-ui, sans-serif; cursor: pointer; }
   button:disabled { opacity: 0.5; cursor: default; }
-  #release-tab, #setup { background: #fff; color: #7c3aed; border: 1px solid #7c3aed; margin-top: 6px; }
-  #release-all { margin-top: 6px; }
+  #release-tab, #release-all, #setup { background: #fff; color: #7c3aed; border: 1px solid #7c3aed; margin-top: 6px; }
   #driven-count { color: #5b21b6; font-weight: 600; margin-top: 6px; }
   #status, #setup-status { min-height: 15px; margin-top: 6px; color: #5b21b6; font-size: 12px; }
   /* empty feedback lines take no room — they were a dead band above Settings */
@@ -57,12 +56,17 @@
   <div class="divider"></div>
   <div id="driven-count"></div>
   <button id="release-tab" hidden>⏏ Release this tab</button>
-  <button id="release-all">Release all agent tabs</button>
+  <button id="release-all">⏏ Release all agent tabs</button>
 </div>
 <div class="divider"></div>
-<button id="setup">Copy setup prompt for your AI agent</button>
-<div class="hint">Paste it to your agent (Claude, Cursor, …) — it installs and verifies everything itself.</div>
-<div id="setup-status" role="status"></div>
+<!-- Collapsed once the bridge runs (setting up another agent is occasional);
+     popup.js opens it when the bridge is down — then it's the next step. -->
+<details id="install">
+  <summary>Install</summary>
+  <button id="setup">Copy setup prompt for your AI agent</button>
+  <div class="hint">Paste it to your agent (Claude, Cursor, …) — it installs and verifies everything itself.</div>
+  <div id="setup-status" role="status"></div>
+</details>
 <div class="divider"></div>
 <details id="settings">
   <summary>Settings</summary>

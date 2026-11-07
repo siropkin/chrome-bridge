@@ -20,7 +20,7 @@ function renderStatus() {
   if (!bridgeHealth) return; // health hasn't answered — the catch below owns the line
   // "All" is all tabs THIS profile's worker drives — with several profiles
   // connected, the panic button must not read wider than it is.
-  if ((bridgeHealth.profiles?.length || 0) > 1) $('release-all').textContent = 'Release all agent tabs (this profile)';
+  if ((bridgeHealth.profiles?.length || 0) > 1) $('release-all').textContent = '⏏ Release all agent tabs (this profile)';
   const el = $('bridge-status');
   el.className = '';
   if (!(bridgeHealth.ok && bridgeHealth.extension)) {
@@ -83,6 +83,7 @@ fetch('http://127.0.0.1:9333/health', { signal: AbortSignal.timeout(4000) }) // 
     $('status-text').textContent = 'bridge not running';
     $('setup').className = 'primary';
     $('copy').className = 'secondary';
+    $('install').open = true;
   });
 
 chrome.tabs.query({ active: true, currentWindow: true }).then(async ([tab]) => {

@@ -406,11 +406,13 @@ test('popup leads with the setup prompt when the bridge is down, and shows the f
   assert.equal(down.element('status-text').textContent, 'bridge not running');
   assert.equal(down.element('setup').className, 'primary');
   assert.equal(down.element('copy').className, 'secondary');
+  assert.equal(down.element('install').open, true);
   assert.equal(down.element('title').title, 'A long tab title');
   const up = popupHarness(state, { tab: { id: 7, title: 'A long tab title' } });
   await up.settle();
   assert.equal(up.element('status-text').textContent, 'bridge ready');
   assert.notEqual(up.element('setup').className, 'primary');
+  assert.notEqual(up.element('install').open, true);
   assert.equal(up.element('ref').textContent, 'id:7 --profile poplar');
 });
 
