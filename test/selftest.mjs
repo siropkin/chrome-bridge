@@ -175,7 +175,10 @@ try {
     // the cli's --fix then releases the row through the normal release path.
     if (msg.type === 'doctor')
       return respond({
-        rows: [{ id: 7, url: 'https://residue.example/', title: 'Residue', grouped: true, driven: false, status: '✅', emulated: false, debugger: false }],
+        rows: [
+          { id: 7, url: 'https://residue.example/', title: 'Residue', grouped: true, driven: false, status: '✅', emulated: false, debugger: false },
+          { id: 8, url: 'https://busy.example/', title: 'Another session', grouped: true, driven: true, status: '⏳', emulated: true, debugger: true },
+        ],
         stale: [999],
       });
     // no release reply: the generic echo fallback answers it (ok:true) — the
@@ -1295,6 +1298,7 @@ try {
   const rows1 = JSON.parse(doc1.stdout);
   const residue = rows1.find((r) => r.id === 7);
   assert(residue && residue.grouped === true && residue.driven === false, 'doctor: residue row merged from the seat', doc1.stdout);
+  assert(!rows1.some((r) => r.id === 8), "doctor: a live driven tab (another session's work) is not residue", doc1.stdout);
   assert(
     residue.last?.some((l) => l.includes('mark')) && residue.last.some((l) => l.includes('release')),
     'doctor: residue row annotated with its last journal events',

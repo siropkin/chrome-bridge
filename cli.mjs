@@ -719,7 +719,8 @@ async function runCommand(cmdName, args) {
           row.fixed = r?.error ? 'release failed: ' + r.error : 'released';
         }
       }
-      print(rows);
+      // Driven tabs are live work (maybe another session's), not residue — `tabs` shows them.
+      print(rows.filter((r) => !r.driven));
       break;
     }
 
