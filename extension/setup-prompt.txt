@@ -1,8 +1,10 @@
 Set up chrome-bridge so you can drive this Chrome browser yourself. Work through every step in order, verify each one, and if a step fails, stop and tell me plainly what failed.
 
-1. Check Node.js ≥ 18: `node --version`. If missing, install it (macOS: `brew install node`; Windows: from nodejs.org; Linux: your package manager).
+1. Check Node.js ≥ 18: `node --version`. If missing, install it (macOS: `brew install node`; Windows: from nodejs.org; Linux: your package manager). If installing needs a password or fails, tell me and stop.
 2. Put the bridge into a stable home (~/chrome-bridge) — WITHOUT wiping what is already there:
-   - If ~/chrome-bridge/cli.mjs exists, update it: git -C ~/chrome-bridge pull --ff-only. If the pull fails or the directory is not a git checkout, keep the existing copy as is and say so in your final report. Never delete it — it may be someone's checkout with their own commits (e.g. recipes).
+   - If ~/chrome-bridge/cli.mjs is missing but ~/.chrome-bridge/cli.mjs exists (installed via npm), use ~/.chrome-bridge wherever this prompt says ~/chrome-bridge.
+   - If the bridge already exists and is a git checkout, update it: git -C ~/chrome-bridge pull --ff-only. If the pull fails, keep the existing copy as is and say so in your final report. Never delete it — it may be someone's checkout with their own commits (e.g. recipes).
+   - If it exists but is not a git checkout (an earlier no-git download), refresh it in place: curl -fsSL https://github.com/siropkin/chrome-bridge/archive/refs/heads/master.tar.gz | tar xz --strip-components=1 -C ~/chrome-bridge (overwrites the bridge's own files, keeps anything added).
    - Else if git is available: git clone https://github.com/siropkin/chrome-bridge.git ~/chrome-bridge
    - Else (no git): curl -L https://github.com/siropkin/chrome-bridge/archive/refs/heads/master.tar.gz | tar xz -C ~ && mv ~/chrome-bridge-master ~/chrome-bridge — only into a fresh ~/chrome-bridge; if a directory already exists there, stop and tell me instead of replacing it.
 3. Restart the bridge on the fetched code: node ~/chrome-bridge/cli.mjs stop && node ~/chrome-bridge/cli.mjs start. A server that was already running keeps its old code until restarted; "nothing was running" from stop is fine. Preserve existing diagnostic logs and settings.

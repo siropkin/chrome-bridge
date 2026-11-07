@@ -43,8 +43,8 @@ snap <match> [css|@ref] [--diff] [--href] [--skeleton] [--no-fold] [--find "nl"]
                                   --no-fold: repeated lines stay inline in document order —
                                   the '… N more' summaries move folded refs to the END, so
                                   scripted last-line picks got the wrong row;
-                                  --find "query" asks local Gemini Nano (no cloud tokens; ~2s warm,
-                                  ~20s first call while Nano loads) to pick
+                                  --find "query" asks local Gemini Nano (no cloud tokens; seconds
+                                  on a scoped tree, 15-35s on a whole big page) to pick up to 8
                                   tree lines matching a natural-language query ("the cancel button") —
                                   a shortlist to VERIFY before acting, never ground truth (~2/3 accurate);
                                   '* ' prefix marks elements new since the previous snap
@@ -194,9 +194,10 @@ swlogs                            service-worker console tail (errors/warnings)
 extreload                         reload the extension from disk — picks up code changes
                                   without the chrome://extensions click (the stale-version
                                   health warning's fix)
-emulate <match> <w> <h> [mobile|dsf=N]   CDP device view (no window resize); dsf=N pins the
+emulate <match> <w> <h> [mobile] [dsf=N]   CDP device view (no window resize); dsf=N pins the
                                   device scale factor (dsf=2 = retina captures on any
-                                  display — shot --max <w> then downsamples to exact px);
+                                  display — shot --max <w> then downsamples to exact px;
+                                  mobile alone = dsf 2, 'mobile dsf=3' = a 3x phone);
                                   'emulate <match> focus' makes the page believe it's focused —
                                   focus-gated work (pages pausing on blur) keeps running in a
                                   background tab; mobile/dsf=N/focus are the only modes;

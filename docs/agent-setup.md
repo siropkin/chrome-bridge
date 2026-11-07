@@ -3,6 +3,7 @@ Set up chrome-bridge — the bridge that lets you drive my real, logged-in Chrom
 1. Pick the repo root `<repo>`:
    - if your working directory is already a chrome-bridge checkout (it contains `cli.mjs` and `AGENTS.md`), use it;
    - else if `~/chrome-bridge/cli.mjs` exists, run `git -C ~/chrome-bridge pull --ff-only` (if the pull fails, show me the error and keep the existing copy) and use `~/chrome-bridge`;
+   - else if `~/.chrome-bridge/cli.mjs` exists (an npm install), update and use it the same way (`git -C ~/.chrome-bridge pull --ff-only`, then `~/.chrome-bridge`);
    - else clone it and use `~/chrome-bridge`:
 
      ```
@@ -13,7 +14,7 @@ Set up chrome-bridge — the bridge that lets you drive my real, logged-in Chrom
 
    Substitute `<repo>` with the real path everywhere below.
 
-2. Bring the bridge up on this checkout's code (needs Node ≥ 18 — if Node is missing or older, tell me and stop; don't install or upgrade anything yourself):
+2. Bring the bridge up on this checkout's code (needs Node ≥ 18 — if Node is missing or older, install it: macOS `brew install node`, Linux your package manager, Windows nodejs.org; if installing needs a password or fails, tell me and stop):
 
    ```
    node <repo>/cli.mjs stop

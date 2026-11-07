@@ -2694,6 +2694,7 @@ const pasteSrc = (target, value, html) => `(async () => {
 // ponytail: 48KB candidate cap — probed Nano's quota at ~60-80KB, so 48KB
 // covers whole trees on typical pages with margin; chunk + pick-per-chunk
 // is the upgrade path for true monsters.
+// Picks cap at 8: uncapped, Nano listed 160-220 lines of a page in live logs — an 8KB "shortlist" that took 30s+.
 const FIND_SRC = (scope, find) => `(async () => {
   ${NANO_GUARD}
   const tree = ${SNAP_SRC(scope, false, false)};
@@ -2710,7 +2711,7 @@ const FIND_SRC = (scope, find) => `(async () => {
     const out = await session.prompt(
       'The UI elements of a page, one per line:\\n' + listing +
       '\\nWhich lines match: ' + ${JSON.stringify(find)} +
-      '? Reply with ONLY their refs (@eN), best first, comma-separated. If none match, reply none.'
+      '? Reply with ONLY the refs (@eN) of at most 8 best matches, best first, comma-separated. If none match, reply none.'
     );
     const picked = [];
     for (const m of out.matchAll(/e(\\d+)/g)) {
@@ -2719,13 +2720,14 @@ const FIND_SRC = (scope, find) => `(async () => {
       if (line && !picked.includes(line)) picked.push(line);
     }
     let tail = listed < lines.length ? ' (tree capped at 48KB — scope the snap to reach the rest)' : '';
+    if (picked.length > 8) tail += ' (' + (picked.length - 8) + ' weaker picks dropped — narrow the query or scope the snap)';
     // The 300-node snap cap drops the tail of big pages before Nano ever sees
     // them — without this note, 'no matches' reads as 'not on the page' when
     // the truth is 'not reached'. (The truncation line itself has no @eN ref,
     // so the lines filter above already removed it from the listing.)
     if (tree.includes('truncated at')) tail += ' (tree truncated at 300 nodes — the target may be past the cut; scope: snap <match> <css>)';
     if (!picked.length) return 'no matches in ' + listed + ' ref lines — nano said: ' + out.slice(0, 120) + tail;
-    return picked.map((l) => l.trim()).join('\\n') +
+    return picked.slice(0, 8).map((l) => l.trim()).join('\\n') +
       '\\n(' + listed + ' ref lines scanned · nano pre-filter — verify before acting)' + tail;
   } finally {
     session.destroy();

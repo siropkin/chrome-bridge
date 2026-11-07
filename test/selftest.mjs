@@ -292,6 +292,10 @@ try {
     fs.writeFileSync(join(sdir, 'SKILL.md'), 'a stale copied skill');
     const stale = await cliRaw(['health'], null, { HOME: home });
     assert(stale.status === 0 && stale.stderr.includes('the installed Claude Code skill'), 'health: a stale copied skill warns on stderr', stale.stderr);
+    // A copy whose SKILL.md is current but whose reference/ files are missing is stale too.
+    fs.copyFileSync(`${ROOT}.claude/skills/chrome-bridge/SKILL.md`, join(sdir, 'SKILL.md'));
+    const staleRef = await cliRaw(['health'], null, { HOME: home });
+    assert(staleRef.stderr.includes('the installed Claude Code skill'), 'health: a copied skill missing reference/ files warns', staleRef.stderr);
     fs.rmSync(sdir, { recursive: true, force: true });
     fs.symlinkSync(`${ROOT}.claude/skills/chrome-bridge`, sdir);
     const linked = await cliRaw(['health'], null, { HOME: home });
@@ -761,6 +765,13 @@ try {
   assert(emuDsf.status === 0 && emuDsf.stdout.includes('"dsf":2') && !emuDsf.stdout.includes('"mobile":true'), 'cli emulate dsf=N wire shape', emuDsf.stdout + emuDsf.stderr);
   const emuBadDsf = await cli('emulate', 'example.com', '1280', '800', 'dsf=abc');
   assert(emuBadDsf.status !== 0 && (emuBadDsf.stderr.includes('usage: emulate') || emuBadDsf.stderr.includes('dsf')), 'cli emulate rejects a non-numeric dsf', emuBadDsf.stdout + emuBadDsf.stderr);
+  // mobile + dsf=N together (a 3x phone) — live logs showed agents refused here.
+  const emuBoth = await cli('emulate', 'example.com', '390', '844', 'mobile', 'dsf=3');
+  assert(emuBoth.status === 0 && emuBoth.stdout.includes('"mobile":true') && emuBoth.stdout.includes('"dsf":3'), 'cli emulate mobile dsf=N combine', emuBoth.stdout + emuBoth.stderr);
+  const emuDup = await cli('emulate', 'example.com', '390', '844', 'dsf=2', 'dsf=3');
+  assert(emuDup.status !== 0 && emuDup.stderr.includes('usage: emulate'), 'cli emulate rejects a repeated mode', emuDup.stdout + emuDup.stderr);
+  const rszExtra = await cli('resize', 'example.com', '800', '600', 'mobile');
+  assert(rszExtra.status !== 0 && rszExtra.stderr.includes('usage: resize'), 'cli resize takes no mode', rszExtra.stdout + rszExtra.stderr);
   const rsz = await cli('resize', 'example.com', '800', '600');
   assert(rsz.status === 0 && rsz.stdout.includes('"width":800') && rsz.stdout.includes('"height":600'), 'cli resize wire shape', rsz.stdout + rsz.stderr);
   const opn = await cli('open', 'https://example.org/');

@@ -1,0 +1,32 @@
+# Submit the Chrome Web Store draft (uploaded by release.yml) for review.
+# Manual dispatch on purpose: `gh workflow run cws-submit.yml`. The store
+# dashboard can't be scripted by extensions, so this is the agent-reachable
+# "Submit for review" click; auto-submitting every tag would restart review.
+
+name: CWS submit
+
+on:
+  workflow_dispatch:
+
+jobs:
+  submit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Submit the draft for review
+        env:
+          CHROME_CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
+          CHROME_CLIENT_SECRET: ${{ secrets.CHROME_CLIENT_SECRET }}
+          CHROME_REFRESH_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
+          CHROME_EXTENSION_ID: ${{ secrets.CHROME_EXTENSION_ID }}
+          CHROME_PUBLISHER_ID: ${{ secrets.CHROME_PUBLISHER_ID }}
+        run: |
+          TOKEN=$(curl -fsS -X POST https://oauth2.googleapis.com/token \
+            -d "client_id=$CHROME_CLIENT_ID" -d "client_secret=$CHROME_CLIENT_SECRET" \
+            -d "refresh_token=$CHROME_REFRESH_TOKEN" -d "grant_type=refresh_token" \
+            | node -pe 'JSON.parse(require("fs").readFileSync(0)).access_token')
+          ITEM="https://chromewebstore.googleapis.com/v2/publishers/$CHROME_PUBLISHER_ID/items/$CHROME_EXTENSION_ID"
+          code=$(curl -sS -o /tmp/cws-publish.json -w '%{http_code}' -X POST "$ITEM:publish" \
+            -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{}')
+          echo "publish (HTTP $code): $(cat /tmp/cws-publish.json)"
+          echo "status: $(curl -sS "$ITEM:fetchStatus" -H "Authorization: Bearer $TOKEN")"
+          [ "$code" = 200 ] || { echo "::error::submit failed (HTTP $code)"; exit 1; }

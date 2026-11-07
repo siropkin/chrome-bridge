@@ -256,8 +256,8 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     the '… N more' summaries move folded refs to the end, so
                                     scripted last-line picks got the wrong row;
                                     --find asks local Gemini Nano to pick the lines matching a
-                                    natural-language query — a ~2s shortlist (~20s first call
-                                    while Nano loads) to VERIFY, not ground
+                                    natural-language query — up to 8 lines (seconds on a scoped
+                                    tree, 15-35s on a whole big page) to VERIFY, not ground
                                     truth (~2/3 accurate in testing); lines prefixed '* ' are new
                                     since the previous snap; lines seen 3+ times collapse to
                                     '… N more · <line> → @refs'; trees truncate at 300 nodes —
@@ -404,9 +404,10 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
   extreload                         reload the extension from disk — picks up code changes
                                     without the chrome://extensions click (the stale-version
                                     health warning's fix)
-  emulate <match> <w> <h> [mobile|dsf=N]   CDP device view (no window resize); dsf=N pins the
+  emulate <match> <w> <h> [mobile] [dsf=N]   CDP device view (no window resize); dsf=N pins the
                                     device scale factor (dsf=2 = retina captures on any
-                                    display — shot --max <w> then downsamples to exact px);
+                                    display — shot --max <w> then downsamples to exact px;
+                                    mobile alone = dsf 2, 'mobile dsf=3' = a 3x phone);
                                     'focus' instead of <w> <h> emulates page focus
                                     (focus-gated work keeps running in a background tab —
                                     does NOT render an occluded window)
@@ -488,8 +489,11 @@ async function runCommand(cmdName, args) {
                 // Chrome auto-updates the store build; the checkout (CLI, server, skill) only moves on a pull.
                 if (versionNewer(p.v, mine)) {
                   const repo = fileURLToPath(new URL('.', import.meta.url)).replace(/[\\/]$/, '');
+                  const update = fs.existsSync(join(repo, '.git'))
+                    ? `git -C "${repo}" pull --ff-only`
+                    : `curl -fsSL https://github.com/siropkin/chrome-bridge/archive/refs/heads/master.tar.gz | tar xz --strip-components=1 -C "${repo}"`;
                   console.error(
-                    `⚠ extension ${p.v} (Chrome Web Store, profile ${p.name || p.id.slice(0, 4)}) is newer than this bridge download (${mine}) — update it: git -C "${repo}" pull --ff-only && node "${repo}/cli.mjs" stop && node "${repo}/cli.mjs" start`
+                    `⚠ extension ${p.v} (Chrome Web Store, profile ${p.name || p.id.slice(0, 4)}) is newer than this bridge download (${mine}) — update it: ${update} && node "${repo}/cli.mjs" stop && node "${repo}/cli.mjs" start`
                   );
                   continue;
                 }
@@ -512,10 +516,12 @@ async function runCommand(cmdName, args) {
         try {
           const skillDir = join(homedir(), '.claude', 'skills', 'chrome-bridge');
           const repoSkill = fileURLToPath(new URL('./.claude/skills/chrome-bridge', import.meta.url));
+          const skillFiles = ['SKILL.md', ...fs.readdirSync(join(repoSkill, 'reference')).map((f) => join('reference', f))];
+          const read = (f) => fs.readFileSync(f, 'utf8');
           if (
             !fs.lstatSync(skillDir, { throwIfNoEntry: false })?.isSymbolicLink() &&
             fs.existsSync(join(skillDir, 'SKILL.md')) &&
-            fs.readFileSync(join(skillDir, 'SKILL.md'), 'utf8') !== fs.readFileSync(join(repoSkill, 'SKILL.md'), 'utf8')
+            skillFiles.some((f) => !fs.existsSync(join(skillDir, f)) || read(join(skillDir, f)) !== read(join(repoSkill, f)))
           )
             console.error(
               `⚠ the installed Claude Code skill at ${skillDir} differs from the repo's (a copied install goes stale) — re-install as a symlink: rm -rf ~/.claude/skills/chrome-bridge && ln -s ${repoSkill} ~/.claude/skills/chrome-bridge`
@@ -1319,17 +1325,19 @@ async function runCommand(cmdName, args) {
         print(await cmd({ type: 'emulate', urlMatch: args[0], focus: true }));
         break;
       }
-      if (!args[0] || !args[1] || !args[2]) fail(`usage: ${cmdName} <match> <w> <h>${cmdName === 'emulate' ? ' [mobile|dsf=N]|focus' : ''}`);
-      if ((cmdName === 'emulate' && args.length > 4) || (cmdName === 'resize' && args.length > 3) || (cmdName === 'emulate' && args[3] && args[3] !== 'mobile' && !args[3].startsWith('dsf=')))
-        fail(`usage: ${cmdName} <match> <w> <h>${cmdName === 'emulate' ? ' [mobile|dsf=N]|focus' : ''}`);
+      const usage = `usage: ${cmdName} <match> <w> <h>${cmdName === 'emulate' ? ' [mobile] [dsf=N] | emulate <match> focus' : ''}`;
+      const mods = args.slice(3);
+      if (!args[0] || !args[1] || !args[2]) fail(usage);
+      if ((cmdName === 'resize' && mods.length) || mods.some((m) => m !== 'mobile' && !m.startsWith('dsf=')) || new Set(mods.map((m) => m.split('=')[0])).size !== mods.length) fail(usage);
       const w = Number(args[1]);
       const h = Number(args[2]);
       if (!Number.isFinite(w) || !Number.isFinite(h) || w < 1 || h < 1) fail(`${cmdName} needs numeric <w> <h>`);
       // dsf=N pins the device scale factor (retina captures without a retina
-      // window); mobile already implies dsf 2 extension-side.
-      const dsf = cmdName === 'emulate' && args[3]?.startsWith('dsf=') ? Number(args[3].slice(4)) : undefined;
+      // window); mobile alone implies dsf 2 extension-side.
+      const dsfArg = mods.find((m) => m.startsWith('dsf='));
+      const dsf = dsfArg ? Number(dsfArg.slice(4)) : undefined;
       if (dsf !== undefined && (!Number.isFinite(dsf) || dsf < 0.1 || dsf > 4)) fail('emulate dsf must be 0.1–4');
-      print(await cmd({ type: cmdName, urlMatch: args[0], width: w, height: h, ...(cmdName === 'emulate' ? { mobile: args[3] === 'mobile', ...(dsf !== undefined ? { dsf } : {}) } : {}) }));
+      print(await cmd({ type: cmdName, urlMatch: args[0], width: w, height: h, ...(cmdName === 'emulate' ? { mobile: mods.includes('mobile'), ...(dsf !== undefined ? { dsf } : {}) } : {}) }));
       break;
     }
 
