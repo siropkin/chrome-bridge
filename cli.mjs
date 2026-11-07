@@ -261,7 +261,10 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     truth (~2/3 accurate in testing); lines prefixed '* ' are new
                                     since the previous snap; lines seen 3+ times collapse to
                                     '… N more · <line> → @refs'; trees truncate at 300 nodes —
-                                    scope big pages with [css|@ref], or --skeleton first
+                                    scope big pages with [css|@ref], or --skeleton first;
+                                    a visible modal (dialog/aria-modal) swallowed by any cut is
+                                    appended as '(modal layer past the cut …)' and echoed to
+                                    stderr; names over 60 chars are cut mid-name (tail kept)
   click <match> <@ref|css> [--dbl] [--diff] [--trusted]
                                     click an element (fails loudly if an overlay covers it);
                                     --dbl double-clicks; --trusted drives CDP Input (isTrusted=true —
@@ -343,7 +346,10 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     human will see: PRs, issues, chat, docs);
                                     --diff compares against the previous --diff shot and, on
                                     change, saves ONLY the changed region (canvas/pixel changes
-                                    the tree can't see)
+                                    the tree can't see); --crop takes a measure rect (CSS px,
+                                    viewport-relative) and renders beyond the viewport — an
+                                    off-screen or taller-than-viewport element captures whole;
+                                    --full = whole page (16384px cap), exclusive with --crop
   net <match> [--dur ms] [--filter s] [--body s] [--ws] [--har out.har]
                                     capture network for N ms, capped at 30s (CDP, one line per
                                     request, each naming its initiator: ⟵ script:line);
@@ -371,8 +377,9 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     animations grouped by property — '⚠ not composited' ones
                                     repaint every frame. Warns when the tab is hidden (Chrome
                                     throttles it — the numbers would lie). GPU process not seen
-  measure <match> <css|@ref>        rect + computed styles as JSON, one entry per match
-                                    (font = size/weight)
+  measure <match> <css|@ref>        rect + computed styles as JSON, one entry per match: display,
+                                    alignment, gap, padding, margin, border, radius, colors,
+                                    font (= size/weight) and family
   console <match> [--clear] [--ask [question]]
                                     page console + errors (hook installs on first call);
                                     --ask triages the log with local Gemini Nano — only
@@ -408,7 +415,8 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
   emulate <match> <w> <h> [mobile] [dsf=N]   CDP device view (no window resize); dsf=N pins the
                                     device scale factor (dsf=2 = retina captures on any
                                     display — shot --max <w> then downsamples to exact px;
-                                    mobile alone = dsf 2, 'mobile dsf=3' = a 3x phone);
+                                    mobile alone = dsf 2, 'mobile dsf=3' = a 3x phone; the
+                                    reply echoes the dsf in effect);
                                     'focus' instead of <w> <h> emulates page focus
                                     (focus-gated work keeps running in a background tab —
                                     does NOT render an occluded window)
@@ -878,6 +886,10 @@ async function runCommand(cmdName, args) {
       // is "not reached". Echo it to stderr, which survives the pipe.
       const ti = typeof out === 'string' ? out.lastIndexOf('… truncated at') : -1;
       if (ti >= 0) console.error(out.slice(ti).split('\n')[0]);
+      // Same for a modal layer the extension appended past the cut: a page-
+      // blocking dialog must survive the pipe too (header + the layer's line).
+      const li = typeof out === 'string' ? out.indexOf('(modal layer past the cut') : -1;
+      if (li >= 0) console.error(out.slice(li).split('\n').slice(0, 2).join('\n'));
       break;
     }
 

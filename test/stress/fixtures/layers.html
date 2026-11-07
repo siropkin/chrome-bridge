@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>stress layers</title>
+</head>
+<body>
+  <h1>Layers fixture</h1>
+  <!-- long names that differ only at the END (MDN breadcrumb shape): the
+       60-char cut must keep the tail or both read the same -->
+  <button id="crumb-map">JavaScript / Reference / Standard built-in objects / Array / Array.prototype.map()</button>
+  <button id="crumb-filter">JavaScript / Reference / Standard built-in objects / Array / Array.prototype.filter()</button>
+  <!-- measure: border, margin, font family; and an element taller than the viewport for shot --crop -->
+  <div id="tall" style="height:2400px;margin:8px 0;border:2px solid rgb(0, 0, 0);font-family:monospace;background:linear-gradient(rgb(255, 0, 0), rgb(0, 0, 255))">tall</div>
+  <div id="root"></div>
+  <script>
+    // 8 sections × 60 buttons: past --skeleton's width fold AND plain snap's 300-node cap
+    // ?small: no big tree and a ROLE-LESS aria-modal host — nothing is cut,
+    // so the layer must print once, with no 'past the cut' header
+    const small = location.search.includes('small');
+    const root = document.getElementById('root');
+    for (let s = 1; s <= (small ? 0 : 8); s++) {
+      const sec = document.createElement('section');
+      const h = document.createElement('h2');
+      h.textContent = 'Section ' + s;
+      sec.appendChild(h);
+      for (let i = 1; i <= 60; i++) {
+        const b = document.createElement('button');
+        b.textContent = 'Item ' + s + '-' + i;
+        sec.appendChild(b);
+      }
+      root.appendChild(sec);
+    }
+    // the consent layer is portaled to the END of body (BBC's Sourcepoint
+    // shape: role=dialog aria-modal, fixed) — every cut swallowed it
+    const layer = document.createElement('div');
+    if (!small) layer.setAttribute('role', 'dialog');
+    layer.setAttribute('aria-modal', 'true');
+    layer.style.cssText = 'position:fixed;inset:20% 10%;background:#fff;border:1px solid #000;z-index:10';
+    let box = layer;
+    for (let d = 0; d < 3; d++) { const div = document.createElement('div'); box.appendChild(div); box = div; }
+    const accept = document.createElement('button');
+    accept.textContent = 'Accept all';
+    box.appendChild(accept);
+    document.body.appendChild(layer);
+  </script>
+</body>
+</html>

@@ -109,14 +109,14 @@ node cli.mjs shot localhost:8082 out.png # screenshot, only when pixels matter
 node cli.mjs shot localhost:8082 pr.png --max 0  # full-res screenshot for a PR or chat
 ```
 
-A `snap` shows the page as a short text tree. The agent can limit it to one part of the page or get only what changed since the last snap, and it acts on the `@e` refs instead of guessing pixel coordinates:
+A `snap` shows the page as a short text tree. The agent can limit it to one part of the page or get only what changed since the last snap, and it acts on the `@e` refs instead of guessing pixel coordinates. A dialog that blocks the page, such as a cookie-consent banner, always shows up in it, even when the page is too big to list in full:
 
 ```
 table "Hacker News new | past | comments | ask | show | jobs | submit" @e1
   link "Hacker News" @e5
   link "new" @e6
   link "submit" @e12
-table "1. Playa Phone (playaphone.com) 122 points by cutoff 1 hour…" @e14
+table "1. Playa Phone (playaphone.com) 122 poin… hide | 41 comments" @e14
   link "Playa Phone" @e16
   link "41 comments" @e21
 ```

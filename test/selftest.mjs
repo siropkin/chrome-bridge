@@ -231,6 +231,9 @@ try {
     // scope 'empty' answers the empty string the real extension returns on a
     // still-loading page — cli must fail loud, not print nothing with exit 0 (#60).
     if (msg.type === 'snap' && msg.scope === 'empty') return respond('');
+    // scope 'layer': a modal appended past the cut — cli echoes it to stderr too.
+    if (msg.type === 'snap' && msg.scope === 'layer')
+      return respond('tree line A\n… truncated at 300 nodes\n(modal layer past the cut — shown anyway; drill: snap <match> @ref)\ndialog @e9 modal\n  button "Accept all" @e10');
     if (['snap', 'press', 'type', 'hover', 'net', 'perf', 'click', 'fill', 'paste', 'navigate', 'scroll', 'ask', 'upload', 'console', 'note', 'measure', 'grid', 'open', 'close', 'mark', 'release', 'activate', 'unemulate', 'wait', 'emulate', 'resize', 'dialog', 'drag', 'clear'].includes(msg.type)) return respond(msg); // echo for flag-parsing checks
     return respond(null);
   });
@@ -395,6 +398,12 @@ try {
     trunc.status === 0 && trunc.stdout.includes('tree line A') && trunc.stderr.includes('truncated at 300 nodes'),
     'cli snap echoes truncation warning to stderr',
     trunc.stdout + trunc.stderr
+  );
+  const layer = await cli('snap', 'example.com', 'layer');
+  assert(
+    layer.status === 0 && layer.stdout.includes('Accept all') && layer.stderr.includes('(modal layer past the cut') && layer.stderr.includes('dialog @e9 modal') && !layer.stderr.includes('Accept all'),
+    'cli snap echoes a past-the-cut modal layer (header + its line) to stderr',
+    layer.stdout + layer.stderr
   );
 
   // Empty tree (still-loading page): exit non-zero with guidance — a silent
@@ -1128,6 +1137,13 @@ try {
       `resolution sites: ${bg.split('mustQuery(sel').length + bg.split('deepQuery(sel').length}`
     );
     assert(bg.includes('deepAll(') && bg.includes("[mustQuery(s)] : deepAll(s, document)"), 'ext: measure matches inside open shadow roots too (and takes @refs)');
+    // Mockup comparison read border/margin/font-family through eval — measure carries them.
+    assert(['margin:c.margin', 'border:c.border', 'family:c.fontFamily'].every((s) => bg.includes(s)), 'ext: measure reports margin, border and font family');
+    // Long names keep their TAIL — breadcrumb siblings differ at the end.
+    assert(bg.includes("s.slice(0, 40) + '…' + s.slice(-19)"), 'ext: snap names over 60 chars are cut mid-name (tail survives)');
+    // A modal portaled past the cut (BBC's Sourcepoint) must still show.
+    assert(bg.includes("deepAll('dialog[open], [role=dialog], [role=alertdialog], [aria-modal=true]', root)") && bg.includes('(modal layer past the cut'), 'ext: snap appends modal layers the depth cut / width fold / MAX swallowed');
+    assert(bg.includes("dsf: msg.dsf || (msg.mobile ? 2 : 1)"), 'ext: emulate reply echoes the pinned dsf');
     // Stale-ref guard (#22): a ref's identity is its snap-time role+name —
     // a re-sorted virtualized list reusing the node must fail loudly. ONE
     // REFKEY_SRC feeds snap's minting AND deepQuery's click-time recheck.

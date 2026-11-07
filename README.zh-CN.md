@@ -107,14 +107,14 @@ node cli.mjs shot localhost:8082 out.png # 截图,只在需要像素时用
 node cli.mjs shot localhost:8082 pr.png --max 0  # 原始分辨率截图,用于 PR 或聊天
 ```
 
-`snap` 把页面变成一棵简短的文本树。智能体可以只看页面的某一部分,或只取上次快照之后的变化,并直接操作其中的 `@e` 引用,不用猜像素坐标:
+`snap` 把页面变成一棵简短的文本树。智能体可以只看页面的某一部分,或只取上次快照之后的变化,并直接操作其中的 `@e` 引用,不用猜像素坐标。挡住页面的对话框(例如 Cookie 同意横幅)总会出现在树里,即使页面大到无法完整列出:
 
 ```
 table "Hacker News new | past | comments | ask | show | jobs | submit" @e1
   link "Hacker News" @e5
   link "new" @e6
   link "submit" @e12
-table "1. Playa Phone (playaphone.com) 122 points by cutoff 1 hour…" @e14
+table "1. Playa Phone (playaphone.com) 122 poin… hide | 41 comments" @e14
   link "Playa Phone" @e16
   link "41 comments" @e21
 ```

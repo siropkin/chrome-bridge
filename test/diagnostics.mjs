@@ -255,7 +255,7 @@ test('popup setup restarts fetched code and reloads stale extensions', () => {
   assert.match(prompt, /Preserve existing diagnostic logs and settings/);
 });
 
-function popupHarness(sendMessage, { tab, health = { ok: true, extension: true } } = {}) {
+function popupHarness(sendMessage, { tab, health = { ok: true, extension: true }, healthDown = false } = {}) {
   const elements = new Map();
   const element = (id) => {
     if (!elements.has(id)) elements.set(id, { value: '', checked: false, hidden: true, handlers: {}, addEventListener(type, handler) { this.handlers[type] = handler; } });
@@ -263,7 +263,7 @@ function popupHarness(sendMessage, { tab, health = { ok: true, extension: true }
   };
   vm.runInNewContext(fs.readFileSync(new URL('../extension/popup.js', import.meta.url), 'utf8'), {
     document: { getElementById: element },
-    fetch: async () => ({ json: async () => health }),
+    fetch: async () => { if (healthDown) throw new Error('connection refused'); return { json: async () => health }; },
     AbortSignal,
     chrome: { tabs: { query: async () => tab ? [tab] : [] }, runtime: { sendMessage } },
   });
@@ -395,6 +395,21 @@ test('popup active release preserves remaining controls and refreshes the active
   assert.match(element('release-all').textContent, /this profile/);
   await element('release-all').handlers.click();
   assert.equal(element('driven').hidden, true);
+});
+
+test('popup leads with the setup prompt when the bridge is down, and shows the full tab title on hover', async () => {
+  const state = async () => ({ count: 0, active: false, connected: true, profile: 'poplar' });
+  const down = popupHarness(state, { tab: { id: 7, title: 'A long tab title' }, healthDown: true });
+  await down.settle();
+  assert.equal(down.element('status-text').textContent, 'bridge not running');
+  assert.equal(down.element('setup').className, 'primary');
+  assert.equal(down.element('copy').className, 'secondary');
+  assert.equal(down.element('title').title, 'A long tab title');
+  const up = popupHarness(state, { tab: { id: 7, title: 'A long tab title' } });
+  await up.settle();
+  assert.equal(up.element('status-text').textContent, 'bridge ready');
+  assert.notEqual(up.element('setup').className, 'primary');
+  assert.equal(up.element('ref').textContent, 'id:7 --profile poplar');
 });
 
 test('popup release errors and missing acknowledgements never claim success', async () => {

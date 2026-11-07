@@ -282,6 +282,21 @@ s_pixel() {
     "${CLI[@]}" shot change.html "$OUT/crop.png" --crop "$coords,$w2,$h2" >"$OUT/04e.log" 2>&1
     ok "crop from note coordinates taken (${coords}, ${w2}x${h2}) — content verified via image read"
   else bad "no CSS offset note in diff output"; fi
+  # (f) --crop renders beyond the viewport: an element taller than the
+  # viewport captures whole from its measure rect — no scroll, no emulate
+  "${CLI[@]}" open "$FX/layers.html?x=crop" --profile "$P1" >/dev/null
+  ci_vis "layers.html?x=crop"
+  local tall
+  tall=$("${CLI[@]}" measure "layers.html?x=crop" '#tall' 2>/dev/null | node -e "const [m]=JSON.parse(require('fs').readFileSync(0,'utf8'));console.log([m.x,m.y,m.w,m.h].join(','))")
+  "${CLI[@]}" shot "layers.html?x=crop" "$OUT/tall.png" --crop "$tall" --max 0 >"$OUT/04f.log" 2>&1
+  node -e "
+    const d=require('fs').readFileSync('$OUT/tall.png');
+    const w=d.readUInt32BE(16), h=d.readUInt32BE(20);
+    const [,,cw,ch]='$tall'.split(',').map(Number);
+    // file = crop × dpr; the crop is 2400 CSS px tall, far past any viewport
+    if (ch===2404 && h/ch===w/cw && h>=ch) console.log('tall crop '+w+'x'+h); else { console.log('BAD '+w+'x'+h+' for '+'$tall'); process.exit(1); }
+  " >>"$OUT/04f.log" 2>&1 && ok "crop taller than the viewport captures whole" || bad "tall crop ($(tail -1 "$OUT/04f.log"))"
+  "${CLI[@]}" close "layers.html?x=crop" --profile "$P1" >/dev/null 2>&1
   # (c) wait --pixel-change on a static page + fixed header must time out
   "${CLI[@]}" open "$FX/fixedheader.html" --profile "$P1" >/dev/null
   ci_vis "fixedheader.html"
@@ -492,12 +507,14 @@ s_misc() {
   "${CLI[@]}" console "$M" >"$OUT/08-cleared.log" 2>&1
   assert_ngrep "console cleared" "$OUT/08-cleared.log" 'MARKER-12345'
   # emulate / unemulate (verify via navigation per the hidden-tab gotcha)
-  "${CLI[@]}" emulate "$M" 375 667 >/dev/null 2>&1
+  "${CLI[@]}" emulate "$M" 375 667 >"$OUT/08-emu.log" 2>&1
+  assert_grep "plain emulate echoes dsf 1" "$OUT/08-emu.log" '"dsf":1'
   "${CLI[@]}" eval "$M" "innerWidth+'x'+innerHeight" >>"$OUT/08.log" 2>&1
   assert_grep "emulate pins viewport" "$OUT/08.log" '375x667'
   # mobile: on a viewport-meta page (static.html has one) the emulated device
   # viewport must be exact — no 980px desktop-fallback inflation
-  "${CLI[@]}" emulate "$M" 375 667 mobile >/dev/null 2>&1
+  "${CLI[@]}" emulate "$M" 375 667 mobile >>"$OUT/08-emu.log" 2>&1
+  assert_grep "mobile emulate echoes dsf 2" "$OUT/08-emu.log" '"mobile":true,"dsf":2'
   "${CLI[@]}" eval "$M" "innerWidth+'x'+innerHeight" >>"$OUT/08.log" 2>&1
   assert_grep "mobile emulate exact on a viewport-meta page" "$OUT/08.log" '375x667'
   "${CLI[@]}" unemulate "$M" >/dev/null 2>&1
@@ -867,6 +884,31 @@ s_issues() {
   assert_grep "scoped snap shows the dialog's own button" "$OUT/issue68.log" "No, don"
   assert_ngrep "no scope-not-found error" "$OUT/issue68.log" 'scope not found'
   "${CLI[@]}" close "modal.html?x=issue68" --profile "$P1" >/dev/null 2>&1
+  # v1.30.5: a modal portaled past every cut (BBC's Sourcepoint consent) still
+  # shows — skeleton width fold AND plain snap's 300-node cap; long names keep
+  # their tail; measure carries border/margin/font family.
+  "${CLI[@]}" open "$FX/layers.html" --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" snap layers.html --skeleton --profile "$P1" >"$OUT/layers-skel.log" 2>&1
+  assert_grep "skeleton surfaces a modal past the fold" "$OUT/layers-skel.log" '^\(modal layer past the cut'
+  assert_grep "the layer reads as a modal dialog" "$OUT/layers-skel.log" '^dialog .*@e[0-9]+ modal'
+  assert_grep "the layer's own button is reachable" "$OUT/layers-skel.log" 'button "Accept all" @e[0-9]+'
+  "${CLI[@]}" snap layers.html --profile "$P1" >"$OUT/layers-full.log" 2>&1
+  assert_grep "plain snap still truncates the big tree" "$OUT/layers-full.log" 'truncated at 300'
+  assert_grep "plain snap appends the modal past the cap" "$OUT/layers-full.log" 'button "Accept all" @e[0-9]+'
+  assert_grep "long name keeps its tail (map)" "$OUT/layers-full.log" '…[^"]*prototype\.map\(\)" @e'
+  assert_grep "long name keeps its tail (filter)" "$OUT/layers-full.log" '…[^"]*prototype\.filter\(\)" @e'
+  "${CLI[@]}" measure layers.html '#tall' --profile "$P1" >"$OUT/layers-measure.log" 2>&1
+  assert_grep "measure reports border" "$OUT/layers-measure.log" '"border":"2px solid rgb\(0, 0, 0\)"'
+  assert_grep "measure reports margin" "$OUT/layers-measure.log" '"margin":"8px 0px"'
+  assert_grep "measure reports font family" "$OUT/layers-measure.log" '"family":"monospace"'
+  "${CLI[@]}" close layers.html --profile "$P1" >/dev/null 2>&1
+  # review catch: a ROLE-LESS aria-modal host on an uncut page has no line of
+  # its own — it printed twice under a false 'past the cut' header
+  "${CLI[@]}" open "$FX/layers.html?small" --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" snap "layers.html?small" --profile "$P1" >"$OUT/layers-small.log" 2>&1
+  assert_ngrep "uncut page: no false modal-layer header" "$OUT/layers-small.log" 'modal layer past the cut'
+  [ "$(grep -c 'button "Accept all"' "$OUT/layers-small.log")" = 1 ] && ok "uncut page: role-less modal's content prints once" || bad "role-less modal content count ($(grep -c 'Accept all' "$OUT/layers-small.log"))"
+  "${CLI[@]}" close "layers.html?small" --profile "$P1" >/dev/null 2>&1
 }
 
 s_safety() {

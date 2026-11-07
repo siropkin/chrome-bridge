@@ -1963,7 +1963,10 @@ const REFKEY_SRC = `
     return ROLE_BY_TAG[el.tagName] || null;
   }
   // A cut name says so — a status line read as 'radio=t' instead of 'radio=two' looked complete.
-  const clip = (s) => (s.length > 60 ? s.slice(0, 59) + '…' : s);
+  // The cut is mid-name: breadcrumb-style names differ at the END
+  // ('JavaScript / Reference / … / Array.prototype.map()'), and a head-only
+  // cut made every sibling read the same.
+  const clip = (s) => (s.length > 60 ? s.slice(0, 40) + '…' + s.slice(-19) : s);
   function nameOf(el, role) {
     const al = el.getAttribute('aria-label');
     if (al && al.trim()) return clip(al.trim());
@@ -2005,6 +2008,12 @@ const SNAP_SRC = (scope, diff, href, skel, nofold) => `(() => {
   // children and counts them instead — a wide tree at/below the depth cut
   // used to blow past MAX and truncate exactly like the plain snap.
   const WCUT = MAX - 40;
+  // Live caps: the modal-layer pass below walks with its own budget.
+  let cap = MAX, wcut = WCUT;
+  // Elements the walk reached (not cut, not truncated) — the modal-layer pass
+  // skips them. Visited, not emitted: a role-less aria-modal host gets no
+  // line of its own, yet its content was printed.
+  const visited = new Set();
   // Refs persist across snaps within one navigation: an element keeps its @eN
   // while its role+name are unchanged (playwright-mcp style), so a re-snap
   // after a DOM change doesn't renumber the page the agent already read.
@@ -2035,6 +2044,8 @@ const SNAP_SRC = (scope, diff, href, skel, nofold) => `(() => {
     if (el.getAttribute('aria-expanded') === 'true') s.push('expanded');
     if (el.getAttribute('aria-expanded') === 'false') s.push('collapsed');
     if (el.getAttribute('aria-selected') === 'true' || el.selected) s.push('selected');
+    // a modal blocks the page under it — the first thing to know about a dialog
+    if (el.getAttribute('aria-modal') === 'true' || (el.tagName === 'DIALOG' && el.matches(':modal'))) s.push('modal');
     if (['textbox', 'searchbox', 'combobox', 'slider', 'file'].includes(role)) {
       // Never print a password field's value — an autofilled credential is
       // exactly what "your logged-in browser" means, and snap lines land in
@@ -2079,12 +2090,13 @@ const SNAP_SRC = (scope, diff, href, skel, nofold) => `(() => {
     // which subtrees were skipped (and their size) instead of a silent
     // truncation that grep/--find can't see past. Drill: snap <match> @ref.
     if (SKEL && depth > CUT) return countLines(el);
-    if (lines.length >= MAX) { truncated = true; return 0; }
+    if (lines.length >= cap) { truncated = true; return 0; }
     // The bridge's own UI is not page content: the pill is a role=button
     // whose label mutates every command — it would mint a ref and own the
     // --diff output. Skip it (and the cursor/grid overlays) entirely.
     if (el.id === 'bridge-banner' || el.id === 'bridge-grid' || el.id === 'bridge-cursor') return 0;
     if (hidden(el)) return 0;
+    visited.add(el);
     const role = roleOf(el);
     let childDepth = depth;
     let myRef = null;
@@ -2121,7 +2133,7 @@ const SNAP_SRC = (scope, diff, href, skel, nofold) => `(() => {
       // width fold: once the map nears the cap, stop WALKING further children
       // and count them — a skeleton must never silently truncate at MAX
       // (a wide tree at role-depth <= CUT used to).
-      if (SKEL && lines.length >= WCUT) { foldCnt += countLines(c); return; }
+      if (SKEL && lines.length >= wcut) { foldCnt += countLines(c); return; }
       inside += walk(c, childDepth);
     };
     for (const c of el.children) kid(c);
@@ -2179,6 +2191,27 @@ const SNAP_SRC = (scope, diff, href, skel, nofold) => `(() => {
     );
   walk(root, 0);
   if (truncated) lines.push('… truncated at ' + MAX + ' nodes' + (scopeSel ? '' : ' — scope with: snap <match> <css>'));
+  // Modal layers are never lost to a cut: a visible open dialog / role=dialog
+  // / alertdialog / aria-modal that the depth cut, the width fold or the MAX
+  // truncation swallowed is appended with its own budget. Found live: BBC's
+  // Sourcepoint consent dialog is portaled to the END of body, so --skeleton
+  // folded it into a count while it blocked every click on the page.
+  const layers = [];
+  for (const d of deepAll('dialog[open], [role=dialog], [role=alertdialog], [aria-modal=true]', root)) {
+    if (visited.has(d) || hidden(d) || !hasBox(d) || layers.some((p) => p.contains(d))) continue;
+    layers.push(d);
+  }
+  let header = false;
+  for (const d of layers.slice(0, 5)) {
+    // an earlier layer's walk may have reached this one (nested across a shadow root / frame)
+    if (visited.has(d)) continue;
+    if (!header) { lines.push('(modal layer past the cut — shown anyway; drill: snap <match> @ref)'); header = true; }
+    cap = lines.length + 60;
+    wcut = cap - 20;
+    truncated = false;
+    walk(d, 0);
+    if (truncated) lines.push('  … layer truncated — scope with: snap <match> @ref');
+  }
   // --diff: lines added/changed/removed since the last snap at THIS scope.
   const store = (window.__bridgeSnapLines = window.__bridgeSnapLines || {});
   // Key by scope AND href mode: lines embed hrefs only in --href snaps, so a
@@ -2757,7 +2790,7 @@ const FIND_SRC = (scope, find) => `(async () => {
 // with a `label` back-channel for the pill — they're commands, so the source
 // lives here with every other page script and ACT_VERBS carries the label.
 const measureSrc = (sel) =>
-  `JSON.stringify((()=>{${DEEPQ}const s=${JSON.stringify(sel)};return s.startsWith('@') ? [mustQuery(s)] : deepAll(s, document);})().map(e=>{const r=e.getBoundingClientRect();const c=getComputedStyle(e);return{text:(e.textContent||'').trim().slice(0,30),x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height),display:c.display,alignItems:c.alignItems,justifyContent:c.justifyContent,textAlign:c.textAlign,gap:c.gap,padding:c.padding,radius:c.borderRadius,bg:c.backgroundColor,color:c.color,font:c.fontSize+'/'+c.fontWeight}}))`;
+  `JSON.stringify((()=>{${DEEPQ}const s=${JSON.stringify(sel)};return s.startsWith('@') ? [mustQuery(s)] : deepAll(s, document);})().map(e=>{const r=e.getBoundingClientRect();const c=getComputedStyle(e);return{text:(e.textContent||'').trim().slice(0,30),x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height),display:c.display,alignItems:c.alignItems,justifyContent:c.justifyContent,textAlign:c.textAlign,gap:c.gap,padding:c.padding,margin:c.margin,border:c.border||(c.borderWidth+' '+c.borderStyle+' '+c.borderColor),radius:c.borderRadius,bg:c.backgroundColor,color:c.color,font:c.fontSize+'/'+c.fontWeight,family:c.fontFamily}}))`;
 const GRID_SRC = `(()=>{const g=document.getElementById('bridge-grid');if(g){g.remove();return 'grid off'}const d=document.createElement('div');d.id='bridge-grid';d.style.cssText='position:fixed;inset:0;z-index:2147483647;pointer-events:none;background-image:repeating-linear-gradient(0deg,rgba(255,0,0,.25) 0 1px,transparent 1px 8px),repeating-linear-gradient(90deg,rgba(255,0,0,.25) 0 1px,transparent 1px 8px)';document.body.appendChild(d);return 'grid on'})()`;
 
 // perf: running animations grouped by what they animate. Anything but
@@ -5085,7 +5118,8 @@ async function handle(msg) {
     await withCdp(tab.id, () => setEmulation(tab.id, msg));
     return {
       id: tab.id,
-      ...(msg.focus ? { focus: true } : { width: msg.width, height: msg.height, mobile: !!msg.mobile }),
+      // dsf echoes the factor actually pinned (mobile alone = 2, plain = 1).
+      ...(msg.focus ? { focus: true } : { width: msg.width, height: msg.height, mobile: !!msg.mobile, dsf: msg.dsf || (msg.mobile ? 2 : 1) }),
     };
   }
 

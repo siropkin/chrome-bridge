@@ -51,6 +51,8 @@ fetch('http://127.0.0.1:9333/health', { signal: AbortSignal.timeout(4000) }) // 
   .catch(() => {
     $('bridge-status').className = 'down';
     $('status-text').textContent = 'bridge not running';
+    $('setup').className = 'primary';
+    $('copy').className = 'secondary';
   });
 
 chrome.tabs.query({ active: true, currentWindow: true }).then(async ([tab]) => {
@@ -60,6 +62,7 @@ chrome.tabs.query({ active: true, currentWindow: true }).then(async ([tab]) => {
     return;
   }
   $('title').textContent = tab.title || tab.url || '(untitled)';
+  $('title').title = tab.title || tab.url || ''; // the line ellipsizes — hover shows it whole
   // The reference names the profile once the worker says which it is: with
   // several profiles connected an agent otherwise has to ask, and the human
   // only knows their profiles by Chrome's names, never the bridge's.
@@ -128,10 +131,10 @@ $('setup').addEventListener('click', () => {
     .then((text) => navigator.clipboard.writeText(text))
     .then(
       () => {
-        $('status').textContent = 'Setup prompt copied ✓ — paste it to your agent';
+        $('setup-status').textContent = 'Setup prompt copied ✓ — paste it to your agent';
       },
       (e) => {
-        $('status').textContent = 'Copy failed: ' + e;
+        $('setup-status').textContent = 'Copy failed: ' + e;
       }
     );
 });

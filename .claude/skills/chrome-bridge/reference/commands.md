@@ -49,7 +49,10 @@ snap <match> [css|@ref] [--diff] [--href] [--skeleton] [--no-fold] [--find "nl"]
                                   a shortlist to VERIFY before acting, never ground truth (~2/3 accurate);
                                   '* ' prefix marks elements new since the previous snap
                                   identical lines seen 3+ times collapse to '… N more · <line> → @refs'
-                                  (refs stay clickable); unnamed decorative imgs are elided
+                                  (refs stay clickable); unnamed decorative imgs are elided;
+                                  a visible modal (dialog/aria-modal) swallowed by any cut is
+                                  appended as '(modal layer past the cut …)' and echoed to
+                                  stderr; names over 60 chars are cut mid-name (tail kept)
 click <match> <@ref|css> [--dbl] [--diff] [--trusted]
                                   click (fails loudly if an overlay covers the
                                   click point); --dbl double-clicks (two click pairs + dblclick);
@@ -139,7 +142,10 @@ shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--c
                                   pinned to the baseline's SIZE/scale but the CURRENT scroll position
                                   (it watches what you see), and, on change, saves ONLY the changed
                                   region (padded, capture res) — canvas/pixel changes the tree can't see.
-                                  --scale/--max are ignored while a baseline exists (noted in the reply)
+                                  --scale/--max are ignored while a baseline exists (noted in the reply);
+                                  --crop takes a measure rect (CSS px, viewport-relative) and renders
+                                  beyond the viewport — an off-screen or taller-than-viewport element
+                                  captures whole; --full = whole page (16384px cap), exclusive with --crop
 fetch <match> <url> [--out file] [--keep] [--header "k: v"]... [--csrf]
                                   in-page fetch riding the logged-in session — login-walled
                                   JSON/feeds answer it without eval plumbing; binary needs
@@ -163,8 +169,9 @@ perf <match> [--dur ms]           CPU over a window (default 5s, max 30s; CDP): 
                                   layout/other), style+layout rates, heap; plus running
                                   animations grouped by property — '⚠ not composited' ones
                                   repaint every frame. Warns when the tab is hidden
-measure <match> <css|@ref>        rect + computed styles as JSON, one entry per match
-                                  (font = size/weight)
+measure <match> <css|@ref>        rect + computed styles as JSON, one entry per match: display,
+                                  alignment, gap, padding, margin, border, radius, colors,
+                                  font (= size/weight) and family
 console <match> [--clear] [--ask [q]]   page console + errors (hook installs on first call);
                                   --ask triages the log with local Nano — only the verdict costs cloud tokens.
                                   Polling it is unnecessary: every command on a driven tab prints
@@ -198,7 +205,8 @@ extreload                         reload the extension from disk — picks up co
 emulate <match> <w> <h> [mobile] [dsf=N]   CDP device view (no window resize); dsf=N pins the
                                   device scale factor (dsf=2 = retina captures on any
                                   display — shot --max <w> then downsamples to exact px;
-                                  mobile alone = dsf 2, 'mobile dsf=3' = a 3x phone);
+                                  mobile alone = dsf 2, 'mobile dsf=3' = a 3x phone; the reply
+                                  echoes the dsf in effect);
                                   'emulate <match> focus' makes the page believe it's focused —
                                   focus-gated work (pages pausing on blur) keeps running in a
                                   background tab; mobile/dsf=N/focus are the only modes;
@@ -214,19 +222,19 @@ stop                              stop the server
 
 - `tabs` — rows carry a `profile` tag and the tab `id`; tabs you're driving are flagged `driven:true`. Ids die on browser restart and change on prerender (re-copy), so don't save them across sessions.
 - `profiles` — a `<match>` present in several profiles is REFUSED; name one with `--profile <id or name>` (an id prefix works). Commands without a `<match>` (`open`, `swlogs`, `extreload`) also need `--profile` when several profiles are connected. Never guess personal-vs-work: if it matters, ask.
-- `snap` — `--skeleton` maps a dense page (cut containers read `… N inside`; drill with `snap <match> @ref`). `--no-fold` keeps repeated lines in document order — use it when a script picks `grep | tail -1`. `--find` is a shortlist to **verify before acting**; on a big page map it with `--skeleton` and scope the find (`snap <match> @eN --find …`) — whole-page finds missed every time in e2e runs (the 300-node cut, and Nano drifting to look-alike lines).
+- `snap` — `--skeleton` maps a dense page (cut containers read `… N inside`; drill with `snap <match> @ref`). A modal layer the cut would hide (consent dialogs portaled to the end of `<body>`) is appended anyway under `(modal layer past the cut …)`, in plain snaps too. Names over 60 chars keep head and tail (`"Web JavaScript Reference Standard built-…objects Array map()"`). `--no-fold` keeps repeated lines in document order — use it when a script picks `grep | tail -1`. `--find` is a shortlist to **verify before acting**; on a big page map it with `--skeleton` and scope the find (`snap <match> @eN --find …`) — whole-page finds missed every time in e2e runs (the 300-node cut, and Nano drifting to look-alike lines).
 - `click` / `fill` / `type` / `press` / `hover` / `clear` — refs survive re-snaps, expire on navigation (re-snap after `nav`), and are identity-bound: if the DOM re-sorted, removed, or hid the element under a ref (virtualized lists, re-render caches), acting on it fails loudly (`was "…" at snap time, now resolves to "…"` / `gone or hidden — re-snap`) — re-snap, don't retry the old ref. `press` takes its key and target in either order when the target is a ref (`press <match> @eN Enter` = `press <match> Enter @eN`). A click/Enter that navigates answers `… — page navigating` (with `--diff`: `navigated to <url>` plus a fresh snap) — it landed; don't repeat it. App ignores the click (canvas tools, Figma) or Enter won't submit → `--trusted`; a synthetic click nothing reacted to says so itself (`no observable page effect`). `--trusted` refuses a hidden tab: `activate <match>` first; if `activate` warns the tab STAYS hidden (occluded/minimized window), use `emulate <match> focus`.
 - `paste` — `paste <match> @e2 -- "long text"` for editors that revert `fill` (Quill, Reddit/LinkedIn rich composers); without `-- <text>` it pastes the OS clipboard. `paste --html -- "<h2>T</h2><p>…"` makes a whole structured article ONE paste.
 - `upload` — target the input or an element wrapping it. `--chooser` targets the button that OPENS the OS picker — the only path when no input exists yet.
 - `open` / `nav` / `close` / `release` / `mark` — `close` is only for tabs YOU opened; a tab you found is the user's — `release` it. `mark` re-claims a tab the human ⏏-released (ask first).
 - `wait` — default 10s, max 60s: raise `--timeout` before concluding the page is broken. `wait m --js "document.querySelectorAll('.row').length >= 20"` instead of sleeping inside `eval`; `--world main` for page globals. `--human` blocks until the user acts (default 2 min, max ~4.5 min) and returns the diff of what they did.
 - `batch` — `printf 'click m @e4\nwait m --text "Saved"\n' | node <repo>/cli.mjs batch`. Stops on first error.
-- `eval` — page globals (`window.app`, React internals) need `--world main`. Output caps at 50K chars — return less, or `fetch --out` the data instead.
+- `eval` — page globals (`window.app`, React internals) need `--world main`. Output caps at 50K chars — return less, or `fetch --out` the data instead. Its `querySelector`/`innerText` stop at shadow boundaries (refs, CSS targets and `measure` don't) — the `deep()` helper is in [recipes.md → Shadow DOM](recipes.md#shadow-dom-pages-mdn-reddit-linkedin).
 - `net` / `fetch` — every `net` line names its initiator (`⟵ script:line`). `net` sees only requests made while it's attached: for a page load, `eval <match> "setTimeout(() => location.reload(), 1000)"` then `net <match> --dur 8000`; for an action, start `net … > net.txt &` in the background, act, then read the file. `fetch` replays a URL in the page so the logged-in session rides it; with no matching tab it opens a scratch tab on that origin (`--keep` leaves it). `ERROR: CSP violation` = the page's policy forbids that host — fetch with a match that hits no tab (e.g. the API's host) to get the scratch tab instead.
 - `perf` — run it on a VISIBLE tab (hidden tabs are throttled; it warns). GPU-process CPU isn't visible to CDP. Reading it: [recipes.md → Why is this page eating CPU?](recipes.md#why-is-this-page-eating-cpu).
 - `console` / `ask` — `--ask` triages locally with Gemini Nano instead of spending cloud tokens on log noise. Don't poll `console` after every step: new page errors already ride every command's stderr.
 - `dialog` — one that wedged an unattached tab can't be answered: `nav <match> <url>` drops it.
-- `emulate` — `dsf=2` = retina-crisp `shot` on any display. Plain `emulate <match> <w> <h>` pins dsf=1, so screenshots drop to 1x on a retina screen until `unemulate`.
-- `shot` — `--crop x,y,w,h` is in CSS px, viewport-relative (straight from `measure`); the saved file is crop × devicePixelRatio. Missing output folders are created.
+- `emulate` — `dsf=2` = retina-crisp `shot` on any display. Plain `emulate <match> <w> <h>` pins dsf=1, so screenshots drop to 1x on a retina screen until `unemulate`; the reply's `dsf` field says which factor is in effect.
+- `shot` — `--crop x,y,w,h` is in CSS px, viewport-relative (straight from `measure`); the saved file is crop × devicePixelRatio. The crop renders beyond the viewport, so an element below the fold or taller than the window captures whole without scrolling — no `emulate <w> <tall h>` needed. Missing output folders are created.
 - `doctor` — `--fix` releases leftover markers (driven tabs untouched).
 - `history` — `--batch out` exports a replayable script; typed/pasted text, dialog answers and upload paths are redacted, single-line eval code is kept verbatim: never embed secrets in eval.
