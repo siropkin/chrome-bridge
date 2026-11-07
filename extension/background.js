@@ -1960,20 +1960,22 @@ const REFKEY_SRC = `
     if (ce === 'true' || ce === 'plaintext-only') return 'textbox';
     return ROLE_BY_TAG[el.tagName] || null;
   }
+  // A cut name says so — a status line read as 'radio=t' instead of 'radio=two' looked complete.
+  const clip = (s) => (s.length > 60 ? s.slice(0, 59) + '…' : s);
   function nameOf(el, role) {
     const al = el.getAttribute('aria-label');
-    if (al && al.trim()) return al.trim().slice(0, 60);
+    if (al && al.trim()) return clip(al.trim());
     const lb = el.getAttribute('aria-labelledby');
     if (lb) {
       const t = lb.split(/\\s+/).map((id) => document.getElementById(id)?.textContent).filter(Boolean).join(' ').trim();
-      if (t) return t.slice(0, 60);
+      if (t) return clip(t);
     }
     if (role === 'img') return el.alt || '';
     if (el.tagName === 'IFRAME') return (el.getAttribute('src') || '').slice(0, 60); // a cross-origin frame is otherwise a black hole in the tree
     if (el.tagName === 'INPUT') return el.placeholder || el.name || '';
     const text = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
-    if (text) return text.slice(0, 60);
-    return (el.getAttribute('title') || '').trim().slice(0, 60);
+    if (text) return clip(text);
+    return clip((el.getAttribute('title') || '').trim());
   }
 `;
 
@@ -2738,7 +2740,7 @@ const FIND_SRC = (scope, find) => `(async () => {
 // with a `label` back-channel for the pill — they're commands, so the source
 // lives here with every other page script and ACT_VERBS carries the label.
 const measureSrc = (sel) =>
-  `JSON.stringify((()=>{${DEEPQ}return deepAll(${JSON.stringify(sel)}, document);})().map(e=>{const r=e.getBoundingClientRect();const c=getComputedStyle(e);return{text:(e.textContent||'').trim().slice(0,30),x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height),display:c.display,alignItems:c.alignItems,justifyContent:c.justifyContent,textAlign:c.textAlign,gap:c.gap,padding:c.padding,radius:c.borderRadius,bg:c.backgroundColor,color:c.color,font:c.fontSize+'/'+c.fontWeight}}))`;
+  `JSON.stringify((()=>{${DEEPQ}const s=${JSON.stringify(sel)};return s.startsWith('@') ? [mustQuery(s)] : deepAll(s, document);})().map(e=>{const r=e.getBoundingClientRect();const c=getComputedStyle(e);return{text:(e.textContent||'').trim().slice(0,30),x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height),display:c.display,alignItems:c.alignItems,justifyContent:c.justifyContent,textAlign:c.textAlign,gap:c.gap,padding:c.padding,radius:c.borderRadius,bg:c.backgroundColor,color:c.color,font:c.fontSize+'/'+c.fontWeight}}))`;
 const GRID_SRC = `(()=>{const g=document.getElementById('bridge-grid');if(g){g.remove();return 'grid off'}const d=document.createElement('div');d.id='bridge-grid';d.style.cssText='position:fixed;inset:0;z-index:2147483647;pointer-events:none;background-image:repeating-linear-gradient(0deg,rgba(255,0,0,.25) 0 1px,transparent 1px 8px),repeating-linear-gradient(90deg,rgba(255,0,0,.25) 0 1px,transparent 1px 8px)';document.body.appendChild(d);return 'grid on'})()`;
 
 // perf: running animations grouped by what they animate. Anything but
@@ -3866,6 +3868,8 @@ async function observeDiff(tabId, actionResult, url0) {
       why = 'no observable change after the action — the event dispatched; verify via console/net/shot, or act again with a different target';
     } else {
       status = 'succeeded';
+      // The diff proves an effect the page-side observer missed (async renders) — its retry hint would contradict the verdict.
+      actionResult = actionResult.replace(/ — no observable page effect: the app may ignore synthetic \w+ — retry with --trusted/, '');
     }
     return `${status} · ${actionResult}${why ? ' — ' + why : ''}${status === 'uncertain' || /^\(no changes since last snap\)/.test(snap) ? '' : '\n' + snap}`;
   } catch (e) {

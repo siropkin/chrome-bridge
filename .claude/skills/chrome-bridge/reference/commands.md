@@ -163,7 +163,8 @@ perf <match> [--dur ms]           CPU over a window (default 5s, max 30s; CDP): 
                                   layout/other), style+layout rates, heap; plus running
                                   animations grouped by property — '⚠ not composited' ones
                                   repaint every frame. Warns when the tab is hidden
-measure <match> <css>             rect + computed styles as JSON
+measure <match> <css|@ref>        rect + computed styles as JSON, one entry per match
+                                  (font = size/weight)
 console <match> [--clear] [--ask [q]]   page console + errors (hook installs on first call);
                                   --ask triages the log with local Nano — only the verdict costs cloud tokens.
                                   Polling it is unnecessary: every command on a driven tab prints
@@ -226,5 +227,6 @@ stop                              stop the server
 - `console` / `ask` — `--ask` triages locally with Gemini Nano instead of spending cloud tokens on log noise. Don't poll `console` after every step: new page errors already ride every command's stderr.
 - `dialog` — one that wedged an unattached tab can't be answered: `nav <match> <url>` drops it.
 - `emulate` — `dsf=2` = retina-crisp `shot` on any display. Plain `emulate <match> <w> <h>` pins dsf=1, so screenshots drop to 1x on a retina screen until `unemulate`.
+- `shot` — `--crop x,y,w,h` is in CSS px, viewport-relative (straight from `measure`); the saved file is crop × devicePixelRatio. Missing output folders are created.
 - `doctor` — `--fix` releases leftover markers (driven tabs untouched).
 - `history` — `--batch out` exports a replayable script; typed/pasted text, dialog answers and upload paths are redacted, single-line eval code is kept verbatim: never embed secrets in eval.

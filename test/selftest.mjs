@@ -351,6 +351,10 @@ try {
   assert(shotWide.status === 0 && shotWide.stdout.includes(', 1280x800') && shotWide.stderr.includes('re-run with --max 0'), 'cli shot: default cap hit prints the --max 0 reminder on stderr', shotWide.stdout + shotWide.stderr);
   const shotWideMax = await cli('shot', 'wide.example', shotPath, '--max', '1280');
   assert(shotWideMax.status === 0 && !shotWideMax.stderr.includes('--max 0'), 'cli shot: an explicit --max stays quiet', shotWideMax.stderr);
+  const nestedShot = `/tmp/chrome-bridge-selftest-${process.pid}/nested/out.png`;
+  const shotNested = await cli('shot', 'example.com', nestedShot);
+  assert(shotNested.status === 0 && fs.existsSync(nestedShot), 'cli shot creates a missing output folder', shotNested.stdout + shotNested.stderr);
+  fs.rmSync(`/tmp/chrome-bridge-selftest-${process.pid}`, { recursive: true, force: true });
 
   // --full is boolean: it must not swallow the next flag's value
   const shotFull = await cli('shot', 'example.com', shotPath, '--full', '--scale', '2');
@@ -1112,7 +1116,7 @@ try {
       'ext: action targets pierce open shadow roots (mustQuery/deepQuery at every resolution site)',
       `resolution sites: ${bg.split('mustQuery(sel').length + bg.split('deepQuery(sel').length}`
     );
-    assert(bg.includes('deepAll(') && bg.includes("deepAll(${JSON.stringify(sel)}, document)"), 'ext: measure matches inside open shadow roots too');
+    assert(bg.includes('deepAll(') && bg.includes("[mustQuery(s)] : deepAll(s, document)"), 'ext: measure matches inside open shadow roots too (and takes @refs)');
     // Stale-ref guard (#22): a ref's identity is its snap-time role+name —
     // a re-sorted virtualized list reusing the node must fail loudly. ONE
     // REFKEY_SRC feeds snap's minting AND deepQuery's click-time recheck.

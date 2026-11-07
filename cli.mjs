@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Script } from 'node:vm';
 
@@ -371,7 +371,8 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     animations grouped by property — '⚠ not composited' ones
                                     repaint every frame. Warns when the tab is hidden (Chrome
                                     throttles it — the numbers would lie). GPU process not seen
-  measure <match> <css>             rect + computed styles as JSON
+  measure <match> <css|@ref>        rect + computed styles as JSON, one entry per match
+                                    (font = size/weight)
   console <match> [--clear] [--ask [question]]
                                     page console + errors (hook installs on first call);
                                     --ask triages the log with local Gemini Nano — only
@@ -1199,6 +1200,7 @@ async function runCommand(cmdName, args) {
       const dataUrl = note ? result.data : result;
       const b64 = dataUrl.includes(',') ? dataUrl.split(',', 2)[1] : dataUrl;
       const buf = Buffer.from(b64, 'base64');
+      fs.mkdirSync(dirname(out), { recursive: true });
       fs.writeFileSync(out, buf);
       const d = imgDims(buf);
       if (note) console.log(note);
@@ -1290,7 +1292,7 @@ async function runCommand(cmdName, args) {
     }
 
     case 'measure':
-      if (args.length !== 2) fail('usage: measure <match> <css>');
+      if (args.length !== 2) fail('usage: measure <match> <css|@ref>');
       print(await cmd({ type: 'measure', urlMatch: args[0], selector: args[1] }));
       break;
 
