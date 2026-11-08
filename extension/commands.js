@@ -67,8 +67,8 @@
     entry('scroll', 'Navigate', B, 'scroll <match> <up|down|top|bottom|@ref|css> [--diff]'),
     entry('upload', 'Act', B, 'upload <match> <@ref|css> <file...> [--chooser] [--diff]', { diskBound: '<file...>' }),
     entry('ask', 'Observe', B, 'ask <match> <question>', RO),
-    entry('wait', 'Hand-off', B, 'wait <match> <css|--text t|--js expr|--human|--pixel-change> [--timeout ms] [--world main|isolated]', { pageCode: '--js' }),
-    entry('eval', 'Page code', B, 'eval <match> <js|-> [--world main|isolated]', { destructive: true, pageCode: '<js|->' }),
+    entry('wait', 'Hand-off', B, 'wait <match> <css|--text t|--js expr|--human|--pixel-change> [--timeout ms] [--world main]', { pageCode: '--js' }),
+    entry('eval', 'Page code', B, 'eval <match> <js|-> [--world main]', { destructive: true, pageCode: '<js|->' }),
     entry('shot', 'Observe', B, 'shot <match> <out> [--max px] [--scale N] [--format png|jpeg] [--quality N] [--crop x,y,w,h] [--full] [--diff]', { readOnly: true, diskBound: '<out>' }),
     entry('net', 'Network & data', B, 'net <match> [--dur ms] [--filter s] [--body s] [--ws] [--har out.har]', { readOnly: true, diskBound: '--har' }),
     entry('fetch', 'Network & data', B, 'fetch <match> <url> [--out file] [--keep] [--header "k: v"]... [--csrf]', { diskBound: '--out' }),
@@ -184,11 +184,12 @@
         rest = rest.slice(e + 1).trimStart();
       } else {
         const i = rest.search(/\s/);
-        if (i < 0) fail('usage: eval <match> <js|-> [--world main|isolated]');
+        if (i < 0) fail('usage: eval <match> <js|-> [--world main]');
         match = rest.slice(0, i);
         rest = rest.slice(i).trimStart();
       }
-      if (!rest) fail('usage: eval <match> <js|-> [--world main|isolated]');
+      if (!rest) fail('usage: eval <match> <js|-> [--world main]');
+      // 'isolated' still splits off so parse() answers with the removal error, not a JS syntax error.
       const qm =
         rest.match(/^("(?:[^"\\]|\\.)*"|'[^']*')(\s+--world\s+(main|isolated))?\s*$/i) ||
         rest.match(/^(\S+)(\s+--world\s+(main|isolated))\s*$/i);
@@ -575,7 +576,8 @@
             if (!js) fail('--js needs an expression (or - to read it from stdin)');
           } else if (rest[i] === '--world') {
             const w = rest[++i]?.toUpperCase();
-            if (w !== 'MAIN' && w !== 'ISOLATED') fail('--world needs a value: main|isolated');
+            if (w === 'ISOLATED') fail("--world isolated was removed: Chrome (MV3) can't eval in an extension's isolated world — drop --world (code already runs in the page's main world)");
+            if (w !== 'MAIN') fail('--world needs a value: main');
             world = w;
           } else if (rest[i] === '--timeout') {
             if (rest[i + 1] === undefined) fail('--timeout needs a value (ms)');
@@ -617,7 +619,8 @@
         for (let i = 0; i < rest.length; i++) {
           if (rest[i] !== '--world') continue;
           const w = rest[i + 1]?.toUpperCase();
-          if (w !== 'MAIN' && w !== 'ISOLATED') fail('--world needs a value: main|isolated');
+          if (w === 'ISOLATED') fail("--world isolated was removed: Chrome (MV3) can't eval in an extension's isolated world — drop --world (code already runs in the page's main world)");
+          if (w !== 'MAIN') fail('--world needs a value: main');
           world = w; // last --world wins, like the net/wait/shot flag loops
           rest.splice(i, 2);
           i--;
@@ -628,7 +631,7 @@
           if (!io.stdin) fail('reading from stdin is not available here — pass the code directly: eval <match> <js>');
           code = await io.stdin();
         }
-        if (!match || !code) fail('usage: eval <match> <js|-> [--world main|isolated]');
+        if (!match || !code) fail('usage: eval <match> <js|-> [--world main]');
         return out({ type: 'eval', urlMatch: match, code, world });
       }
 

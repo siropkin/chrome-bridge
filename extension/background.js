@@ -302,7 +302,7 @@ async function connect(link) {
         // Same world as the success path: refs live in the world snap ran
         // in, so on CSP/MAIN-world pages this resolves the @ref to a name
         // instead of narrating agent-speak ('✗ clicked @e4').
-        pillWrite(msg._tabId, ['✗ ' + done, lines, msg.target || null, false], worldCache.get(msg._tabId) || 'MAIN');
+        pillWrite(msg._tabId, ['✗ ' + done, lines, msg.target || null, false], 'MAIN');
       }
       const pageErrors = await pageErrorsFor(msg);
       s.send(JSON.stringify({ id: msg.id, ok: false, error: wrapped, ...(pageErrors ? { pageErrors } : {}) }));
@@ -798,7 +798,7 @@ function startTick(tabId, msg, t0) {
     setInterval(() => {
       if (!inflight.get(tabId) || !currentActivity(tabId, msg)) return stopTick(tabId);
       const args = [`${ing}… ${Math.round((Date.now() - t0) / 1000)}s`, tabActivity.get(tabId) || [], msg.target || null, true];
-      pillWrite(tabId, args, worldCache.get(tabId) || 'MAIN');
+      pillWrite(tabId, args, 'MAIN');
     }, 5000)
   );
 }
@@ -829,7 +829,7 @@ async function revivePill(tabId, res, args, target, current) {
   if (!current() || bannerSuppressed.has(tabId)) return;
   await chrome.scripting.executeScript({ target, func: injectBanner });
   if (!current() || bannerSuppressed.has(tabId)) return;
-  await chrome.scripting.executeScript({ target, func: pillInject, args, world: worldCache.get(tabId) || 'MAIN' });
+  await chrome.scripting.executeScript({ target, func: pillInject, args, world: 'MAIN' });
 }
 
 function currentActivity(tabId, msg) {
@@ -846,9 +846,9 @@ function recordActivity(tabId, msg) {
   inflight.set(tabId, (inflight.get(tabId) || 0) + 1);
   pillBusy.set(tabId, ing + '…'); // what restoreBanner/reconnect repaints while a command runs
   startTick(tabId, msg, Date.now());
-  // Refs live in the world snap ran in (worldCache); on CSP pages that's
-  // MAIN — inject there or the pill falls back to raw '@e4' agent-speak.
-  pillWrite(tabId, [ing + '…', lines, msg.target || null, true], worldCache.get(tabId) || 'MAIN');
+  // Refs live in the MAIN world (snap runs there) — inject there or the pill
+  // falls back to raw '@e4' agent-speak.
+  pillWrite(tabId, [ing + '…', lines, msg.target || null, true], 'MAIN');
 }
 
 // One-line command summary for the pill, in human words: present-continuous
@@ -1226,7 +1226,6 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   dbgSince.delete(tabId);
   markInflight.delete(tabId); // a mark whose injectBanner pends forever (uncommitted nav) never self-prunes
   failedSinceOk.delete(tabId);
-  worldCache.delete(tabId);
   cdpRefs.delete(tabId); // debugger auto-detaches on close
   cdpQ.delete(tabId);
   emulatedTabs.delete(tabId);
@@ -1263,7 +1262,7 @@ function remapTabId(newTabId, oldTabId) {
   emulatedDsf.delete(oldTabId); // same lifetime as the override — must not follow the id (stale dpr for shot)
   tabActivity.delete(oldTabId);
   pillBusy.delete(oldTabId);
-  for (const m of [failedSinceOk, worldCache, shotBaselines, humanReclaimed, tabOwner]) {
+  for (const m of [failedSinceOk, shotBaselines, humanReclaimed, tabOwner]) {
     if (m.has(oldTabId)) {
       m.set(newTabId, m.get(oldTabId));
       m.delete(oldTabId);
@@ -2011,9 +2010,9 @@ async function captureNetwork(tabId, duration, filter, bodyFilter, har, ws) {
 const BODY_CAP = 512_000;
 
 // --- Page-side scripts ------------------------------------------------------
-// These run through runEval (ISOLATED world, MAIN fallback, CDP last resort).
-// Refs from snap live in `window.__bridgeRefs` of the world snap ran in;
-// click/fill run through the same pipeline so they resolve in the same world.
+// These run through runEval (MAIN world, CDP fallback on a page-CSP EvalError).
+// Refs from snap live in the page's `window.__bridgeRefs`; click/fill run
+// through the same pipeline, so they resolve there too.
 
 // roleOf/nameOf, shared by TWO consumers that must never drift apart: SNAP_SRC
 // mints a ref's identity key from them, and DEEPQ's @ref resolution recomputes
@@ -3867,9 +3866,11 @@ const fetchSrc = (url, headers) => `(async () => {
 // --- eval machinery -----------------------------------------------------------
 // Errors are caught in-page and returned as data so the caller sees the real
 // failure (e.g. CSP EvalError) instead of a null result.
-const worldCache = new Map(); // tabId -> world whose eval worked (CSP pages pay the full ISOLATED→MAIN→CDP ladder per command otherwise)
-
-async function runEval(tabId, code, world = 'auto') {
+async function runEval(tabId, code, world) {
+  // /cmd is a public entry point that bypasses the grammar's refusal — a raw
+  // {world:'ISOLATED'} must not silently get page-world execution.
+  if (world !== undefined && world !== 'auto' && world !== 'MAIN')
+    throw new Error(`world ${JSON.stringify(world)} is not supported: caller code runs in the page's main world (Chrome MV3 can't eval in an extension's isolated world) — drop --world / the world field`);
   const injected = (src) => {
     try {
       eval('');
@@ -3892,11 +3893,11 @@ async function runEval(tabId, code, world = 'auto') {
       return { ok: false, error: String(e) };
     }
   };
-  const run = async (w) => {
+  const run = async () => {
     try {
       return await chrome.scripting.executeScript({
         target: { tabId },
-        world: w,
+        world: 'MAIN',
         func: injected,
         args: [code],
       });
@@ -3917,25 +3918,19 @@ async function runEval(tabId, code, world = 'auto') {
     }
   };
 
-  // Cached world first; on CSP failure fall through to the full ladder.
-  const worlds = world === 'auto' ? [...new Set([worldCache.get(tabId), 'ISOLATED', 'MAIN'])] : [world];
-  for (const w of worlds) {
-    if (!w) continue;
-    const r = (await run(w))?.[0]?.result;
-    if (r?.blocked === true) continue;
+  // Caller code runs in the page's MAIN world. Never the ISOLATED world: MV3
+  // pins content scripts to the extension's own CSP (no unsafe-eval) on every
+  // page, so an eval there always failed — the ladder used to try it first
+  // anyway (one wasted injection per tab) and `--world isolated` could only
+  // error; both are gone. On page-CSP failure fall through to CDP.
+  const r = (await run())?.[0]?.result;
+  if (r?.blocked !== true) {
     if (!r) throw new Error('no injection result');
     if (r.ok === false) throw new Error(r.error);
-    if (world === 'auto') worldCache.set(tabId, w);
     return r.value;
   }
 
   // Page CSP blocks eval() in the MAIN world; CDP Runtime.evaluate is exempt.
-  // The ISOLATED world never evals at all: MV3 pins content scripts to the
-  // extension's own CSP (no unsafe-eval) on EVERY page — the old message
-  // blamed the page's CSP, sending agents after a page property that wasn't
-  // the cause. CDP runs in the MAIN world, so a caller who asked for ISOLATED
-  // must not silently get page-context execution either.
-  if (world === 'ISOLATED') throw new Error("--world isolated can't run caller code: Chrome (MV3) forbids eval in an extension's isolated world on every page — drop --world (runs in the page's main world, CDP fallback on strict-CSP pages) or pass --world main; refusing a main-world fallback you didn't ask for");
   await attachDbg(tabId);
   try {
     // A strict-CSP page (HN, MDN, GitHub) routes every action here, and a
@@ -4993,7 +4988,7 @@ async function handle(msg) {
       if (grouped || driven || status || emulated || dbg)
         rows.push({ id: t.id, url: (t.url || '').slice(0, 80), title: (t.title || '').slice(0, 60), grouped, driven, status, emulated, debugger: dbg });
     }
-    const stale = [...new Set([...drivenTabs, ...tabStatus.keys(), ...tabActivity.keys(), ...emulatedTabs.keys(), ...worldCache.keys(), ...shotBaselines.keys(), ...failedSinceOk.keys(), ...cdpRefs.keys(), ...tabOwner.keys()])].filter((id) => !live.has(id));
+    const stale = [...new Set([...drivenTabs, ...tabStatus.keys(), ...tabActivity.keys(), ...emulatedTabs.keys(), ...shotBaselines.keys(), ...failedSinceOk.keys(), ...cdpRefs.keys(), ...tabOwner.keys()])].filter((id) => !live.has(id));
     if (msg.fix && stale.length) {
       for (const id of stale) {
         drivenTabs.delete(id);
@@ -5001,7 +4996,6 @@ async function handle(msg) {
         tabStatus.delete(id);
         tabActivity.delete(id);
         emulatedTabs.delete(id);
-        worldCache.delete(id);
         shotBaselines.delete(id);
         failedSinceOk.delete(id);
         cdpRefs.delete(id); // a failed detach's residue entry (debugger died with the tab)
@@ -5199,7 +5193,7 @@ async function handle(msg) {
 
   if (msg.type === 'eval') {
     const tab = await findTab(msg);
-    return await runEval(tab.id, msg.code, msg.world || 'auto');
+    return await runEval(tab.id, msg.code, msg.world);
   }
 
   if (msg.type === 'fetch') {
@@ -5296,7 +5290,7 @@ async function handle(msg) {
     const tab = await findTab(msg);
     if (msg.human) return await waitHuman(tab, msg);
     if (msg.pixel) return await waitPixel(tab, msg);
-    if (typeof msg.js === 'string' && msg.js) return await runEval(tab.id, waitJsSrc(msg), msg.world || 'auto');
+    if (typeof msg.js === 'string' && msg.js) return await runEval(tab.id, waitJsSrc(msg), msg.world);
     return await runEval(tab.id, waitSrc(msg));
   }
 

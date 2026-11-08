@@ -282,7 +282,7 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     apps whose input exists only at pick time)
   ask <match> <question>            (experimental) answer from page text with Chrome's
                                     built-in Gemini Nano — local, no cloud tokens
-  wait <match> <css|--text t|--js expr|--human|--pixel-change> [--timeout ms] [--world main|isolated]
+  wait <match> <css|--text t|--js expr|--human|--pixel-change> [--timeout ms] [--world main]
                                     wait for element or visible text (timeout default 10s,
                                     max 60s); --text takes every word up to the next flag
                                     (unquoted multi-word is fine); css/--text are
@@ -290,14 +290,14 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     --js polls a page expression (awaited; '-' = stdin) until
                                     truthy and prints its value — replaces sleep-in-eval and
                                     shell polling loops; runs in the page world (page
-                                    globals visible) — --world isolated can't eval (MV3);
+                                    globals visible);
                                     --human hands the tab to the user — CAPTCHA/
                                     2FA/login walls — the pill asks them to act, the command
                                     blocks until trusted input or navigation (default 120s,
                                     max 280s), then returns the snap-diff of what they did;
                                     --pixel-change polls the viewport until pixels move
                                     (canvas changes the tree can't see; attaches CDP)
-  eval <match> <js|-> [--world main|isolated]     '-' reads JS from stdin; output
+  eval <match> <js|-> [--world main]              '-' reads JS from stdin; output
                                     caps at 50K chars — return less (slice in-page), or fetch --out;
                                     top-level const/let are scoped to each call — re-running
                                     the same snippet never collides (set globals via window.x)

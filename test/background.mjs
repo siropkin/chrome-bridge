@@ -9,7 +9,6 @@ const evalSource = source.slice(source.indexOf('async function runEval('), sourc
 test('application EvalError never replays an eval payload', async () => {
   let executions = 0;
   const context = vm.createContext({
-    worldCache: new Map(),
     attachDbg: async () => {},
     detachDbg: async () => {},
     chrome: {
@@ -519,7 +518,7 @@ function pillHarness({ pause, gone = false } = {}) {
     navSeq: new Map(), ownershipSeq: new Map(), drivenTabs: new Set([7]),
     tabActivity: new Map([[7, ['old-origin secret']]]), pillBusy: new Map([[7, 'old note']]),
     shotBaselines: new Map(), bannerSuppressed: new Set(), cdpRefs: new Map(), dbgSince: new Map(),
-    tabStatus: new Map(), worldCache: new Map(), pillInject, injectBanner,
+    tabStatus: new Map(), pillInject, injectBanner,
     persist() {}, stopTick() {},
     chrome: {
       tabs: { onUpdated: { addListener: (handler) => { onUpdated = handler; } } },
@@ -591,7 +590,7 @@ test('old command completions cannot narrate into a new document or ownership ge
   assert.equal(context.currentActivity(7, msg), false);
 });
 
-function evalHarness({ blocked = [], cached } = {}) {
+function evalHarness({ blocked = ['ISOLATED'] } = {}) {
   const attempts = [];
   let executions = 0;
   let attached = 0;
@@ -601,7 +600,6 @@ function evalHarness({ blocked = [], cached } = {}) {
     return [world, page];
   }));
   const context = vm.createContext({
-    worldCache: new Map(cached ? [[7, cached]] : []),
     attachDbg: async () => { attached++; }, detachDbg: async () => { attached--; },
     chrome: {
       scripting: { executeScript: async ({ world, func, args }) => {
@@ -625,11 +623,11 @@ test('CSP-like application EvalErrors and async EvalErrors execute exactly once'
     'mutate(); throw new EvalError("Refused to evaluate because Content Security Policy blocks unsafe-eval")',
     '(async () => { mutate(); throw new EvalError("Refused to evaluate because CSP blocks unsafe-eval"); })()',
   ]) {
-    for (const cached of [undefined, 'MAIN']) {
-      const harness = evalHarness({ cached });
+    {
+      const harness = evalHarness();
       await assert.rejects(harness.context.runEval(7, code), /Refused to evaluate/);
       assert.equal(harness.executions(), 1);
-      assert.deepEqual(harness.attempts, [cached || 'ISOLATED']);
+      assert.deepEqual(harness.attempts, ['MAIN']);
       assert.equal(harness.attached(), 0);
     }
   }
@@ -640,16 +638,31 @@ test('real eval capability refusal falls back without executing payload in block
     const harness = evalHarness({ blocked });
     assert.equal(await harness.context.runEval(7, 'mutate(); 42'), 42);
     assert.equal(harness.executions(), 1);
-    assert.deepEqual(harness.attempts, blocked.length === 1 ? ['ISOLATED', 'MAIN'] : ['ISOLATED', 'MAIN', 'CDP']);
+    assert.deepEqual(harness.attempts, blocked.length === 1 ? ['MAIN'] : ['MAIN', 'CDP']);
     assert.equal(harness.attached(), 0);
   }
 });
 
-test('explicit ISOLATED eval never uses MAIN or CDP when capability is blocked', async () => {
-  const harness = evalHarness({ blocked: ['ISOLATED'], cached: 'MAIN' });
-  await assert.rejects(harness.context.runEval(7, 'mutate()', 'ISOLATED'), /--world isolated can't run caller code: Chrome \(MV3\) forbids eval.*refusing a main-world fallback/);
-  assert.equal(harness.executions(), 0);
-  assert.deepEqual(harness.attempts, ['ISOLATED']);
+test('a raw world other than auto/MAIN is refused before any injection (/cmd bypasses the grammar)', async () => {
+  for (const world of ['ISOLATED', 'FOO']) {
+    const harness = evalHarness();
+    await assert.rejects(harness.context.runEval(7, 'mutate()', world), /is not supported: caller code runs in the page's main world/);
+    assert.equal(harness.executions(), 0);
+    assert.deepEqual(harness.attempts, []);
+  }
+  for (const world of [undefined, 'auto', 'MAIN']) {
+    const harness = evalHarness();
+    assert.equal(await harness.context.runEval(7, 'mutate(); 1', world), 1);
+  }
+});
+
+test('caller code never tries the ISOLATED world (MV3 forbids eval there on every page)', async () => {
+  {
+    const harness = evalHarness();
+    assert.equal(await harness.context.runEval(7, 'mutate(); 7'), 7);
+    assert.equal(harness.executions(), 1);
+    assert.deepEqual(harness.attempts, ['MAIN']);
+  }
 });
 
 test('real release invalidates queued work before asynchronous cleanup completes', async () => {

@@ -674,6 +674,10 @@ try {
 
   const evWorldBad = await cli('eval', 'example.com', 'document.title', '--world', 'mian');
   assert(evWorldBad.status !== 0 && evWorldBad.stderr.includes('--world'), 'cli eval rejects invalid --world value', evWorldBad.stdout + evWorldBad.stderr);
+  for (const argv of [['eval', 'example.com', '1', '--world', 'isolated'], ['wait', 'example.com', '--js', '1', '--world', 'isolated']]) {
+    const r = await cli(...argv);
+    assert(r.status !== 0 && r.stderr.includes('--world isolated was removed') && r.stderr.includes('drop --world'), `cli ${argv[0]} --world isolated is refused with the removal + next step (MV3 can't eval there)`, r.stdout + r.stderr);
+  }
   const evSyntax = await cli('eval', 'example.com', '(()=>{return ({probe:, fn:()=>.click()})})()');
   assert(evSyntax.status === 1 && /line 1, column \d+/.test(evSyntax.stderr) && evSyntax.stderr.includes('stdin') && evSyntax.stderr.includes('before retrying') && !evSyntax.stderr.includes('probe:,'), 'cli eval: malformed JavaScript gets a location and repair guidance without echoing code', evSyntax.stderr);
   const evMultilineSyntax = await cliStdin('const privateValue = "do-not-print";\n({probe:,})', 'eval', 'example.com', '-');
@@ -1185,7 +1189,6 @@ try {
     assert(bg.includes("document.visibilityState === 'hidden'") && bg.includes('MessageChannel'), 'ext: type cadence on hidden tabs is an unthrottled MessageChannel hop, not a 1s-clamped setTimeout (#29/#32)');
     assert(bg.includes('__bridgeTyping') && bg.includes('another type is still running'), 'ext: overlapping type refuses while a previous loop runs (#32)');
     assert(bg.includes("closest?.('[contenteditable]')") && bg.includes('anchorNode'), 'ext: type follows the live caret when the editor rewrites the caret block mid-typing (#30)');
-    assert(bg.includes("--world isolated can't run caller code") && !bg.includes('ISOLATED world blocked by page CSP'), "ext: --world isolated names MV3's isolated-world eval ban, not the page's CSP");
     assert(bg.includes('no observable page effect') && bg.includes('MutationObserver'), 'ext: click watches for an observable effect and names --trusted when the app ignored it (#23)');
     {
       // A link's navigate event fires INSIDE its click dispatch: a listener

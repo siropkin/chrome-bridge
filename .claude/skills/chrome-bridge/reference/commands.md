@@ -112,7 +112,7 @@ scroll <match> <up|down|top|bottom|@ref|css> [--diff]
                                   changed — never read it as ok)
 ask <match> <question>              (experimental) local Gemini Nano answers from page
                                   text — no cloud tokens; pre-filter quality, not truth
-wait <match> <css|--text t|--js expr|--human|--pixel-change> [--timeout ms] [--world main|isolated]
+wait <match> <css|--text t|--js expr|--human|--pixel-change> [--timeout ms] [--world main]
                                   wait for element or visible text (default 10s, max 60s);
                                   --text takes every word up to the next flag (unquoted
                                   multi-word is fine); css/--text are alternatives — pass
@@ -121,8 +121,7 @@ wait <match> <css|--text t|--js expr|--human|--pixel-change> [--timeout ms] [--w
                                   value (awaited, so async checks work; '-' reads it from
                                   stdin; one expression — statements go in an IIFE; in batch
                                   quote it as one token) — mutation-driven, not a sleep loop;
-                                  runs in the page world (page globals visible) — --world
-                                  isolated can't eval (MV3); a timeout names the last value or error;
+                                  runs in the page world (page globals visible); a timeout names the last value or error;
                                   --human hands the tab to the user — CAPTCHA/2FA/login
                                   walls: the pill tells them it's their turn, the command
                                   blocks until they act (trusted input or navigation;
@@ -130,7 +129,7 @@ wait <match> <css|--text t|--js expr|--human|--pixel-change> [--timeout ms] [--w
                                   of what they did (fresh snap if they navigated);
                                   --pixel-change polls until pixels move — canvas changes
                                   the tree can't see (attaches CDP for the wait)
-eval <match> <js|-> [--world main|isolated]     '-' reads JS from stdin; output caps at
+eval <match> <js|-> [--world main]              '-' reads JS from stdin; output caps at
                                   50K chars (truncation note names the remedy) — return less;
                                   top-level const/let are call-scoped: re-runs never collide
                                   (set globals via window.x)
