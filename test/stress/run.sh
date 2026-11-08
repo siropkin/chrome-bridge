@@ -1015,7 +1015,22 @@ if ! curl -fsS -m 2 http://localhost:9334/api/data >/dev/null 2>&1; then
     echo "FAIL [safety] existing fixture server required on localhost:9334"; exit 1
   fi
   ( node "$S/server.mjs" &>/dev/null & )
+else
+  # Already up — but from before an edit to server.mjs? Its routes are then
+  # stale and new checks 404 like a regression. Restart a stale one.
+  want=$(node -e 'process.stdout.write(require("crypto").createHash("sha256").update(require("fs").readFileSync(process.argv[1])).digest("hex"))' "$S/server.mjs")
+  have=$(curl -fsS -m 2 http://localhost:9334/api/version 2>/dev/null || true)
+  if [ "$have" != "$want" ]; then
+    if [ "$SECTIONS" = safety ]; then
+      echo "FAIL [safety] the fixture server on localhost:9334 runs older code than test/stress/server.mjs — restart it (kill its pid: lsof -tiTCP:9334 -sTCP:LISTEN)"; exit 1
+    fi
+    for pid in $(lsof -tiTCP:9334 -sTCP:LISTEN 2>/dev/null); do kill "$pid" 2>/dev/null; done
+    for _ in 1 2 3 4 5 6 7 8 9 10; do curl -fsS -m 1 http://localhost:9334/api/data >/dev/null 2>&1 || break; sleep 0.3; done
+    echo "restarted the fixture server on :9334 (it predated an edit to test/stress/server.mjs)"
+    ( node "$S/server.mjs" &>/dev/null & )
+  fi
 fi
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ "$(curl -fsS -m 1 http://localhost:9334/api/version 2>/dev/null)" ] && break; sleep 0.3; done
 # Start clean: a partial run (sections without `cleanup`) or an aborted one
 # leaves fixture tabs open, and the next run's commands on those matches are
 # refused as ambiguous across profiles — dozens of failures that read like a

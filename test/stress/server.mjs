@@ -11,10 +11,18 @@ import { fileURLToPath } from 'node:url';
 const PORT = 9334;
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.png': 'image/png' };
+// run.sh reuses a server already on :9334 — one started before an edit here
+// serves stale routes and new checks fail as 404s that read like a product
+// regression. It compares this hash with the file on disk and restarts.
+const VERSION = crypto.createHash('sha256').update(fs.readFileSync(fileURLToPath(import.meta.url))).digest('hex');
 
 const server = http.createServer((req, res) => {
   const cors = { 'Access-Control-Allow-Origin': '*' };
   if (req.method === 'OPTIONS') { res.writeHead(204, cors); return res.end(); }
+  if (req.url === '/api/version') {
+    res.writeHead(200, { 'Content-Type': 'text/plain', ...cors });
+    return res.end(VERSION);
+  }
   if (req.url === '/api/data') {
     res.writeHead(200, { 'Content-Type': 'application/json', ...cors });
     return res.end(JSON.stringify({ ok: true, items: [1, 2, 3] }));
