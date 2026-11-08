@@ -3,14 +3,14 @@
 const WS_URL = 'ws://127.0.0.1:9333/ws';
 
 // Section map (each '// ---' banner, in order):
-//   Service-worker log ring · Driven-tab marking (pill/banner injection) ·
+//   Service-worker log ring · Links (one WebSocket per command source) ·
+//   Driven-tab marking (pill/banner injection) ·
 //   Live status in the corner pill (narration, ticker, activity ring) ·
 //   Status favicon · CDP debugger refcount · Device emulation · Boot hydration
 //   (storage.session restore) · Network capture · Page-side scripts (every
 //   injected JS template: snap/click/fill/…/find/measure/console/wall) ·
 //   pixel diff + capture (banner suppression lives here) · trusted input ·
 //   eval machinery · --diff on actions · wait --human · Commands (handle()).
-let ws = null;
 
 // Stable per-profile id (uuid, persisted): the server logs and /health report
 // WHICH Chrome holds the seat — with two profiles loaded, a silent seat
@@ -86,16 +86,77 @@ const BOOT_TS_P = chrome.storage.session
   .then(({ bootTime }) => bootTime || (chrome.storage.session.set({ bootTime: Date.now() }), Date.now()))
   .catch(() => Date.now());
 
+// --- Links -------------------------------------------------------------------
+// A link is one outbound WebSocket to something that sends commands. Today the
+// only one is `local` (the server on 127.0.0.1); the Cloud Bridge hub joins as
+// a second link and both run at the same time. Every command is tagged with
+// the link it came in on (msg._link): the reply goes back on that socket, the
+// tab it marks belongs to that link, and the other links may only read that
+// tab (assertLinkMayDrive).
+//   id       stable key, and the owner tag on the tabs the link drives
+//   url      where to dial — dial() returns it with the per-connect query
+//   label    how errors and `tabs` name the link to an agent
+//   policy   'full' runs everything (local); the hub's Allow/Ask/Off map lands here
+//   socket   the live WebSocket, or null
+//   backoff  next reconnect delay in ms: doubles per drop from retry[0] up to
+//            retry[1], back to retry[0] once open (local: a flat 500ms)
+const links = new Map();
+function addLink(def) {
+  const link = { policy: 'full', retry: [500, 500], ...def, socket: null, wasOffline: false, offlinePainted: false };
+  link.backoff = link.retry[0];
+  links.set(link.id, link);
+  return link;
+}
+const linkOpen = (id) => links.get(id)?.socket?.readyState === WebSocket.OPEN;
+// Fire-and-forget: false when the link is down (the caller decides whether
+// to queue), never a throw.
+function linkSend(id, data) {
+  if (!linkOpen(id)) return false;
+  try {
+    links.get(id).socket.send(data);
+    return true;
+  } catch {
+    return false;
+  }
+}
+addLink({
+  id: 'local',
+  label: 'local',
+  url: WS_URL,
+  async dial() {
+    // ?boot= feeds the server's stale-code check (#63) — see BOOT_TS_P.
+    let boot = null;
+    try {
+      boot = await BOOT_TS_P;
+    } catch {}
+    // ?v= lets `cli health` catch a stale extension after git pull; ?id= names
+    // which profile holds the seat in the server log and /health.
+    return (
+      this.url +
+      '?v=' +
+      chrome.runtime.getManifest().version +
+      (PROFILE_ID ? '&id=' + PROFILE_ID : '') +
+      (PROFILE_NAME ? '&name=' + PROFILE_NAME : '') +
+      (INSTALL_TYPE ? '&install=' + INSTALL_TYPE : '') +
+      (boot ? '&boot=' + boot : '')
+    );
+  },
+});
+
 // Lifecycle journal — one WS event per marker-affecting transition (mark,
 // release, reap, boot, …) so server.log can answer "why is this tab still
 // marked?" after the fact. Fire-and-forget like self-release, except events
 // fired while the socket is down (boot, extreload) queue briefly and flush
-// on the next connect — losing boot events would defeat the point.
+// on the next connect — losing boot events would defeat the point. Local
+// link only: server.log is the local server's, and a remote hub has no use
+// for this profile's marker bookkeeping.
 const pendingJournal = [];
 const pendingDiagnostics = new Map();
 
+// Logging settings live on the local server (the one link with a disk).
 function requestDiagnostics(msg) {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return Promise.resolve({ ok: false, error: 'Bridge not connected. Start the server and reopen settings.' });
+  const ws = links.get('local').socket;
+  if (!linkOpen('local')) return Promise.resolve({ ok: false, error: 'Bridge not connected. Start the server and reopen settings.' });
   return new Promise((resolve) => {
     const requestId = crypto.randomUUID();
     const timer = setTimeout(() => {
@@ -117,55 +178,43 @@ function requestDiagnostics(msg) {
 
 function journal(kind, tabId, detail) {
   const line = JSON.stringify({ type: 'event', kind, tabId: tabId ?? null, detail: String(detail || '').slice(0, 120) });
-  if (ws && ws.readyState === WebSocket.OPEN) ws.send(line);
-  else {
+  if (!linkSend('local', line)) {
     pendingJournal.push(line);
     if (pendingJournal.length > 50) pendingJournal.shift();
   }
 }
 
-// Async: awaits BOOT_TS_P before dialing. Callers fire-and-forget, and the
-// double-connect guard runs synchronously at entry, so the await can't wedge
-// a second connect behind a first one — only the dial itself moves later.
-async function connect() {
-  // Two connects in flight (reconnect timer + keepalive alarm) means two
-  // sockets; the server seats the first and rejects the second. Reply on the
-  // socket that received the message (s), never the global ws — after a race
-  // those differ, and replying on the rejected socket leaves every command
-  // unanswered while health still says "connected".
+// Async: awaits link.dial() (BOOT_TS_P for local) before dialing. Callers
+// fire-and-forget, and the double-connect guard runs synchronously at entry,
+// so the await can't wedge a second connect behind a first one — only the
+// dial itself moves later.
+async function connect(link) {
+  // Two connects in flight on one link (reconnect timer + keepalive alarm)
+  // means two sockets; the server seats the first and rejects the second.
+  // Reply on the socket that received the message (s), never link.socket —
+  // after a race those differ, and replying on the rejected socket leaves
+  // every command unanswered while health still says "connected".
   try {
-    ws?.close();
-  } catch {}
-  // ?boot= feeds the server's stale-code check (#63) — see BOOT_TS_P.
-  let boot = null;
-  try {
-    boot = await BOOT_TS_P;
+    link.socket?.close();
   } catch {}
   let s;
   try {
-    // ?v= lets `cli health` catch a stale extension after git pull; ?id= names
-    // which profile holds the seat in the server log and /health.
-    s = ws = new WebSocket(
-      WS_URL +
-        '?v=' +
-        chrome.runtime.getManifest().version +
-        (PROFILE_ID ? '&id=' + PROFILE_ID : '') +
-        (PROFILE_NAME ? '&name=' + PROFILE_NAME : '') +
-        (INSTALL_TYPE ? '&install=' + INSTALL_TYPE : '') +
-        (boot ? '&boot=' + boot : '')
-    );
+    const url = await link.dial();
+    s = link.socket = new WebSocket(url);
   } catch {
     return;
   }
   s.onopen = () => {
-    for (const l of pendingJournal.splice(0)) s.send(l);
+    link.backoff = link.retry[0];
+    if (link.id === 'local') for (const l of pendingJournal.splice(0)) s.send(l);
     // Back online after a server outage: pills that painted "offline" go back
     // to the honest current state (a command still running keeps its label —
     // local page-side work survives a server blip).
-    wasOffline = false; // disarms the grace timer below
-    if (offlinePainted) {
-      offlinePainted = false;
+    link.wasOffline = false; // disarms the grace timer below
+    if (link.offlinePainted) {
+      link.offlinePainted = false;
       for (const tabId of drivenTabs) {
+        if (ownerOf(tabId) !== link.id) continue; // another link's tabs never painted offline
         const busy = (inflight.get(tabId) || 0) > 0;
         pillWrite(tabId, [busy ? pillBusy.get(tabId) || idleLabel(tabId) : idleLabel(tabId), tabActivity.get(tabId) || [], null, busy]);
       }
@@ -185,7 +234,7 @@ async function connect() {
       s.close();
       return;
     }
-    if (msg.type === 'diagnostics-result') {
+    if (msg.type === 'diagnostics-result' && link.id === 'local') {
       pendingDiagnostics.get(msg.requestId)?.(msg);
       return;
     }
@@ -199,14 +248,21 @@ async function connect() {
       // transitions — a loser that queued boot lines (two extension builds in
       // one profile share the storage keys and the profile id) flushes
       // duplicate boot events into server.log before it ever reads this.
-      pendingJournal.length = 0;
+      if (link.id === 'local') pendingJournal.length = 0;
       s._seatTaken = true;
-      ws = null;
+      if (link.socket === s) link.socket = null;
       // The losing side was silent — a cloned profile dir (machine migration)
       // bounced this worker forever and nothing anywhere said why.
       logLine('seat taken — another live connection holds this profile id (SW reconnect race, or a cloned Chrome profile dir); standing down, the keepalive re-probes');
       return;
     }
+    // Underscore fields (_tabId, _pill, _markedByMe, _warn, …) are INTERNAL —
+    // set while handling a command, and trusted by onmessage's catch/finally
+    // and the ownership gate. The server strips them at /cmd, but that guards
+    // one ingress: strip on every link, THEN tag the command with the link it
+    // came in on (a peer can't claim to be another link).
+    for (const k of Object.keys(msg)) if (k.startsWith('_')) delete msg[k];
+    msg._link = link.id;
     let failed = false;
     try {
       let result = await handle(msg);
@@ -303,35 +359,36 @@ async function connect() {
     }
   };
   s.onclose = () => {
-    if (ws !== s) return; // a newer socket already took over — don't double-reconnect
-    ws = null;
+    if (link.socket !== s) return; // a newer socket already took over — don't double-reconnect
+    link.socket = null;
     if (s._seatTaken) return; // lost the seat race — the 30s keepalive alarm re-probes
     // Say so in the pill: 'AI idle' during a bridge outage reads as "done,
     // waiting" — the human can't tell a dead server from a resting agent.
     // But a sub-second reconnect blip must not flash ⚠ on every driven tab
-    // either: paint only if the bridge is still down after a short grace
-    // (wasOffline arms now so a second onclose can't stack paints; onopen
-    // disarms).
-    if (!wasOffline) {
-      wasOffline = true;
+    // either: paint only if the link is still down after a short grace
+    // (link.wasOffline arms now so a second onclose can't stack paints;
+    // onopen disarms). link.offlinePainted: the ⚠ paint actually landed, so
+    // onopen only re-paints tabs that showed it. Only this link's tabs — a
+    // tab another link drives is still live.
+    if (!link.wasOffline) {
+      link.wasOffline = true;
       setTimeout(() => {
-        if (!wasOffline) return; // reconnected inside the grace — stay calm
-        offlinePainted = true;
+        if (!link.wasOffline) return; // reconnected inside the grace — stay calm
+        link.offlinePainted = true;
         for (const tabId of drivenTabs) {
+          if (ownerOf(tabId) !== link.id) continue;
           pillWrite(tabId, ['⚠ bridge offline — reconnecting…', tabActivity.get(tabId) || [], null, false]);
         }
       }, 2500);
     }
-    // Reconnect immediately; the alarm is only a backstop for a killed SW.
-    setTimeout(connect, 500);
+    // Reconnect right away (local: a flat 500ms); the alarm is only a
+    // backstop for a killed SW.
+    const delay = link.backoff;
+    link.backoff = Math.min(link.backoff * 2, link.retry[1]);
+    setTimeout(() => connect(link), delay);
   };
 }
 
-// True while the WS is down — onopen clears it and restores the idle label.
-// offlinePainted: the ⚠ paint actually landed (it lags onclose by a 2.5s
-// grace), so onopen only re-paints tabs that showed the warning.
-let wasOffline = false;
-let offlinePainted = false;
 // Wait for the profile id before the first dial — otherwise this connect
 // races the storage read and the seat is held with extId=null until the next
 // SW cycle (days, on a healthy server). Reconnects run after idReady settled.
@@ -340,15 +397,16 @@ let offlinePainted = false;
 Promise.race([
   Promise.all([idReady, installReady]),
   new Promise((r) => setTimeout(r, 5000)).then(() => logLine('profile-id storage read wedged (5s) — connecting without a stable id')),
-]).then(connect);
+]).then(() => {
+  for (const link of links.values()) connect(link);
+});
 
-// Keep the service worker (and its WebSocket) alive; reconnect if dropped.
-// Chrome floors sub-30s alarm periods to 30s (and warns) — ask for 0.5 outright.
+// Keep the service worker (and its WebSockets) alive; re-dial every link
+// that dropped. Chrome floors sub-30s alarm periods to 30s (and warns) — ask
+// for 0.5 outright.
 chrome.alarms.create('keepalive', { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener(() => {
-  if (!ws || ws.readyState !== WebSocket.OPEN) {
-    connect();
-  }
+  for (const link of links.values()) if (!linkOpen(link.id)) connect(link);
 });
 
 // --- Driven-tab marking -----------------------------------------------------
@@ -356,6 +414,9 @@ chrome.alarms.onAlarm.addListener(() => {
 // shared "🟣 Bridge" tab group, so the user can see at a glance what's being
 // driven. `release` undoes all of it.
 const drivenTabs = new Set();
+// tabId -> id of the link whose command marked it (see Links and
+// assertLinkMayDrive). Set when a command claims a tab, dropped on release.
+const tabOwner = new Map();
 
 // The human's ⏏ reclaim, ENFORCED: tabId → reclaim time. Without this the
 // next command in the agent's loop re-marks a ⏏-released tab within seconds
@@ -1034,6 +1095,7 @@ async function releaseTab(tabId, opts = {}) {
   ownershipSeq.set(tabId, (ownershipSeq.get(tabId) || 0) + 1);
   if (opts.flash) humanReclaimed.set(tabId, Date.now());
   drivenTabs.delete(tabId);
+  tabOwner.delete(tabId);
   chrome.action.setBadgeText({ tabId, text: '' }).catch(() => {}); // the everywhere-marker (markTab) — restore it everywhere too
   // The human's ⏏ (flash) also cuts a live net capture short — the same
   // detached/wake handshake onDetach uses: the capture reports "cut short"
@@ -1147,6 +1209,7 @@ chrome.tabs.onUpdated.addListener((tabId, info) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   if (drivenTabs.has(tabId)) journal('tab-closed', tabId, 'driven tab closed');
   drivenTabs.delete(tabId);
+  tabOwner.delete(tabId);
   tabStatus.delete(tabId);
   tabActivity.delete(tabId);
   pillSeq.delete(tabId);
@@ -1197,7 +1260,7 @@ function remapTabId(newTabId, oldTabId) {
   emulatedDsf.delete(oldTabId); // same lifetime as the override — must not follow the id (stale dpr for shot)
   tabActivity.delete(oldTabId);
   pillBusy.delete(oldTabId);
-  for (const m of [failedSinceOk, worldCache, shotBaselines, humanReclaimed]) {
+  for (const m of [failedSinceOk, worldCache, shotBaselines, humanReclaimed, tabOwner]) {
     if (m.has(oldTabId)) {
       m.set(newTabId, m.get(oldTabId));
       m.delete(oldTabId);
@@ -1234,8 +1297,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // event that woke a dead worker — releasing against the still-empty maps
     // would no-op, then hydration + the catch-up would resurrect everything
     // (found by review). On a live worker `ready` is already settled.
+    // The event goes to the link that drove the tab — its agent is the one
+    // whose next command the reclaim refuses. Read the owner before
+    // releaseTab forgets it.
+    let owner = 'local';
     ready
-      .then(() => releaseTab(sender.tab.id, { flash: true }))
+      .then(() => {
+        owner = ownerOf(sender.tab.id) || 'local';
+        return releaseTab(sender.tab.id, { flash: true });
+      })
       .then(() => {
         // The reclaim is enforced, not just narrated: findTab refuses every
         // later command on this tab until a deliberate `mark` re-claim.
@@ -1243,8 +1313,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         persist(); // the veto must survive an SW restart — see the map's comment
         // Tell the agent's feed (watch/history): the human took the tab back.
         // Without this the next command silently re-marks and nobody noticed.
-        if (ws && ws.readyState === WebSocket.OPEN)
-          ws.send(JSON.stringify({ type: 'event', kind: 'self-release', tabId: sender.tab.id, url: sender.tab.url || '' }));
+        linkSend(owner, JSON.stringify({ type: 'event', kind: 'self-release', tabId: sender.tab.id, url: sender.tab.url || '' }));
       })
       .catch(() => {});
     return;
@@ -1253,12 +1322,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // tab can't show the pill (chrome://, Web Store, PDF). Popup-originated
   // messages have no sender.tab; extension pages are the trusted context.
   if (msg?.type === 'bridge-state') {
-    // connected: THIS profile's own socket — the popup's "bridge ready" must
-    // not ride /health's any-seat flag (another profile's live seat says
+    // connected: THIS profile's own local socket — the popup's "bridge ready"
+    // must not ride /health's any-seat flag (another profile's live seat says
     // nothing about this one).
     // profile: the popup shows it and puts it in the copied tab reference —
     // the human never sees the code name anywhere else.
-    Promise.all([ready, idReady]).then(() => ({ count: drivenTabs.size, active: msg.tabId != null && drivenTabs.has(msg.tabId), connected: !!(ws && ws.readyState === WebSocket.OPEN), profile: PROFILE_NAME }))
+    Promise.all([ready, idReady]).then(() => ({ count: drivenTabs.size, active: msg.tabId != null && drivenTabs.has(msg.tabId), connected: linkOpen('local'), profile: PROFILE_NAME }))
       .then(sendResponse, (error) => sendResponse({ error: String(error) }));
     return true;
   }
@@ -1530,6 +1599,7 @@ function persist() {
       tabStatus: Object.fromEntries(tabStatus),
       tabActivity: Object.fromEntries(tabActivity),
       humanReclaimed: Object.fromEntries(humanReclaimed),
+      tabOwner: Object.fromEntries(tabOwner),
     })
     .catch(() => {});
 }
@@ -1548,7 +1618,7 @@ const ready = (async () => {
     // hang EVERY command to the server's 70s cap with a "may have run" lie —
     // proceed with empty maps (the fresh-profile path) and say so in swlogs.
     const s = await Promise.race([
-      chrome.storage.session.get(['drivenTabs', 'emulatedTabs', 'tabStatus', 'tabActivity', 'humanReclaimed', 'swLogs']),
+      chrome.storage.session.get(['drivenTabs', 'emulatedTabs', 'tabStatus', 'tabActivity', 'tabOwner', 'humanReclaimed', 'swLogs']),
       new Promise((r) => setTimeout(() => r(null), 5000)),
     ]);
     if (s === null) logLine('storage.session read wedged (5s) — starting with empty state');
@@ -1556,6 +1626,7 @@ const ready = (async () => {
     for (const id of s?.emulatedTabs || []) emulatedTabs.add(id);
     for (const [k, v] of Object.entries(s?.tabStatus || {})) tabStatus.set(Number(k), v);
     for (const [k, v] of Object.entries(s?.humanReclaimed || {})) humanReclaimed.set(Number(k), v);
+    for (const [k, v] of Object.entries(s?.tabOwner || {})) tabOwner.set(Number(k), v);
     // The dead worker's log tail rides along — this worker's own lines (the
     // 'background vX loaded' marker) stay newest at the end.
     swLogs.unshift(...(s?.swLogs || []));
@@ -1573,6 +1644,7 @@ const ready = (async () => {
     for (const id of [...tabStatus.keys()]) if (!live.has(id)) tabStatus.delete(id);
     for (const id of [...tabActivity.keys()]) if (!live.has(id)) tabActivity.delete(id);
     for (const id of [...humanReclaimed.keys()]) if (!live.has(id)) humanReclaimed.delete(id);
+    for (const id of [...tabOwner.keys()]) if (!live.has(id) || !drivenTabs.has(id)) tabOwner.delete(id);
   } catch {}
   // A ⏳ tabStatus outlived its worker: the finally that clears it died with
   // the SW, and inflight is memory-only — nothing is running in this fresh
@@ -4189,6 +4261,11 @@ async function waitPixel(tab, msg) {
 // commands the CLI handles itself) · server.mjs CLI_LINES · server.mjs route() (only if it
 // needs special routing) · background.js handle() · ACT_VERBS (pill narration) · MUTATING.
 const MUTATING = new Set(['click', 'fill', 'clear', 'paste', 'type', 'press', 'upload', 'eval', 'hover', 'scroll', 'grid', 'emulate', 'resize', 'drag', 'dialog', 'fetch']);
+// What a link may run on a tab ANOTHER link drives: pure reads (selftest:
+// readOnly in the commands.js registry, never MUTATING). Everything else —
+// actions, nav/close, page code, waits, note, mark/release — belongs to the
+// owner.
+const CROSS_LINK_READS = new Set(['snap', 'shot', 'measure', 'console', 'ask', 'perf', 'net']);
 
 // <match> is a URL/title substring — or id:<tabId>, the exact reference the
 // toolbar popup copies (also shown in tabs/open output). ONE predicate for
@@ -4208,6 +4285,22 @@ function assertNotReclaimed(tabId, msg) {
     throw new Error(
       `⚠ the human released this tab via ⏏ at ${new Date(reclaimed).toTimeString().slice(0, 8)} — they took it back. Every command on it is refused until a deliberate re-claim: ask the human, and only if they hand it back — mark <match>`
     );
+}
+
+// Tab ownership per link: a tab belongs to the link whose command marked it.
+// Another link may read it (CROSS_LINK_READS) but not act on, claim or
+// release it — two agents on two links must not fight over one page, and a
+// prompt-injected remote agent must not drive the tab a local session is
+// filling. Driven tabs with no recorded owner (state from a build before
+// links) are local's. With only the local link, nothing is ever refused.
+const ownerOf = (tabId) => (drivenTabs.has(tabId) ? tabOwner.get(tabId) || 'local' : null);
+const linkLabel = (id) => links.get(id)?.label || id;
+function assertLinkMayDrive(tabId, msg) {
+  const owner = ownerOf(tabId);
+  if (!owner || owner === msg._link || CROSS_LINK_READS.has(msg.type)) return;
+  throw new Error(
+    `⚠ this tab is driven through the ${linkLabel(owner)} link — from ${linkLabel(msg._link)} you can only read it (${[...CROSS_LINK_READS].join(', ')}), nothing ran. To act on that page, open your own tab (open <url>), or ask the user to have the other agent release this one`
+  );
 }
 
 async function findTab(msg) {
@@ -4263,6 +4356,9 @@ async function findTab(msg) {
   // stray agent release must not launder the tab back). `tabs`/`probe` never
   // reach findTab — listing and routing stay possible while gated.
   assertNotReclaimed(matches[0].id, msg);
+  // Another link's tab: reads pass, everything else is refused here — before
+  // mark's reclaim-clear, the auto-mark and any activity record.
+  assertLinkMayDrive(matches[0].id, msg);
   if (msg.type === 'mark') {
     humanReclaimed.delete(matches[0].id);
     persist(); // the re-claim must survive an SW restart too — a resurrected veto would refuse commands on a tab the human handed back
@@ -4283,6 +4379,7 @@ async function findTab(msg) {
     // This command created the claim — if it then hits Chrome's permanent
     // "nothing here is drivable" wall, onmessage undoes THIS mark (#37).
     msg._markedByMe = true;
+    tabOwner.set(matches[0].id, msg._link); // markTab persists it
     markTab(matches[0].id).catch(() => {});
   }
   // Not `release`: it would flash ⏳ on the still-driven tab right before
@@ -4781,6 +4878,8 @@ async function handle(msg) {
       ...(t.groupId !== -1 ? { group: gTitles.get(t.groupId) ?? '' } : {}), // strip visibility: the Bridge group is one of the driven-tab markers
       ...(t.active ? { active: true } : {}),
       ...(drivenTabs.has(t.id) ? { driven: true } : {}),
+      // Driven through ANOTHER link: theirs to act on, yours only to read.
+      ...(drivenTabs.has(t.id) && ownerOf(t.id) !== msg._link ? { link: linkLabel(ownerOf(t.id)) } : {}),
     }));
   }
 
@@ -4804,10 +4903,11 @@ async function handle(msg) {
       if (grouped || driven || status || emulated || dbg)
         rows.push({ id: t.id, url: (t.url || '').slice(0, 80), title: (t.title || '').slice(0, 60), grouped, driven, status, emulated, debugger: dbg });
     }
-    const stale = [...new Set([...drivenTabs, ...tabStatus.keys(), ...tabActivity.keys(), ...emulatedTabs.keys(), ...worldCache.keys(), ...shotBaselines.keys(), ...failedSinceOk.keys(), ...cdpRefs.keys()])].filter((id) => !live.has(id));
+    const stale = [...new Set([...drivenTabs, ...tabStatus.keys(), ...tabActivity.keys(), ...emulatedTabs.keys(), ...worldCache.keys(), ...shotBaselines.keys(), ...failedSinceOk.keys(), ...cdpRefs.keys(), ...tabOwner.keys()])].filter((id) => !live.has(id));
     if (msg.fix && stale.length) {
       for (const id of stale) {
         drivenTabs.delete(id);
+        tabOwner.delete(id);
         tabStatus.delete(id);
         tabActivity.delete(id);
         emulatedTabs.delete(id);
@@ -4865,6 +4965,7 @@ async function handle(msg) {
     // recheck covers the tighter race: committed before this listener attached.
     const complete = waitForLoad(tab.id, 8000, true);
     setFavicon(tab.id, '⏳').catch(() => {});
+    tabOwner.set(tab.id, msg._link); // markTab persists it
     markTab(tab.id).catch(() => {});
     recordActivity(tab.id, msg);
     const loaded = await complete;
@@ -4922,14 +5023,20 @@ async function handle(msg) {
     // to address identical-URL tabs (no longer <match> can tell them apart),
     // and a broad one-at-a-time close loop is exactly the ambiguity the
     // refusal exists to stop — an explicit plural close is not a guess. No
-    // marking/recording: the tabs are about to not exist.
+    // marking/recording: the tabs are about to not exist. Tabs another link
+    // drives are skipped, not refused: --all cleans up THIS link's matches,
+    // and a sibling link's live work is not that.
     if (msg.all) {
       const ts = await chrome.tabs.query({});
-      const matches = ts.filter((t) => tabMatches(t, msg.urlMatch));
-      if (!matches.length) throw new Error(`no tab matching "${msg.urlMatch}" — already closed? (the match is a URL/title substring)`);
+      const found = ts.filter((t) => tabMatches(t, msg.urlMatch));
+      if (!found.length) throw new Error(`no tab matching "${msg.urlMatch}" — already closed? (the match is a URL/title substring)`);
+      const matches = found.filter((t) => [null, msg._link].includes(ownerOf(t.id)));
+      const skipped = found.length - matches.length;
+      if (!matches.length)
+        throw new Error(`all ${skipped} tab(s) matching "${msg.urlMatch}" are driven through another link — close --all only closes this link's tabs; nothing was closed`);
       for (const tab of matches) assertNotReclaimed(tab.id, msg);
       await chrome.tabs.remove(matches.map((t) => t.id));
-      return { closed: matches.length };
+      return skipped ? { closed: matches.length, skipped, note: `${skipped} matching tab(s) driven through another link were left open` } : { closed: matches.length };
     }
     const tab = await findTab(msg);
     await chrome.tabs.remove(tab.id);
@@ -4967,6 +5074,7 @@ async function handle(msg) {
 
   if (msg.type === 'mark') {
     const tab = await findTab(msg);
+    if (!drivenTabs.has(tab.id)) tabOwner.set(tab.id, msg._link); // findTab skips mark's auto-mark — claim here
     await markTab(tab.id);
     return { id: tab.id };
   }

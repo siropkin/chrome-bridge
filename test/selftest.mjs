@@ -969,6 +969,10 @@ try {
       bg.includes('humanReclaimed: Object.fromEntries(humanReclaimed)') && bg.includes("'humanReclaimed', 'swLogs'"),
       'pill: ⏏ reclaim persists across SW restarts (storage.session write-through + hydration)'
     );
+    assert(
+      bg.includes('tabOwner: Object.fromEntries(tabOwner)') && bg.includes("'tabOwner', 'humanReclaimed'") && bg.includes('tabOwner.set(Number(k), v)'),
+      'links: tab ownership persists across SW restarts — a restart must not hand another link\'s tab to local (the no-owner default)'
+    );
     // v1.24 review batch — the behaviors the fake extension can't execute:
     assert(
       bg.includes('pillQ') && bg.includes('function pillWrite'),
@@ -1100,6 +1104,12 @@ try {
     const mutating = [...bg.slice(bg.indexOf('const MUTATING'), bg.indexOf(']);', bg.indexOf('const MUTATING'))).matchAll(/'(\w+)'/g)].map((m) => m[1]);
     const readOnlyMutating = mutating.filter((t) => registry.find((e) => e.name === t || e.aliases.includes(t))?.readOnly !== false);
     assert(mutating.length > 10 && readOnlyMutating.length === 0, 'drift: every MUTATING command is non-readOnly in the commands.js REGISTRY', `readOnly or missing: ${readOnlyMutating}`);
+    // A link may READ a tab another link drives — nothing else. A command that
+    // acts can never ride that pass: each cross-link read is a readOnly
+    // browser command in the registry and never MUTATING.
+    const crossReads = [...bg.slice(bg.indexOf('const CROSS_LINK_READS'), bg.indexOf(']);', bg.indexOf('const CROSS_LINK_READS'))).matchAll(/'(\w+)'/g)].map((m) => m[1]);
+    const crossNotRead = crossReads.filter((t) => { const e = registry.find((r) => r.name === t); return !e || !e.readOnly || e.scope !== 'browser' || mutating.includes(t); });
+    assert(crossReads.length >= 5 && crossNotRead.length === 0, 'drift: CROSS_LINK_READS (another link\'s tab) holds only readOnly browser commands, never MUTATING', `not a pure read: ${crossNotRead}`);
     // Caller JavaScript reaches the page on exactly two paths — eval's code and
     // wait --js. Both must carry pageCode (policy treats them alike) and never
     // read as readOnly; a third path fails here until the registry knows it.

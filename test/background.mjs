@@ -25,15 +25,20 @@ test('application EvalError never replays an eval payload', async () => {
 
 const listenerSource = source.slice(source.indexOf('chrome.runtime.onMessage.addListener('), source.indexOf('// --- CDP debugger refcount'));
 
-function popupListener({ failedTab, ready = Promise.resolve() } = {}) {
+function popupListener({ failedTab, ready = Promise.resolve(), owners = new Map() } = {}) {
   let listener;
   const drivenTabs = new Set([7, 8]);
   const humanReclaimed = new Map();
   const diagnostics = [];
+  const events = [];
   const sender = { id: 'bridge', url: 'chrome-extension://bridge/popup.html' };
   vm.runInNewContext(listenerSource, {
     chrome: { runtime: { id: 'bridge', getURL: (path) => 'chrome-extension://bridge/' + path, onMessage: { addListener: (handler) => { listener = handler; } } } },
-    ready, idReady: Promise.resolve(), PROFILE_NAME: 'poplar', drivenTabs, humanReclaimed, ws: { readyState: 1 }, WebSocket: { OPEN: 1 },
+    ready, idReady: Promise.resolve(), PROFILE_NAME: 'poplar', drivenTabs, humanReclaimed,
+    linkOpen: (id) => id === 'local',
+    linkSend: (id, data) => { events.push([id, JSON.parse(data)]); return true; },
+    ownerOf: (tabId) => (drivenTabs.has(tabId) ? owners.get(tabId) || 'local' : null),
+    logLine() {},
     requestDiagnostics: async (message) => { diagnostics.push(message); return { ok: true, result: { enabled: false } }; },
     releaseTab: async (tabId) => {
       if (tabId === failedTab) throw new Error('release unavailable');
@@ -56,7 +61,7 @@ function popupListener({ failedTab, ready = Promise.resolve() } = {}) {
     assert.equal(replied, true, 'listener must reply through sendResponse');
     return response;
   };
-  return { send, drivenTabs, humanReclaimed, diagnostics };
+  return { send, drivenTabs, humanReclaimed, diagnostics, events, raw: (message, origin) => listener(message, origin, () => {}) };
 }
 
 test('popup listener supports callback-only Chrome runtime for every async request', async () => {
@@ -108,22 +113,47 @@ test('popup listener returns hydration failures through the callback', async () 
   }
 });
 
+test('pill ⏏ self-release is announced on the link that drove the tab', async () => {
+  const { raw, events, humanReclaimed } = popupListener({ owners: new Map([[8, 'cloud']]) });
+  const pill = (id) => ({ id: 'bridge', url: 'https://example.test/', tab: { id, url: 'https://example.test/' + id } });
+  for (const tabId of [7, 8, 9]) raw({ type: 'self-release' }, pill(tabId));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events.map(([link, e]) => [link, e.kind, e.tabId]), [['local', 'self-release', 7], ['cloud', 'self-release', 8], ['local', 'self-release', 9]],
+    'owner read before releaseTab forgets it; a never-driven tab still reports to local');
+  assert.deepEqual([...humanReclaimed.keys()], [7, 8, 9]);
+});
+
 test('close --all validates every reclaim before removing any tab without marking', async () => {
   const closeSource = source.slice(source.indexOf("  if (msg.type === 'close') {"), source.indexOf('  // Agent → human narration:'));
   const removed = [];
   const context = vm.createContext({
     humanReclaimed: new Map([[8, Date.now()]]),
+    drivenTabs: new Set(), tabOwner: new Map(), links: new Map(),
     tabMatches: () => true,
-    chrome: { tabs: { query: async () => [{ id: 7 }, { id: 8 }], remove: async (ids) => removed.push(...ids) } },
+    chrome: { tabs: { query: async () => [{ id: 7 }, { id: 8 }, { id: 9 }], remove: async (ids) => removed.push(...ids) } },
   });
   const guard = source.includes('function assertNotReclaimed(')
     ? source.slice(source.indexOf('function assertNotReclaimed('), source.indexOf('async function findTab(')) : '';
   vm.runInContext(guard + '\nasync function close(msg) {' + closeSource + '}', context);
-  await assert.rejects(context.close({ type: 'close', all: true, urlMatch: 'example' }), /human released/);
+  await assert.rejects(context.close({ type: 'close', all: true, urlMatch: 'example', _link: 'local' }), /human released/);
   assert.deepEqual(removed, []);
   context.humanReclaimed.clear();
-  assert.equal((await context.close({ type: 'close', all: true, urlMatch: 'example' })).closed, 2);
+  // Tab 9 is driven through another link: skipped and reported, never closed.
+  context.drivenTabs.add(7).add(9);
+  context.tabOwner.set(7, 'local').set(9, 'cloud');
+  const result = await context.close({ type: 'close', all: true, urlMatch: 'example', _link: 'local' });
+  assert.equal(result.closed, 2);
+  assert.equal(result.skipped, 1);
+  assert.match(result.note, /another link were left open/);
   assert.deepEqual(removed, [7, 8]);
+  // Nothing of this link's left among the matches → refused, nothing closed.
+  removed.length = 0;
+  context.chrome.tabs.query = async () => [{ id: 9 }];
+  await assert.rejects(context.close({ type: 'close', all: true, urlMatch: 'example', _link: 'local' }), /driven through another link — close --all only closes this link's tabs; nothing was closed/);
+  assert.deepEqual(removed, []);
+  // The owning link closes it like before.
+  assert.deepEqual({ ...(await context.close({ type: 'close', all: true, urlMatch: 'example', _link: 'cloud' })) }, { closed: 1 });
+  assert.deepEqual(removed, [9]);
 });
 
 const queueSource = source.slice(source.indexOf('const snapQ ='), source.indexOf('// Bounded wait for a tab'));
@@ -627,7 +657,7 @@ test('real release invalidates queued work before asynchronous cleanup completes
   const blocker = deferred();
   const cleanup = deferred();
   Object.assign(context, {
-    netCollectors: new Map(), tabActivity: new Map(), shotBaselines: new Map(),
+    netCollectors: new Map(), tabActivity: new Map(), shotBaselines: new Map(), tabOwner: new Map([[7, 'local']]),
     failedSinceOk: new Map(), emulatedTabs: new Set([7]), cdpRefs: new Map(),
     stopTick() {}, clearEmulation() {},
     withCdp: () => cleanup.promise,
@@ -641,6 +671,7 @@ test('real release invalidates queued work before asynchronous cleanup completes
   const released = context.releaseTab(7, { flash: true });
   assert.equal(context.ownershipSeq.get(7), 1);
   assert.equal(context.drivenTabs.has(7), false);
+  assert.equal(context.tabOwner.has(7), false, 'release drops the link ownership with the driven state');
   assert.equal(context.humanReclaimed.has(7), true);
   context.humanReclaimed.clear();
   context.drivenTabs.add(7);
@@ -794,4 +825,193 @@ test('wait --js timeout names the last value or the last error', async () => {
   await assert.rejects(vm.runInContext(waitJsSrc({ js: 'missing.prop', timeout: 50 }), page), /timeout after 50ms waiting for the --js condition — it last threw: missing is not defined/);
   page.n = 0;
   await assert.rejects(vm.runInContext(waitJsSrc({ js: 'n', timeout: 50 }), page), /\(last value: 0\)/);
+});
+
+// --- Links (A2): the real Links section in a vm with a fake WebSocket.
+const linksSource = source.slice(source.indexOf('// --- Links ---'), source.indexOf('// --- Driven-tab marking'));
+
+function linksHarness({ owners = new Map(), driven = [] } = {}) {
+  const sockets = [];
+  const timers = [];
+  const handled = [];
+  const painted = [];
+  let alarm;
+  class FakeWS {
+    static OPEN = 1;
+    constructor(url) { this.url = url; this.readyState = 0; this.sent = []; sockets.push(this); }
+    send(data) { this.sent.push(JSON.parse(data)); }
+    // A browser fires onclose asynchronously — by then connect() has moved link.socket on.
+    close() { this.readyState = 3; setImmediate(() => this.onclose?.()); }
+    open() { this.readyState = 1; this.onopen(); }
+    drop() { this.readyState = 3; this.onclose(); }
+    recv(obj) { return this.onmessage({ data: JSON.stringify(obj) }); }
+  }
+  const drivenTabs = new Set(driven);
+  const context = vm.createContext({
+    WS_URL: 'ws://127.0.0.1:9333/ws', BOOT_TS_P: Promise.resolve(123), PROFILE_ID: 'pid', PROFILE_NAME: 'oak', INSTALL_TYPE: 'dev',
+    idReady: Promise.resolve(), installReady: Promise.resolve(), WebSocket: FakeWS, crypto: { randomUUID: () => 'req-1' },
+    setTimeout: (fn, ms) => timers.push({ fn, ms }), clearTimeout() {},
+    chrome: { runtime: { getManifest: () => ({ version: '9.9.9' }) }, alarms: { create() {}, onAlarm: { addListener: (fn) => { alarm = fn; } } } },
+    logLine() {}, drivenTabs, ownerOf: (tabId) => (drivenTabs.has(tabId) ? owners.get(tabId) || 'local' : null),
+    inflight: new Map(), pillBusy: new Map(), tabActivity: new Map(), idleLabel: () => 'AI idle',
+    pillWrite: (tabId, [label]) => painted.push([tabId, label]),
+    handle: async (msg) => { handled.push({ ...msg }); return 'ok'; },
+    pageErrorsFor: async () => null, currentActivity: () => false,
+  });
+  vm.runInContext(linksSource + '\nthis.links = links; this.linkOpen = linkOpen;', context);
+  const flush = () => new Promise((r) => setImmediate(r));
+  const fire = (ms) => timers.splice(0).filter((t) => t.ms === ms || (timers.push(t), false)).forEach((t) => t.fn());
+  return { context, sockets, timers, handled, painted, flush, fire, alarm: () => alarm() };
+}
+
+test('links: boot dials local with its handshake query, journal queues until open', async () => {
+  const h = linksHarness();
+  await h.flush();
+  assert.equal(h.sockets.length, 1);
+  assert.equal(h.sockets[0].url, 'ws://127.0.0.1:9333/ws?v=9.9.9&id=pid&name=oak&install=dev&boot=123');
+  h.context.journal('boot', null, 'v9.9.9');
+  assert.deepEqual(h.sockets[0].sent, [], 'not open yet — queued, not lost');
+  h.sockets[0].open();
+  assert.deepEqual(h.sockets[0].sent.map((e) => e.kind), ['boot']);
+  assert.equal(h.context.linkOpen('local'), true);
+});
+
+test('links: every link strips caller _fields, tags _link and replies on the receiving socket', async () => {
+  const h = linksHarness();
+  await h.flush();
+  const local = h.sockets[0];
+  local.open();
+  await local.recv({ id: 1, type: 'snap', urlMatch: 'x', _tabId: 99, _pill: true, _markedByMe: true, _warn: 'forged', _link: 'cloud' });
+  assert.deepEqual(h.handled[0], { id: 1, type: 'snap', urlMatch: 'x', _link: 'local' });
+  assert.deepEqual(local.sent, [{ id: 1, ok: true, result: 'ok' }], 'a forged _warn never reaches the reply');
+  // A second link runs at the same time and keeps its own replies.
+  h.context.addLink({ id: 'cloud', label: 'cloud', url: 'wss://hub.test/arm', retry: [1000, 30000], dial: async () => 'wss://hub.test/arm' });
+  h.context.connect(h.context.links.get('cloud'));
+  await h.flush();
+  const cloud = h.sockets[1];
+  cloud.open();
+  await cloud.recv({ id: 2, type: 'click', urlMatch: 'y', _link: 'local' });
+  assert.equal(h.handled[1]._link, 'cloud', 'a peer cannot claim to be another link');
+  assert.deepEqual(cloud.sent, [{ id: 2, ok: true, result: 'ok' }]);
+  assert.equal(local.sent.length, 1, 'the cloud reply never lands on the local socket');
+  // Journal and diagnostics are local-only.
+  h.context.journal('mark', 7);
+  assert.equal(cloud.sent.length, 1);
+  assert.equal(local.sent.at(-1).kind, 'mark');
+  const pending = h.context.requestDiagnostics({ action: 'status' });
+  assert.equal(local.sent.at(-1).type, 'diagnostics');
+  await cloud.recv({ type: 'diagnostics-result', requestId: 'req-1', ok: true, result: 'from the hub' });
+  await local.recv({ type: 'diagnostics-result', requestId: 'req-1', ok: true, result: 'from local' });
+  assert.equal((await pending).result, 'from local', 'a remote link cannot answer the local settings request');
+});
+
+test('links: a drop reconnects that link with its backoff, paints only its tabs, and the alarm re-dials only dead links', async () => {
+  const h = linksHarness({ driven: [7, 8], owners: new Map([[8, 'cloud']]) });
+  await h.flush();
+  const local = h.sockets[0];
+  local.open();
+  h.context.addLink({ id: 'cloud', label: 'cloud', url: 'wss://hub.test/arm', retry: [1000, 4000], dial: async () => 'wss://hub.test/arm' });
+  h.context.connect(h.context.links.get('cloud'));
+  await h.flush();
+  const cloud = h.sockets[1];
+  cloud.open();
+  h.timers.length = 0;
+  cloud.drop();
+  assert.equal(h.context.linkOpen('cloud'), false);
+  assert.equal(h.context.linkOpen('local'), true, 'one link down leaves the other up');
+  assert.deepEqual(h.timers.map((t) => t.ms).sort((a, b) => a - b), [1000, 2500]);
+  assert.equal(h.context.links.get('cloud').backoff, 2000, 'backoff doubles per drop');
+  h.fire(2500);
+  assert.deepEqual(h.painted, [[8, '⚠ bridge offline — reconnecting…']], 'only the dropped link\'s tab shows offline');
+  h.fire(1000);
+  await h.flush();
+  assert.equal(h.sockets.length, 3);
+  assert.equal(h.sockets[2].url, 'wss://hub.test/arm');
+  h.sockets[2].open();
+  assert.equal(h.context.links.get('cloud').backoff, 1000, 'an open resets the backoff');
+  assert.deepEqual(h.painted.at(-1), [8, 'AI idle'], 'reconnect repaints the tabs that showed offline');
+  // Local keeps its flat 500ms; the keepalive alarm re-dials only dead links.
+  h.timers.length = 0;
+  local.drop();
+  assert.ok(h.timers.some((t) => t.ms === 500));
+  assert.equal(h.context.links.get('local').backoff, 500);
+  h.alarm();
+  await h.flush();
+  assert.equal(h.sockets.length, 4, 'one re-dial: local (cloud is open)');
+  assert.match(h.sockets[3].url, /^ws:\/\/127\.0\.0\.1:9333\/ws\?v=/);
+});
+
+test('links: a seat-taken loser stands down without a hot reconnect', async () => {
+  const h = linksHarness();
+  await h.flush();
+  const local = h.sockets[0];
+  local.open();
+  h.context.journal('boot');
+  h.timers.length = 0;
+  await local.recv({ type: 'seat-taken' });
+  assert.equal(h.context.links.get('local').socket, null);
+  local.drop();
+  assert.deepEqual(h.timers, [], 'the keepalive alarm re-probes instead');
+  assert.equal(h.handled.length, 0);
+});
+
+// --- Tab ownership per link (A2): findTab's gate, in a vm.
+function ownershipHarness({ driven = [], owners = [], reclaimed = [] } = {}) {
+  const marked = [];
+  const recorded = [];
+  const tabs = [{ id: 7, url: 'https://a.test/x', title: 'A' }, { id: 8, url: 'https://b.test/', title: 'B' }, { id: 9, url: 'https://c.test/', title: 'C' }];
+  const context = vm.createContext({
+    drivenTabs: new Set(driven), tabOwner: new Map(owners), humanReclaimed: new Map(reclaimed.map((id) => [id, Date.now()])),
+    links: new Map([['local', { label: 'local' }], ['cloud', { label: 'cloud' }]]),
+    persist() {}, setFavicon: async () => {}, recordActivity: (tabId) => recorded.push(tabId),
+    markTab: async (tabId) => { context.drivenTabs.add(tabId); marked.push(tabId); },
+    chrome: { tabs: { query: async () => tabs } },
+  });
+  const findTabSource = source.slice(source.indexOf('const CROSS_LINK_READS'), source.indexOf('async function cmdFetch('));
+  vm.runInContext(findTabSource, context);
+  return { context, marked, recorded };
+}
+
+test('ownership: another link may only read a driven tab — every other command is refused before it marks or records', async () => {
+  const { context, marked, recorded } = ownershipHarness({ driven: [7], owners: [[7, 'cloud']] });
+  for (const type of ['click', 'fill', 'eval', 'wait', 'navigate', 'close', 'note', 'mark', 'release', 'activate', 'emulate', 'unemulate', 'grid', 'scroll', 'fetch', 'dialog', 'upload']) {
+    await assert.rejects(
+      context.findTab({ type, urlMatch: 'a.test', _link: 'local' }),
+      /driven through the cloud link — from local you can only read it \(snap, shot, measure, console, ask, perf, net\), nothing ran\. To act on that page, open your own tab/,
+      type
+    );
+  }
+  assert.deepEqual(marked, []);
+  assert.deepEqual(recorded, []);
+  for (const type of ['snap', 'shot', 'measure', 'console', 'ask', 'perf', 'net']) {
+    assert.equal((await context.findTab({ type, urlMatch: 'a.test', _link: 'local' })).id, 7, type);
+  }
+  assert.equal(context.tabOwner.get(7), 'cloud', 'a read never moves ownership');
+  assert.deepEqual(marked, [], 'a read on a driven tab never re-marks it');
+  // The owner drives as before.
+  assert.equal((await context.findTab({ type: 'click', urlMatch: 'a.test', _link: 'cloud' })).id, 7);
+});
+
+test('ownership: the first command claims an undriven tab for its link; legacy driven tabs are local', async () => {
+  const { context, marked } = ownershipHarness({ driven: [9] }); // 9: driven, no recorded owner (pre-links state)
+  const msg = { type: 'click', urlMatch: 'b.test', _link: 'local' };
+  await context.findTab(msg);
+  assert.equal(context.tabOwner.get(8), 'local');
+  assert.equal(msg._markedByMe, true);
+  assert.deepEqual(marked, [8]);
+  // The cloud link may read the local tab but not act on it.
+  await context.findTab({ type: 'snap', urlMatch: 'b.test', _link: 'cloud' });
+  await assert.rejects(context.findTab({ type: 'click', urlMatch: 'b.test', _link: 'cloud' }), /driven through the local link — from cloud/);
+  await assert.rejects(context.findTab({ type: 'click', urlMatch: 'c.test', _link: 'cloud' }), /driven through the local link/);
+  // A foreign read on an UNdriven tab claims it for the reader (every command marks).
+  await context.findTab({ type: 'snap', urlMatch: 'a.test', _link: 'cloud' });
+  assert.equal(context.tabOwner.get(7), 'cloud');
+});
+
+test('ownership: a foreign mark cannot launder the human\'s ⏏ reclaim', async () => {
+  const { context } = ownershipHarness({ driven: [7], owners: [[7, 'cloud']], reclaimed: [8] });
+  context.drivenTabs.add(8);
+  context.tabOwner.set(8, 'cloud');
+  await assert.rejects(context.findTab({ type: 'mark', urlMatch: 'b.test', _link: 'local' }), /driven through the cloud link/);
+  assert.equal(context.humanReclaimed.has(8), true);
 });
