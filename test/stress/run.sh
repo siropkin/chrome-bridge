@@ -9,8 +9,10 @@
 #     sections need a rendering window — occluded windows suspend rendering);
 #     a preflight probe refuses the run up front when it is hidden
 #   - node test/stress/server.mjs running on :9334 (run.sh starts it if down)
-# Every test tab this suite opens, it closes. Expected failures assert their
-# error text; a summary with PASS/FAIL counts prints at the end.
+# Every test tab this suite opens, it closes (the `cleanup` section; fixture
+# tabs a partial or aborted earlier run left behind are swept at startup).
+# Expected failures assert their error text; a summary with PASS/FAIL counts
+# prints at the end.
 set -u
 export BRIDGE_DIAGNOSTICS_TEST=1
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
@@ -1014,6 +1016,27 @@ if ! curl -fsS -m 2 http://localhost:9334/api/data >/dev/null 2>&1; then
   fi
   ( node "$S/server.mjs" &>/dev/null & )
 fi
+# Start clean: a partial run (sections without `cleanup`) or an aborted one
+# leaves fixture tabs open, and the next run's commands on those matches are
+# refused as ambiguous across profiles — dozens of failures that read like a
+# regression. Close the leftovers first, by exact id — only on the suite's two
+# profiles and only at the exact URLs the suite opens (a repo page on GitHub
+# whose path contains test/stress/fixtures is the user's tab, not a leftover).
+"${CLI[@]}" tabs 2>/dev/null | SWEEP_PREFIXES="file://$S/fixtures/
+$FX/
+file://$REPO/test/upload.html" SWEEP_PROFILES="$P1 $P2" node -e '
+  let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => {
+    let t = []; try { t = JSON.parse(s); } catch {}
+    const prefixes = process.env.SWEEP_PREFIXES.split("\n").filter(Boolean);
+    const profiles = process.env.SWEEP_PROFILES.split(" ").filter(Boolean);
+    for (const x of t) {
+      const u = x.url || "";
+      if (x.profile && !profiles.includes(x.profile)) continue; // rows carry no profile with one connected
+      if (prefixes.some((p) => u.startsWith(p)) || /^https?:\/\/(localhost|127\.0\.0\.1):9334\/(fixtures|api)\//.test(u)) console.log(x.id + " " + (x.profile || ""));
+    }
+  });' | while read -r id prof; do
+  "${CLI[@]}" close "id:$id" ${prof:+--profile "$prof"} >/dev/null 2>&1 && echo "swept a leftover fixture tab from an earlier run: id:$id${prof:+ ($prof)}"
+done
 # Window preflight: trusted input, pixels and dialogs need profile 1's window
 # really on screen. Hidden, those sections fail one by one with product-
 # shaped messages ("trusted ⏏ click did not release") that read like a
