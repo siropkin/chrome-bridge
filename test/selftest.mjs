@@ -1186,6 +1186,17 @@ try {
     assert(bg.includes('__bridgeTyping') && bg.includes('another type is still running'), 'ext: overlapping type refuses while a previous loop runs (#32)');
     assert(bg.includes("closest?.('[contenteditable]')") && bg.includes('anchorNode'), 'ext: type follows the live caret when the editor rewrites the caret block mid-typing (#30)');
     assert(bg.includes('no observable page effect') && bg.includes('MutationObserver'), 'ext: click watches for an observable effect and names --trusted when the app ignored it (#23)');
+    {
+      // A link's navigate event fires INSIDE its click dispatch: a listener
+      // armed after it misses a slow navigation and the click reads as a
+      // no-op ('retry with --trusted' → double submit). Both observers.
+      const armedFirst = (start, dispatch) => {
+        const i = bg.indexOf(start), j = bg.indexOf("nav?.addEventListener('navigate', started)", i), k = bg.indexOf(dispatch, i);
+        return i >= 0 && j > i && k > j;
+      };
+      assert(armedFirst('const clickSrc', 'pair(1);') && armedFirst('const pressSrc', "dispatchEvent(new KeyboardEvent('keydown'"), 'ext: click/press arm the navigate listener before dispatching (slow navigations are not no-ops)');
+      assert(bg.includes('async function waitForCommit') && /— page navigating\\b\/\.test\(actionResult\) \|\| t0\?\.pendingUrl/.test(bg), 'ext: --diff waits for the commit of a started navigation instead of snapping the old page');
+    }
     assert(bg.includes('cssVisualViewport.clientWidth'), 'ext: shot --full clips to at least the viewport size (no narrow-strip full shots, #24)');
     assert(bg.includes('settleFrames') && bg.split('await settleFrames(').length === 3, 'ext: captures wait two rAFs before reading the compositor (mid-redirect tiled-shot race, #25)');
     assert(bg.includes('hash-only navigation') && bg.includes("split('#')[0]"), 'ext: nav to a same-document #hash URL warns the view was not re-validated (#26)');

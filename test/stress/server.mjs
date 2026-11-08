@@ -34,6 +34,28 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json', ...cors });
     return res.end(JSON.stringify({ ok: true, id: req.url.split('/').pop(), blob: 'b'.repeat(2200) }));
   }
+  if (req.url.startsWith('/api/slowcommit')) {
+    // Fixed (?ms=, default 1500, cap 6000), unlike /api/slow's SLOW_MS: the
+    // point is a commit that lands AFTER the click observer (350ms) and the
+    // --diff settle — the bridge waits up to 8s for it, so CI slowness can't
+    // break it.
+    const q = new URL(req.url, 'http://x').searchParams;
+    // ?slowload: commits at once, load event 9s later (past the 8s waits).
+    if (q.has('slowload')) {
+      res.writeHead(200, { 'Content-Type': 'text/html', ...cors });
+      res.write('<!doctype html><title>slowcommit landed</title><h1>landed</h1>');
+      setTimeout(() => res.end(), 9000);
+      return;
+    }
+    setTimeout(() => {
+      // ?nocontent: Chrome drops the pending navigation without committing.
+      if (q.has('nocontent')) { res.writeHead(204, cors); return res.end(); }
+      res.writeHead(200, { 'Content-Type': 'text/html', ...cors });
+      // ?same: a page whose form POSTs back to its own URL (same-URL commit).
+      res.end('<!doctype html><title>slowcommit landed</title><h1>landed</h1>' + (q.has('same') ? '<form method="post"><button id="again">again</button></form>' : ''));
+    }, Math.min(Number(q.get('ms')) || 1500, 6000));
+    return;
+  }
   if (req.url === '/api/slow') {
     // SLOW_MS: CI sets 100 — the 800ms default + CI slowness outruns the 3s
     // --diff settle window, and issue55's nav verdict can't land in time.

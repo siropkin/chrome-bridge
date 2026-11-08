@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>slowcommit</title>
+<!-- A navigation the server answers slowly (1.5s — an OAuth consent whose
+     callback does a token exchange) stays provisional past the click effect
+     observer's 350ms window and the --diff settle: the action must read as
+     navigating, never as 'no observable page effect … retry with --trusted'.
+     Absolute URLs, same hardcoded-9334 convention as navlink.html. -->
+<form method="post" action="http://localhost:9334/api/slowcommit?post&ms=4000"><button id="post">authorize</button></form>
+<a id="link" href="http://localhost:9334/api/slowcommit?link">slow link</a>
+<a id="nocontent" href="http://localhost:9334/api/slowcommit?nocontent">204 link</a>
+<a id="slowload" href="http://localhost:9334/api/slowcommit?slowload">slow load</a>
+<form id="f2" method="post" action="http://localhost:9334/api/slowcommit?enter">
+  <input id="q" onkeydown="if (event.key === 'Enter') document.getElementById('f2').requestSubmit()">
+</form>

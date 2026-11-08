@@ -827,6 +827,43 @@ s_issues() {
   assert_grep "nav click --diff reports the navigation" "$OUT/issue55.log" 'navigated to http://localhost:9334/api/slow'
   assert_ngrep "nav click --diff drops the stale noop warning" "$OUT/issue55.log" 'no observable page effect'
   "${CLI[@]}" close "api/slow" --profile "$P1" >/dev/null 2>&1
+  # A navigation the server answers slowly stays provisional past the click
+  # observer (350ms) and the --diff settle: it read as 'uncertain … no
+  # observable page effect … retry with --trusted' and the retry double-
+  # submitted (found live on Cloudflare's wrangler-login consent page).
+  # By id: while the navigation is provisional the tab still shows
+  # slowcommit.html, so a URL match on the destination finds nothing.
+  sc_open() { "${CLI[@]}" open "$FX/slowcommit.html" --profile "$P1" 2>/dev/null | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2; }
+  sc_done() { "${CLI[@]}" wait "id:$1" --text landed --timeout 8000 --profile "$P1" >/dev/null 2>&1; "${CLI[@]}" close "id:$1" --profile "$P1" >/dev/null 2>&1; }
+  : >"$OUT/slowcommit.log"
+  scid=$(sc_open)
+  "${CLI[@]}" click "id:$scid" '#post' --diff --profile "$P1" >>"$OUT/slowcommit.log" 2>&1
+  assert_grep "slow form POST click --diff waits for the commit" "$OUT/slowcommit.log" '^succeeded · clicked #post — page navigating — navigated to http://localhost:9334/api/slowcommit\?post&ms=4000'
+  sc_done "$scid"
+  scid=$(sc_open)
+  "${CLI[@]}" click "id:$scid" '#link' --profile "$P1" >>"$OUT/slowcommit.log" 2>&1
+  assert_grep "slow link plain click answers page navigating" "$OUT/slowcommit.log" '^clicked #link — page navigating$'
+  sc_done "$scid"
+  scid=$(sc_open)
+  "${CLI[@]}" press "id:$scid" Enter '#q' --profile "$P1" >>"$OUT/slowcommit.log" 2>&1
+  assert_grep "Enter that submits slowly answers page navigating" "$OUT/slowcommit.log" '^pressed Enter on <input> — page navigating$'
+  assert_ngrep "slow navigations never say no observable page effect" "$OUT/slowcommit.log" 'no observable page effect'
+  sc_done "$scid"
+  # A navigation Chrome drops without committing (204) must not read as
+  # 'navigated to' the old URL; a same-URL POST is a real commit; a page that
+  # commits at once but loads 9s keeps its fresh snap (review findings).
+  scid=$(sc_open)
+  "${CLI[@]}" click "id:$scid" '#nocontent' --diff --profile "$P1" >"$OUT/slowcommit2.log" 2>&1
+  assert_ngrep "dropped navigation (204) is not reported as navigated" "$OUT/slowcommit2.log" 'navigated to|page navigating'
+  "${CLI[@]}" close "id:$scid" --profile "$P1" >/dev/null 2>&1
+  scid=$("${CLI[@]}" open 'http://localhost:9334/api/slowcommit?same&ms=1500' --profile "$P1" 2>/dev/null | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+  "${CLI[@]}" click "id:$scid" '#again' --diff --profile "$P1" >>"$OUT/slowcommit2.log" 2>&1
+  assert_grep "same-URL slow POST is reported as navigated" "$OUT/slowcommit2.log" '^succeeded · clicked #again — page navigating — navigated to http://localhost:9334/api/slowcommit\?same'
+  "${CLI[@]}" close "id:$scid" --profile "$P1" >/dev/null 2>&1
+  scid=$(sc_open)
+  "${CLI[@]}" click "id:$scid" '#slowload' --diff --profile "$P1" >"$OUT/slowcommit3.log" 2>&1
+  assert_grep "committed page that loads 9s still gets its fresh snap" "$OUT/slowcommit3.log" 'heading "landed"'
+  "${CLI[@]}" close "id:$scid" --profile "$P1" >/dev/null 2>&1
   # #56: upload --chooser intercepts the pick-time file input (the Slides
   # detached-input pattern) — no OS dialog, files land on the input the app
   # created at click time. Trusted trigger click → hidden tab refuses first.

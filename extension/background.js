@@ -2596,6 +2596,21 @@ const clickSrc = (target, dbl) => `(async () => {
     }
   });
   mo.observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true });
+  // A navigating click tears this context down mid-wait — answer first.
+  // pagehide fires only at COMMIT: a form POST or link whose server answers
+  // slowly (an OAuth consent → localhost callback) stays provisional far past
+  // 350ms, and the old page read as 'no observable page effect … retry with
+  // --trusted' — a double submit. The Navigation API's navigate event fires
+  // when the navigation STARTS — synchronously inside a link's click dispatch,
+  // so both listeners are armed BEFORE dispatching.
+  let settle;
+  const navSeen = new Promise((r) => { settle = r; });
+  const nav = window.navigation;
+  const started = (e) => { if (!e.destination?.sameDocument && !e.downloadRequest) gone(); };
+  const unarm = () => { removeEventListener('pagehide', gone); nav?.removeEventListener('navigate', started); settle(); };
+  const gone = () => { navigating = true; unarm(); };
+  addEventListener('pagehide', gone, { once: true });
+  nav?.addEventListener('navigate', started);
   const o = { bubbles: true, cancelable: true, composed: true, clientX: cx, clientY: cy, button: 0 };
   const pair = (detail) => {
     el.dispatchEvent(new PointerEvent('pointerover', o));
@@ -2609,12 +2624,8 @@ const clickSrc = (target, dbl) => `(async () => {
   pair(1);
   ${dbl ? `pair(2);
   el.dispatchEvent(new MouseEvent('dblclick', { ...o, detail: 2 }));` : ''}
-  // A navigating click tears this context down mid-wait — answer first.
-  await new Promise((r) => {
-    const gone = () => { navigating = true; r(); };
-    addEventListener('pagehide', gone, { once: true });
-    setTimeout(() => { removeEventListener('pagehide', gone); r(); }, 350);
-  });
+  setTimeout(unarm, 350);
+  await navSeen;
   mo.disconnect();
   if (navigating) return 'clicked ' + sel${dbl ? ' (double)' : ''} + ' — page navigating';
   // The dispatch's own el.focus() must not count as the page effect — a dead
@@ -3589,11 +3600,24 @@ const pressSrc = (keyIn, target) => `(async () => {
     }
   });
   mo.observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true });
+  // An app handler that submits on Enter starts a navigation that can stay
+  // provisional past the window (slow server) — the navigate event marks it
+  // at start, same as click; armed before dispatch (it can fire inside it).
+  let navigating = false, settle;
+  const navSeen = new Promise((r) => { settle = r; });
+  const nav = window.navigation;
+  const started = (e) => { if (!e.destination?.sameDocument && !e.downloadRequest) gone(); };
+  const unarm = () => { removeEventListener('pagehide', gone); nav?.removeEventListener('navigate', started); settle(); };
+  const gone = () => { navigating = true; unarm(); };
+  addEventListener('pagehide', gone, { once: true });
+  nav?.addEventListener('navigate', started);
   el.dispatchEvent(new KeyboardEvent('keydown', o));
   el.dispatchEvent(new KeyboardEvent('keypress', { ...o, charCode: key.length === 1 ? key.charCodeAt(0) : 0 }));
   el.dispatchEvent(new KeyboardEvent('keyup', o));
-  await new Promise((r) => setTimeout(r, 350));
+  setTimeout(unarm, 350);
+  await navSeen;
   mo.disconnect();
+  if (navigating) return 'pressed ' + keyIn + ' on <' + el.tagName.toLowerCase() + '> — page navigating';
   const effect = mutated || document.activeElement !== f0 || location.href !== u0 || el.value !== v0 || window.scrollY !== s0;
   return 'pressed ' + keyIn + ' on <' + el.tagName.toLowerCase() + '>' + (effect ? '' : ' — no observable page effect: the app may ignore synthetic keys — retry with --trusted');
 })()`;
@@ -3956,9 +3980,10 @@ async function runEval(tabId, code, world = 'auto') {
 // settle, then diff-snap, appended to the action result. playwright-mcp and
 // BrowserMCP return a post-action snapshot with every action for the same
 // reason; a diff costs fewer tokens than the full snap it replaces.
-async function observeDiff(tabId, actionResult, url0) {
+async function observeDiff(tabId, actionResult, url0, doc0) {
   try {
     const url = () => chrome.tabs.get(tabId).then((t) => t.url).catch(() => null);
+    const acted = () => actionResult.replace(/ — no observable page effect: the app may ignore synthetic \w+ — retry with --trusted/, '');
     // Navigation verdict: an executeScript on an uncommitted navigation pends
     // FOREVER (open()'s lesson) — wait for the load, then read the NEW page.
     const navVerdict = async (u1) => {
@@ -3968,21 +3993,43 @@ async function observeDiff(tabId, actionResult, url0) {
       // result right next to 'navigated to' — an agent following it re-clicks
       // a link that worked (#55). The URL change proves the action did
       // something; strip the stale warning.
-      const acted = actionResult.replace(/ — no observable page effect: the app may ignore synthetic \w+ — retry with --trusted/, '');
       await waitForLoad(tabId, 8000, true);
       const wall = await runEval(tabId, WALL_SRC).catch(() => ({}));
-      if (wall.captcha) return `needs_human · ${acted} — bot wall: ${wall.captcha} — hand off: wait <match> --human`;
-      if (wall.block) return `blocked · ${acted} — ${wall.block}`;
-      if (wall.login) return `needs_human · ${acted} — login/2FA wall — hand off: wait <match> --human`;
+      if (wall.captcha) return `needs_human · ${acted()} — bot wall: ${wall.captcha} — hand off: wait <match> --human`;
+      if (wall.block) return `blocked · ${acted()} — ${wall.block}`;
+      if (wall.login) return `needs_human · ${acted()} — login/2FA wall — hand off: wait <match> --human`;
       const snap = await runEval(tabId, SNAP_SRC(null, false, false));
-      return `succeeded · ${acted} — navigated to ${u1.slice(0, 60)} — fresh snap (refs are new):\n${snap}`;
+      return `succeeded · ${acted()} — navigated to ${u1.slice(0, 60)} — fresh snap (refs are new):\n${snap}`;
     };
+    // A navigation the action STARTED but the server hasn't answered yet
+    // (form POST / link to a slow endpoint — an OAuth consent whose callback
+    // does a token exchange) leaves tab.url on the old page: settling and
+    // snapping read the unchanged old document as 'uncertain … act again',
+    // and acting again double-submits. Wait for the commit instead.
+    const navigation = async () => {
+      const c = await waitForCommit(tabId, url0, doc0);
+      if (c?.committed) return await navVerdict(c.url);
+      if (c?.pending) return `succeeded · ${acted()} — navigation to ${c.pending.slice(0, 60)} started, server still hasn't answered after 8s (refs expired) — don't repeat the action; wait <match> --text "<expected>" or snap <match> once it lands`;
+      return null; // nothing ever moved (an aborted navigation, a 204) — observe the page as usual
+    };
+    const t0 = await chrome.tabs.get(tabId).catch(() => null);
+    if (/ — page navigating\b/.test(actionResult) || t0?.pendingUrl) {
+      const v = await navigation();
+      if (v) return v;
+      // The navigation was dropped without a new page (204, attachment) — the
+      // page-side claim is void; judge the page as usual.
+      actionResult = actionResult.replace(/ — page navigating\b/, '');
+    }
     let url1 = await url();
     if (url1 && url0 && url1 !== url0) return await navVerdict(url1);
     // Bound the settle: a click that starts a navigation mid-settle leaves the
     // eval pending on the dying document — race it, then re-check the URL.
     // 4s: the settle itself caps at 3s, so anything past that is a pend.
     await Promise.race([runEval(tabId, SETTLE_SRC).catch(() => null), new Promise((r) => setTimeout(r, 4_000))]);
+    if ((await chrome.tabs.get(tabId).catch(() => null))?.pendingUrl) {
+      const v = await navigation();
+      if (v) return v;
+    }
     url1 = await url();
     if (url1 && url0 && url1 !== url0) return await navVerdict(url1);
     const wall = await runEval(tabId, WALL_SRC);
@@ -4045,11 +4092,48 @@ async function actAndVerify(tabId, msg, run) {
   return await withSnap(tabId, async () => {
     check();
     const url0 = (await chrome.tabs.get(tabId)).url;
+    const doc0 = await docId(tabId); // tells a same-URL commit from a dropped navigation
     await runEval(tabId, SNAP_SRC(null, false, false)); // pre-action baseline
     check();
     const result = await run(check);
-    return await observeDiff(tabId, result, url0);
+    return await observeDiff(tabId, result, url0, doc0);
   });
+}
+
+// Commit wait for a navigation an action started: chrome.tabs.get polled, never
+// executeScript while a pendingUrl shows (it pends forever on an uncommitted
+// navigation). A changed committed URL is a commit (navVerdict then waits for
+// the load). A pendingUrl that clears with the URL unchanged is a commit only
+// if the document changed (POST/reload to the same URL) — Chrome also drops
+// the pending entry WITHOUT committing (204, Content-Disposition: attachment,
+// abort), and that must not read as 'navigated'. Returns {committed, url},
+// {pending} if still uncommitted at the timeout, or null when nothing moved —
+// the browser registers a navigation within ms of its start, so 1s with no
+// pendingUrl means there is none.
+async function docId(tabId) {
+  try {
+    const [r] = await chrome.scripting.executeScript({ target: { tabId }, world: 'ISOLATED', func: () => 0 });
+    return r?.documentId || null;
+  } catch {
+    return null;
+  }
+}
+async function waitForCommit(tabId, url0, doc0, timeout = 8000) {
+  const t0 = Date.now();
+  let moving = false;
+  for (;;) {
+    const t = await chrome.tabs.get(tabId).catch(() => null);
+    if (!t) return null;
+    if (!t.pendingUrl && t.url && t.url !== url0) return { committed: true, url: t.url };
+    if (t.pendingUrl) moving = true;
+    else if (moving) {
+      const d = await docId(tabId);
+      return doc0 && d && d !== doc0 ? { committed: true, url: t.url } : null;
+    }
+    if (!moving && Date.now() - t0 >= 1000) return null;
+    if (Date.now() - t0 >= timeout) return { pending: t.pendingUrl || t.url };
+    await new Promise((r) => setTimeout(r, 100));
+  }
 }
 
 // Bounded wait for a tab to reach status 'complete' — nav/open then read as
