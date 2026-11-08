@@ -9,9 +9,25 @@ import vm from 'node:vm';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-const PORT = 9871;
+// A free ephemeral port per run, not a fixed one: with a fixed port two
+// concurrent selftests (two agents, a pre-push hook beside a manual run)
+// took each other's server down, and the loser failed at whatever check it
+// had reached ("cli stop", "server did not boot") — a fake regression.
+const PORT = await new Promise((resolve, reject) => {
+  const probe = net.createServer();
+  probe.once('error', reject);
+  probe.listen(0, '127.0.0.1', () => {
+    const { port } = probe.address();
+    probe.close(() => resolve(port));
+  });
+});
 const ROOT = new URL('..', import.meta.url).pathname;
 const diagnosticDirectory = fs.mkdtempSync(join(tmpdir(), 'bridge-selftest-'));
+// Every file a run writes lives in its own scratch dir: fixed /tmp paths let
+// two concurrent runs delete each other's files mid-test (an uncaught ENOENT,
+// or an upload of a vanished file failing an unrelated check).
+const scratch = fs.mkdtempSync(join(tmpdir(), 'bridge-selftest-run-'));
+const scratchFile = (name) => join(scratch, name);
 const env = { ...process.env, BRIDGE_PORT: String(PORT), BRIDGE_CMD_TIMEOUT_MS: '750', BRIDGE_DIAGNOSTICS_DIR: diagnosticDirectory, BRIDGE_DIAGNOSTICS_TEST: '1' };
 // The fake extension's handshake version mirrors the repo manifest — cli
 // health compares the two, and a hardcode here would trip its warning.
@@ -293,7 +309,7 @@ try {
   // warns on stderr (exit code unchanged); a symlinked install tracks the
   // repo and stays quiet.
   {
-    const home = fs.mkdtempSync('/tmp/chrome-bridge-selftest-home-');
+    const home = fs.mkdtempSync(scratchFile('chrome-bridge-selftest-home-'));
     const sdir = join(home, '.claude', 'skills', 'chrome-bridge');
     fs.mkdirSync(sdir, { recursive: true });
     fs.writeFileSync(join(sdir, 'SKILL.md'), 'a stale copied skill');
@@ -348,7 +364,7 @@ try {
   }).then((r) => r.json());
   assert(stripReply.ok === true && stripReply.result === 'clean', 'server: /cmd strips client-supplied underscore-internal fields', JSON.stringify(stripReply));
 
-  const shotPath = '/tmp/chrome-bridge-selftest.png';
+  const shotPath = scratchFile('chrome-bridge-selftest.png');
   const shot = await cli('shot', 'example.com', shotPath);
   assert(shot.status === 0 && fs.readFileSync(shotPath).equals(PNG1x1) && shot.stdout.includes(', 1x1'), 'cli shot writes file + prints parsed dimensions', shot.stdout + shot.stderr);
 
@@ -358,10 +374,10 @@ try {
   assert(shotWide.status === 0 && shotWide.stdout.includes(', 1280x800') && shotWide.stderr.includes('re-run with --max 0'), 'cli shot: default cap hit prints the --max 0 reminder on stderr', shotWide.stdout + shotWide.stderr);
   const shotWideMax = await cli('shot', 'wide.example', shotPath, '--max', '1280');
   assert(shotWideMax.status === 0 && !shotWideMax.stderr.includes('--max 0'), 'cli shot: an explicit --max stays quiet', shotWideMax.stderr);
-  const nestedShot = `/tmp/chrome-bridge-selftest-${process.pid}/nested/out.png`;
+  const nestedShot = scratchFile('nested-shot/nested/out.png');
   const shotNested = await cli('shot', 'example.com', nestedShot);
   assert(shotNested.status === 0 && fs.existsSync(nestedShot), 'cli shot creates a missing output folder', shotNested.stdout + shotNested.stderr);
-  fs.rmSync(`/tmp/chrome-bridge-selftest-${process.pid}`, { recursive: true, force: true });
+  fs.rmSync(scratchFile('nested-shot'), { recursive: true, force: true });
 
   // --full is boolean: it must not swallow the next flag's value
   const shotFull = await cli('shot', 'example.com', shotPath, '--full', '--scale', '2');
@@ -422,7 +438,7 @@ try {
 
   // shot --diff: the {note, data} result — the note explains the file, the
   // CLI writes the (cropped) image and prints the dims of what it wrote.
-  const shotDiffPath = '/tmp/chrome-bridge-selftest-diff.png';
+  const shotDiffPath = scratchFile('chrome-bridge-selftest-diff.png');
   const shotDiff = await cli('shot', 'example.com', shotDiffPath, '--diff');
   assert(
     shotDiff.status === 0 && fs.readFileSync(shotDiffPath).equals(PNG1x1) && shotDiff.stdout.includes('changed region') && shotDiff.stdout.includes('saved '),
@@ -492,7 +508,7 @@ try {
   const netc = await cli('net', 'example.com', '--dur', '500', '--filter', '/api');
   assert(netc.status === 0 && netc.stdout.includes('"duration":500') && netc.stdout.includes('"filter":"/api"'), 'cli net flags', netc.stdout + netc.stderr);
   // --har: the {lines, har} shape lands in a file; the lines print unchanged
-  const harPath = '/tmp/chrome-bridge-selftest.har';
+  const harPath = scratchFile('chrome-bridge-selftest.har');
   const netHar = await cli('net', 'example.com', '--dur', '500', '--har', harPath);
   assert(
     netHar.status === 0 && netHar.stdout.includes('GET 200 /x') && fs.readFileSync(harPath, 'utf8').includes('"version": "1.2"') && netHar.stderr.includes('HAR 1.2, 1 entries'),
@@ -708,12 +724,12 @@ try {
   // with the hint.
   const fetchText = await cli('fetch', 'example.com', 'https://api.example.com/data');
   assert(fetchText.status === 0 && fetchText.stdout.includes('application/json') && fetchText.stdout.includes('{"a":1}'), 'cli fetch prints status + text body', fetchText.stdout + fetchText.stderr);
-  const fetchOut = await cli('fetch', 'example.com', 'https://api.example.com/data', '--out', '/tmp/chrome-bridge-selftest.json');
-  assert(fetchOut.status === 0 && fs.readFileSync('/tmp/chrome-bridge-selftest.json', 'utf8') === '{"a":1}' && fetchOut.stdout.includes('saved'), 'cli fetch --out writes the body', fetchOut.stdout + fetchOut.stderr);
-  fs.unlinkSync('/tmp/chrome-bridge-selftest.json');
-  const fetchBin = await cli('fetch', 'example.com', 'https://binary.example/doc', '--out', '/tmp/chrome-bridge-selftest.bin');
-  assert(fetchBin.status === 0 && fs.readFileSync('/tmp/chrome-bridge-selftest.bin').equals(Buffer.from('PDFBYTES')), 'cli fetch --out decodes binary bodies', fetchBin.stdout + fetchBin.stderr);
-  fs.unlinkSync('/tmp/chrome-bridge-selftest.bin');
+  const fetchOut = await cli('fetch', 'example.com', 'https://api.example.com/data', '--out', scratchFile('chrome-bridge-selftest.json'));
+  assert(fetchOut.status === 0 && fs.readFileSync(scratchFile('chrome-bridge-selftest.json'), 'utf8') === '{"a":1}' && fetchOut.stdout.includes('saved'), 'cli fetch --out writes the body', fetchOut.stdout + fetchOut.stderr);
+  fs.unlinkSync(scratchFile('chrome-bridge-selftest.json'));
+  const fetchBin = await cli('fetch', 'example.com', 'https://binary.example/doc', '--out', scratchFile('chrome-bridge-selftest.bin'));
+  assert(fetchBin.status === 0 && fs.readFileSync(scratchFile('chrome-bridge-selftest.bin')).equals(Buffer.from('PDFBYTES')), 'cli fetch --out decodes binary bodies', fetchBin.stdout + fetchBin.stderr);
+  fs.unlinkSync(scratchFile('chrome-bridge-selftest.bin'));
   const fetchBinNoOut = await cli('fetch', 'example.com', 'https://binary.example/doc');
   assert(fetchBinNoOut.status !== 0 && fetchBinNoOut.stderr.includes('--out'), 'cli fetch refuses a binary body without --out', fetchBinNoOut.stdout + fetchBinNoOut.stderr);
   const fetchBadUrl = await cli('fetch', 'example.com', 'not-a-url');
@@ -831,7 +847,7 @@ try {
   assert(histN.status === 0 && histN.stdout.trim().split('\n').length === 1, 'cli history -n takes the newest N', histN.stdout + histN.stderr);
   const histBad = await cli('history', '--nope');
   assert(histBad.status !== 0 && histBad.stderr.includes('unknown flag'), 'cli history rejects unknown flags', histBad.stdout + histBad.stderr);
-  const histPath = '/tmp/chrome-bridge-selftest.batch';
+  const histPath = scratchFile('chrome-bridge-selftest.batch');
   const histExport = await cli('history', 'example.com', '--batch', histPath);
   const histScript = fs.readFileSync(histPath, 'utf8');
   assert(
@@ -854,7 +870,7 @@ try {
   // contained both quote types (and a backslash), silently changing a replay.
   const quoted = `both 'quotes' and "double" \\ slash`;
   const quoteNote = await cli('note', quoted, quoted);
-  const quotePath = '/tmp/chrome-bridge-selftest-quoted.batch';
+  const quotePath = scratchFile('chrome-bridge-selftest-quoted.batch');
   const quoteExport = await cli('history', quoted, '--batch', quotePath);
   const quoteReplay = await cliStdin(fs.readFileSync(quotePath, 'utf8'), 'batch');
   let replayed;
@@ -1395,10 +1411,10 @@ try {
   // dropped out of replays: emulate dsf=N, paste --html, upload --chooser.
   const dsfRun = await cli('emulate', 'example.com', '1280', '800', 'dsf=2');
   const htmlRun = await cli('paste', 'example.com', '--html', '--', '<b>x</b>');
-  fs.writeFileSync('/tmp/chrome-bridge-selftest-upload.txt', 'x');
-  const chooserRun = await cli('upload', 'example.com', '@e5', '--chooser', '/tmp/chrome-bridge-selftest-upload.txt');
+  fs.writeFileSync(scratchFile('chrome-bridge-selftest-upload.txt'), 'x');
+  const chooserRun = await cli('upload', 'example.com', '@e5', '--chooser', scratchFile('chrome-bridge-selftest-upload.txt'));
   const waitJsRun = await cli('wait', 'example.com', '--js', "document.title === 'a b'", '--world', 'main');
-  const replayPath = '/tmp/chrome-bridge-selftest-replay.batch';
+  const replayPath = scratchFile('chrome-bridge-selftest-replay.batch');
   const replayExport = await cli('history', '--batch', replayPath);
   const replayScript = fs.readFileSync(replayPath, 'utf8');
   assert(
@@ -1427,7 +1443,7 @@ try {
     waitJsRun.stderr + '\n' + replayScript
   );
   fs.unlinkSync(replayPath);
-  fs.unlinkSync('/tmp/chrome-bridge-selftest-upload.txt');
+  fs.unlinkSync(scratchFile('chrome-bridge-selftest-upload.txt'));
 
   // The journal must NOT leak into the command feed — watch/history stay
   // command-focused (the ring above is the only in-memory surface).
@@ -1600,7 +1616,7 @@ try {
     // The exported replay of a routed command carries --profile (batch accepts
     // a leading one) — replaying it in a multi-profile setup lands in the same
     // profile instead of relying on auto-routing.
-    const histPath2 = '/tmp/chrome-bridge-selftest2.batch';
+    const histPath2 = scratchFile('chrome-bridge-selftest2.batch');
     await cli('history', '--batch', histPath2);
     assert(
       fs.readFileSync(histPath2, 'utf8').includes('--profile beta snap sample.org'),
@@ -1638,7 +1654,7 @@ try {
     const pinnedTabs = await cli('tabs', '--profile', 'beta');
     const feedPinned = (await fetch(`http://127.0.0.1:${PORT}/log`).then((r) => r.json())).lines;
     const pinnedFeedLine = feedPinned.filter((a) => a.line.includes('tabs @')).slice(-1)[0]?.line || '';
-    const histPath3 = '/tmp/chrome-bridge-selftest3.batch';
+    const histPath3 = scratchFile('chrome-bridge-selftest3.batch');
     await cli('history', '--batch', histPath3);
     assert(
       pinnedTabs.status === 0 && pinnedFeedLine.includes('tabs @beta') && fs.readFileSync(histPath3, 'utf8').includes('--profile beta tabs'),
@@ -1944,5 +1960,6 @@ try {
 } finally {
   server.kill();
   fs.rmSync(diagnosticDirectory, { recursive: true, force: true });
+  fs.rmSync(scratch, { recursive: true, force: true });
 }
 process.exit(0);
