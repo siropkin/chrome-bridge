@@ -5,8 +5,9 @@
 # Preconditions:
 #   - two Chrome profiles connected (multi-profile sections; else they SKIP);
 #     profile 1 = first connected, or pin it by name: STRESS_P1=<name>
-#   - the profile-1 Chrome window must be VISIBLE (pixel/shot/dialog sections
-#     need a rendering window — occluded windows suspend rendering)
+#   - the profile-1 Chrome window must be VISIBLE (pixel/shot/dialog/trusted
+#     sections need a rendering window — occluded windows suspend rendering);
+#     a preflight probe refuses the run up front when it is hidden
 #   - node test/stress/server.mjs running on :9334 (run.sh starts it if down)
 # Every test tab this suite opens, it closes. Expected failures assert their
 # error text; a summary with PASS/FAIL counts prints at the end.
@@ -48,6 +49,19 @@ need2() { [ -n "$P2" ]; } # multi-profile sections skip silently via the caller
 # the hidden-tab path stays covered by local runs). The diff MECHANICS under
 # test are visibility-independent; GitHub sets CI=true.
 ci_vis() { [ -n "${CI:-}" ] && "${CLI[@]}" activate "$1" --profile "$P1" >/dev/null 2>&1 || true; }
+# front <match> [--profile p]: activate a tab, and say so when the WINDOW is
+# off screen (activate replies "tab is still hidden"). Every trusted/pixel
+# check after that fails for this reason alone, in messages that read like a
+# product regression — the human switching apps mid-run did exactly that. The
+# same activate call as before, only observed; the summary names the sections.
+OFFSCREEN=""
+front() {
+  if "${CLI[@]}" activate "$@" 2>&1 | grep -q 'still hidden'; then
+    echo "WARN [$SECTION] profile 1's window is off screen (activate: tab is still hidden) — the trusted/pixel checks that follow fail for that alone"
+    case " $OFFSCREEN " in *" $SECTION "*) ;; *) OFFSCREEN="$OFFSCREEN $SECTION" ;; esac
+  fi
+  return 0
+}
 
 # ---------------------------------------------------------------- section 1
 s_profiles() {
@@ -168,7 +182,7 @@ s_interact() {
   assert_grep "untrusted canvas click recorded" "$OUT/03-rich.log" 'canvas click isTrusted=false'
   # trusted input needs the tab in front (#33) — opens land active:false, so
   # without activate this click is at the mercy of the window's active tab
-  "${CLI[@]}" activate rich.html --profile "$P1" >/dev/null 2>&1
+  front rich.html --profile "$P1"
   "${CLI[@]}" click rich.html '#pad' --trusted --diff >/dev/null 2>&1
   "${CLI[@]}" eval rich.html "document.getElementById('pad-status').textContent" >>"$OUT/03-rich.log"
   assert_grep "trusted canvas click: isTrusted=true" "$OUT/03-rich.log" 'canvas click isTrusted=true'
@@ -404,7 +418,7 @@ s_net() {
 s_perf() {
   SECTION=perf
   "${CLI[@]}" open "$FX/anim.html" --profile "$P1" >/dev/null
-  "${CLI[@]}" activate anim.html >/dev/null 2>&1 || true
+  front anim.html
   "${CLI[@]}" perf anim.html --dur 2000 >"$OUT/perf.log" 2>&1
   assert_grep "perf reports renderer CPU" "$OUT/perf.log" '^cpu +renderer [0-9]+%'
   assert_grep "perf splits main-thread busy" "$OUT/perf.log" '^main +busy [0-9]+% — script'
@@ -436,10 +450,10 @@ s_marks() {
   "${CLI[@]}" tabs "static.html?x=marks" | grep -q '"driven":true' && ok "synthetic ⏏ click ignored (isTrusted guard)" || bad "synthetic click released the tab"
   # pill ⏏: a trusted (CDP Input) click releases — the human's escape hatch
   # (activate first: trusted input refuses hidden tabs now, #33)
-  "${CLI[@]}" activate "static.html?x=marks" --profile "$P1" >/dev/null 2>&1
-  "${CLI[@]}" click "static.html?x=marks" "#bridge-disconnect" --trusted >/dev/null 2>&1
+  front "static.html?x=marks" --profile "$P1"
+  "${CLI[@]}" click "static.html?x=marks" "#bridge-disconnect" --trusted >"$OUT/07-eject.log" 2>&1
   sleep 1
-  "${CLI[@]}" tabs "static.html?x=marks" | grep -q '"driven":true' && bad "trusted ⏏ click did not release" || ok "trusted ⏏ click releases the tab"
+  "${CLI[@]}" tabs "static.html?x=marks" | grep -q '"driven":true' && bad "trusted ⏏ click did not release (click output: out/07-eject.log)" || ok "trusted ⏏ click releases the tab"
   # The reclaim is ENFORCED (v1.24): the next plain command on a ⏏-released
   # tab must REFUSE — otherwise an agent in a command loop re-marks the tab
   # within seconds and, from the human's seat, nobody noticed.
@@ -737,7 +751,7 @@ s_trusted() {
   "${CLI[@]}" open "$FX/static.html?x=trusted" --profile "$P1" >/dev/null 2>&1
   "${CLI[@]}" click "x=trusted" 'button' --trusted --profile "$P1" >"$OUT/trusted-hidden.log" 2>&1 && bad "trusted click on a hidden tab must fail" || true
   assert_grep "hidden-tab trusted refusal names the remedy" "$OUT/trusted-hidden.log" 'tab is hidden.*activate'
-  "${CLI[@]}" activate "x=trusted" --profile "$P1" >/dev/null 2>&1
+  front "x=trusted" --profile "$P1"
   "${CLI[@]}" eval "x=trusted" 'document.visibilityState' --profile "$P1" >"$OUT/trusted-vis.log" 2>&1
   assert_grep "activate makes the tab visible" "$OUT/trusted-vis.log" '^visible$'
   "${CLI[@]}" click "x=trusted" 'button' --trusted --profile "$P1" >"$OUT/trusted-front.log" 2>&1
@@ -745,7 +759,7 @@ s_trusted() {
   "${CLI[@]}" close "x=trusted" --profile "$P1" >/dev/null 2>&1
   # #51: the trusted path names a modal the click opened, same as synthetic.
   "${CLI[@]}" open "$FX/modal.html?x=trusted" --profile "$P1" >/dev/null 2>&1
-  "${CLI[@]}" activate "modal.html?x=trusted" --profile "$P1" >/dev/null 2>&1
+  front "modal.html?x=trusted" --profile "$P1"
   "${CLI[@]}" click "modal.html?x=trusted" '#open-modal' --trusted --profile "$P1" >"$OUT/trusted-modal.log" 2>&1
   assert_grep "trusted click that opens a modal says so" "$OUT/trusted-modal.log" 'a modal dialog opened as a result'
   "${CLI[@]}" close "modal.html?x=trusted" --profile "$P1" >/dev/null 2>&1
@@ -753,7 +767,7 @@ s_trusted() {
   # submit) — CDP keyDown without `text` produces neither, and Gmail's search
   # silently ignored a 'real' Enter while synthetic Enter fired its router.
   "${CLI[@]}" open "$FX/keypress.html?x=trusted" --profile "$P1" >/dev/null 2>&1
-  "${CLI[@]}" activate "keypress.html?x=trusted" --profile "$P1" >/dev/null 2>&1
+  front "keypress.html?x=trusted" --profile "$P1"
   "${CLI[@]}" fill "keypress.html?x=trusted" '#i' 'hello' --profile "$P1" >/dev/null 2>&1
   "${CLI[@]}" press "keypress.html?x=trusted" Enter '#i' --trusted --profile "$P1" >"$OUT/trusted-enter.log" 2>&1
   "${CLI[@]}" eval "keypress.html?x=trusted" "document.getElementById('out').textContent" --profile "$P1" >>"$OUT/trusted-enter.log" 2>&1
@@ -791,7 +805,7 @@ s_issues() {
   # loaded over HTTP: file: origins are opaque, the srcdoc iframe's
   # contentDocument is unreachable there, and the descent must same-origin in
   "${CLI[@]}" open "$HTTP/framefocus.html" --profile "$P1" >/dev/null 2>&1
-  "${CLI[@]}" activate framefocus --profile "$P1" >/dev/null 2>&1
+  front framefocus --profile "$P1"
   "${CLI[@]}" type framefocus '#num' '1.5-2,3' --trusted --profile "$P1" >"$OUT/issue54.log" 2>&1
   "${CLI[@]}" eval framefocus "document.getElementById('num').value" --profile "$P1" >>"$OUT/issue54.log" 2>&1
   assert_grep "trusted type: punctuation survives a keyCode filter" "$OUT/issue54.log" '^1.5-2,3$'
@@ -818,7 +832,7 @@ s_issues() {
   "${CLI[@]}" open "$FX/chooser.html" --profile "$P1" >/dev/null 2>&1
   "${CLI[@]}" upload chooser '#pick' "$OUT/chooser1.txt" --chooser --profile "$P1" >"$OUT/issue56.log" 2>&1 && bad "chooser upload on a hidden tab must refuse" || true
   assert_grep "hidden-tab chooser refusal names activate" "$OUT/issue56.log" 'tab is hidden.*activate'
-  "${CLI[@]}" activate chooser --profile "$P1" >/dev/null 2>&1
+  front chooser --profile "$P1"
   "${CLI[@]}" upload chooser '#pick' "$OUT/chooser1.txt" --chooser --profile "$P1" >"$OUT/issue56.log" 2>&1
   assert_grep "chooser upload reports the file" "$OUT/issue56.log" 'uploaded 1 file\(s\) via the file chooser on #pick'
   "${CLI[@]}" eval chooser "document.getElementById('out').textContent" --profile "$P1" >>"$OUT/issue56.log" 2>&1
@@ -1000,6 +1014,24 @@ if ! curl -fsS -m 2 http://localhost:9334/api/data >/dev/null 2>&1; then
   fi
   ( node "$S/server.mjs" &>/dev/null & )
 fi
+# Window preflight: trusted input, pixels and dialogs need profile 1's window
+# really on screen. Hidden, those sections fail one by one with product-
+# shaped messages ("trusted ⏏ click did not release") that read like a
+# regression in whatever was just changed — stop up front and name the fix.
+needs_window() { for s in $SECTIONS; do case $s in interact|dialog|pixel|perf|marks|trusted|issues) return 0 ;; esac; done; return 1; }
+if needs_window; then
+  "${CLI[@]}" open "$FX/static.html?x=visprobe" --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" activate "static.html?x=visprobe" --profile "$P1" >/dev/null 2>&1
+  vis=$("${CLI[@]}" eval "static.html?x=visprobe" 'document.visibilityState' --profile "$P1" 2>/dev/null)
+  "${CLI[@]}" close "static.html?x=visprobe" --all --profile "$P1" >/dev/null 2>&1
+  if [ -z "$vis" ]; then
+    echo "FAIL [preflight] profile 1 ($P1): the window probe got no answer (open/activate/eval of $FX/static.html?x=visprobe failed) — check \`node cli.mjs health\` and that the extension can read $FX"
+    exit 1
+  elif [ "$vis" != visible ]; then
+    echo "FAIL [preflight] profile 1 ($P1): its Chrome window is not on screen (visibilityState: $vis) — the trusted-input/pixel/dialog checks would fail for that alone. Bring $P1's window to the front (not minimized, not covered by another app) and keep it there, or pin a visible profile: STRESS_P1=<name>"
+    exit 1
+  fi
+fi
 for sec in $SECTIONS; do
   case $sec in
     profiles) s_profiles ;; churn) s_churn ;; interact) s_interact ;; dialog) s_dialog ;;
@@ -1009,5 +1041,6 @@ for sec in $SECTIONS; do
   esac
 done
 echo
+[ -n "$OFFSCREEN" ] && echo "⚠ profile 1 ($P1)'s window was off screen during:$OFFSCREEN — those failures are the environment, not the product. Bring the window to the front, keep it there, and re-run: test/stress/run.sh$OFFSCREEN"
 echo "=== stress suite: $PASS passed, $FAIL failed ==="
 [ "$FAIL" -eq 0 ]
