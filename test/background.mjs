@@ -647,7 +647,7 @@ test('real eval capability refusal falls back without executing payload in block
 
 test('explicit ISOLATED eval never uses MAIN or CDP when capability is blocked', async () => {
   const harness = evalHarness({ blocked: ['ISOLATED'], cached: 'MAIN' });
-  await assert.rejects(harness.context.runEval(7, 'mutate()', 'ISOLATED'), /refusing CDP fallback/);
+  await assert.rejects(harness.context.runEval(7, 'mutate()', 'ISOLATED'), /--world isolated can't run caller code: Chrome \(MV3\) forbids eval.*refusing a main-world fallback/);
   assert.equal(harness.executions(), 0);
   assert.deepEqual(harness.attempts, ['ISOLATED']);
 });

@@ -3929,10 +3929,13 @@ async function runEval(tabId, code, world = 'auto') {
     return r.value;
   }
 
-  // Page CSP blocks eval() in both scripting worlds; CDP Runtime.evaluate is exempt.
-  // CDP runs in the page's MAIN world — fine for 'auto'/'MAIN', but a caller who
-  // asked for ISOLATED must not silently get page-context execution.
-  if (world === 'ISOLATED') throw new Error('ISOLATED world blocked by page CSP — refusing CDP fallback (it would run in the main world)');
+  // Page CSP blocks eval() in the MAIN world; CDP Runtime.evaluate is exempt.
+  // The ISOLATED world never evals at all: MV3 pins content scripts to the
+  // extension's own CSP (no unsafe-eval) on EVERY page — the old message
+  // blamed the page's CSP, sending agents after a page property that wasn't
+  // the cause. CDP runs in the MAIN world, so a caller who asked for ISOLATED
+  // must not silently get page-context execution either.
+  if (world === 'ISOLATED') throw new Error("--world isolated can't run caller code: Chrome (MV3) forbids eval in an extension's isolated world on every page — drop --world (runs in the page's main world, CDP fallback on strict-CSP pages) or pass --world main; refusing a main-world fallback you didn't ask for");
   await attachDbg(tabId);
   try {
     // A strict-CSP page (HN, MDN, GitHub) routes every action here, and a

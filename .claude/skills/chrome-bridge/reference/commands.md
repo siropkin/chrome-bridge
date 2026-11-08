@@ -121,8 +121,8 @@ wait <match> <css|--text t|--js expr|--human|--pixel-change> [--timeout ms] [--w
                                   value (awaited, so async checks work; '-' reads it from
                                   stdin; one expression — statements go in an IIFE; in batch
                                   quote it as one token) — mutation-driven, not a sleep loop;
-                                  --world main sees page globals (app state), DOM checks
-                                  work in either world; a timeout names the last value or error;
+                                  runs in the page world (page globals visible) — --world
+                                  isolated can't eval (MV3); a timeout names the last value or error;
                                   --human hands the tab to the user — CAPTCHA/2FA/login
                                   walls: the pill tells them it's their turn, the command
                                   blocks until they act (trusted input or navigation;

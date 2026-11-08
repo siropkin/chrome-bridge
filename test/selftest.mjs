@@ -1185,6 +1185,7 @@ try {
     assert(bg.includes("document.visibilityState === 'hidden'") && bg.includes('MessageChannel'), 'ext: type cadence on hidden tabs is an unthrottled MessageChannel hop, not a 1s-clamped setTimeout (#29/#32)');
     assert(bg.includes('__bridgeTyping') && bg.includes('another type is still running'), 'ext: overlapping type refuses while a previous loop runs (#32)');
     assert(bg.includes("closest?.('[contenteditable]')") && bg.includes('anchorNode'), 'ext: type follows the live caret when the editor rewrites the caret block mid-typing (#30)');
+    assert(bg.includes("--world isolated can't run caller code") && !bg.includes('ISOLATED world blocked by page CSP'), "ext: --world isolated names MV3's isolated-world eval ban, not the page's CSP");
     assert(bg.includes('no observable page effect') && bg.includes('MutationObserver'), 'ext: click watches for an observable effect and names --trusted when the app ignored it (#23)');
     {
       // A link's navigate event fires INSIDE its click dispatch: a listener

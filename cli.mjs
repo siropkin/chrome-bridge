@@ -289,8 +289,8 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     alternatives — pass one, not both;
                                     --js polls a page expression (awaited; '-' = stdin) until
                                     truthy and prints its value — replaces sleep-in-eval and
-                                    shell polling loops; --world main sees page globals
-                                    (app state), DOM checks work in either world;
+                                    shell polling loops; runs in the page world (page
+                                    globals visible) — --world isolated can't eval (MV3);
                                     --human hands the tab to the user — CAPTCHA/
                                     2FA/login walls — the pill asks them to act, the command
                                     blocks until trusted input or navigation (default 120s,
