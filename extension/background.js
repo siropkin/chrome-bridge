@@ -393,11 +393,14 @@ async function connect(link) {
 // races the storage read and the seat is held with extId=null until the next
 // SW cycle (days, on a healthy server). Reconnects run after idReady settled.
 // Watchdog: a WEDGED storage read (profile corruption) must not keep the
-// bridge offline forever — connect idless (the anon seat) and say so.
+// bridge offline forever — connect idless (the anon seat) and say so. Only
+// when the timer WON: logging from the timer itself fired on every healthy
+// boot too, 5s after the id had loaded — a false wedge in every swlogs.
 Promise.race([
   Promise.all([idReady, installReady]),
-  new Promise((r) => setTimeout(r, 5000)).then(() => logLine('profile-id storage read wedged (5s) — connecting without a stable id')),
-]).then(() => {
+  new Promise((r) => setTimeout(() => r('wedged'), 5000)),
+]).then((won) => {
+  if (won === 'wedged') logLine('profile-id storage read wedged (5s) — connecting without a stable id');
   for (const link of links.values()) connect(link);
 });
 

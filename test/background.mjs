@@ -830,8 +830,9 @@ test('wait --js timeout names the last value or the last error', async () => {
 // --- Links (A2): the real Links section in a vm with a fake WebSocket.
 const linksSource = source.slice(source.indexOf('// --- Links ---'), source.indexOf('// --- Driven-tab marking'));
 
-function linksHarness({ owners = new Map(), driven = [] } = {}) {
+function linksHarness({ owners = new Map(), driven = [], idReady = Promise.resolve() } = {}) {
   const sockets = [];
+  const logs = [];
   const timers = [];
   const handled = [];
   const painted = [];
@@ -849,10 +850,10 @@ function linksHarness({ owners = new Map(), driven = [] } = {}) {
   const drivenTabs = new Set(driven);
   const context = vm.createContext({
     WS_URL: 'ws://127.0.0.1:9333/ws', BOOT_TS_P: Promise.resolve(123), PROFILE_ID: 'pid', PROFILE_NAME: 'oak', INSTALL_TYPE: 'dev',
-    idReady: Promise.resolve(), installReady: Promise.resolve(), WebSocket: FakeWS, crypto: { randomUUID: () => 'req-1' },
+    idReady, installReady: Promise.resolve(), WebSocket: FakeWS, crypto: { randomUUID: () => 'req-1' },
     setTimeout: (fn, ms) => timers.push({ fn, ms }), clearTimeout() {},
     chrome: { runtime: { getManifest: () => ({ version: '9.9.9' }) }, alarms: { create() {}, onAlarm: { addListener: (fn) => { alarm = fn; } } } },
-    logLine() {}, drivenTabs, ownerOf: (tabId) => (drivenTabs.has(tabId) ? owners.get(tabId) || 'local' : null),
+    logLine: (line) => logs.push(line), drivenTabs, ownerOf: (tabId) => (drivenTabs.has(tabId) ? owners.get(tabId) || 'local' : null),
     inflight: new Map(), pillBusy: new Map(), tabActivity: new Map(), idleLabel: () => 'AI idle',
     pillWrite: (tabId, [label]) => painted.push([tabId, label]),
     handle: async (msg) => { handled.push({ ...msg }); return 'ok'; },
@@ -861,7 +862,7 @@ function linksHarness({ owners = new Map(), driven = [] } = {}) {
   vm.runInContext(linksSource + '\nthis.links = links; this.linkOpen = linkOpen;', context);
   const flush = () => new Promise((r) => setImmediate(r));
   const fire = (ms) => timers.splice(0).filter((t) => t.ms === ms || (timers.push(t), false)).forEach((t) => t.fn());
-  return { context, sockets, timers, handled, painted, flush, fire, alarm: () => alarm() };
+  return { context, sockets, timers, handled, painted, logs, flush, fire, alarm: () => alarm() };
 }
 
 test('links: boot dials local with its handshake query, journal queues until open', async () => {
@@ -874,6 +875,22 @@ test('links: boot dials local with its handshake query, journal queues until ope
   h.sockets[0].open();
   assert.deepEqual(h.sockets[0].sent.map((e) => e.kind), ['boot']);
   assert.equal(h.context.linkOpen('local'), true);
+});
+
+test('links: the boot watchdog logs a wedge only when the profile-id read lost the race', async () => {
+  const healthy = linksHarness();
+  await healthy.flush();
+  healthy.fire(5000);
+  await healthy.flush();
+  assert.deepEqual(healthy.logs, [], 'a healthy boot never claims a wedge (the timer used to log unconditionally)');
+  assert.equal(healthy.sockets.length, 1);
+  const wedged = linksHarness({ idReady: new Promise(() => {}) });
+  await wedged.flush();
+  assert.equal(wedged.sockets.length, 0, 'the first dial waits for the profile id');
+  wedged.fire(5000);
+  await wedged.flush();
+  assert.deepEqual(wedged.logs, ['profile-id storage read wedged (5s) — connecting without a stable id']);
+  assert.equal(wedged.sockets.length, 1, 'a wedged read connects idless instead of staying offline');
 });
 
 test('links: every link strips caller _fields, tags _link and replies on the receiving socket', async () => {
