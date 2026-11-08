@@ -43,7 +43,7 @@ const server = http.createServer((req, res) => {
     // ?slowload: commits at once, load event 9s later (past the 8s waits).
     if (q.has('slowload')) {
       res.writeHead(200, { 'Content-Type': 'text/html', ...cors });
-      res.write('<!doctype html><title>slowcommit landed</title><h1>landed</h1>');
+      res.write('<!doctype html><title>slowcommit landed</title><h1>landed</h1>' + (q.has('same') ? '<form method="post"><button id="again">again</button></form>' : ''));
       setTimeout(() => res.end(), 9000);
       return;
     }

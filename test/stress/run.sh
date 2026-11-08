@@ -843,6 +843,8 @@ s_issues() {
   scid=$(sc_open)
   "${CLI[@]}" click "id:$scid" '#link' --profile "$P1" >>"$OUT/slowcommit.log" 2>&1
   assert_grep "slow link plain click answers page navigating" "$OUT/slowcommit.log" '^clicked #link — page navigating$'
+  "${CLI[@]}" tabs "api/slowcommit?link" --profile "$P1" >"$OUT/slowcommit-dest.log" 2>&1
+  assert_grep "plain click returns once the navigation committed (next command finds the new URL)" "$OUT/slowcommit-dest.log" "\"id\":$scid"
   sc_done "$scid"
   scid=$(sc_open)
   "${CLI[@]}" press "id:$scid" Enter '#q' --profile "$P1" >>"$OUT/slowcommit.log" 2>&1
@@ -863,6 +865,14 @@ s_issues() {
   scid=$(sc_open)
   "${CLI[@]}" click "id:$scid" '#slowload' --diff --profile "$P1" >"$OUT/slowcommit3.log" 2>&1
   assert_grep "committed page that loads 9s still gets its fresh snap" "$OUT/slowcommit3.log" 'heading "landed"'
+  "${CLI[@]}" close "id:$scid" --profile "$P1" >/dev/null 2>&1
+  # Plain click posting back to its own URL on a page that parses for 9s: the
+  # commit wait must stay bounded (~3s), never wait for document_idle.
+  scid=$("${CLI[@]}" open 'http://localhost:9334/api/slowcommit?slowload&same' --profile "$P1" 2>/dev/null | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+  t0=$SECONDS
+  "${CLI[@]}" click "id:$scid" '#again' --profile "$P1" >"$OUT/slowcommit4.log" 2>&1
+  echo "elapsed:$((SECONDS - t0))" >>"$OUT/slowcommit4.log"
+  assert_grep "same-URL plain click on a slow-parsing page answers within 5s" "$OUT/slowcommit4.log" '^elapsed:[0-5]$'
   "${CLI[@]}" close "id:$scid" --profile "$P1" >/dev/null 2>&1
   # #56: upload --chooser intercepts the pick-time file input (the Slides
   # detached-input pattern) — no OS dialog, files land on the input the app

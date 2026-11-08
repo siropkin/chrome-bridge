@@ -4079,7 +4079,17 @@ function withSnap(tabId, fn) {
 // — click A, then click B --diff showed A's effects in B's diff, and with no
 // prior snap it returned a full tree labeled as a diff.
 async function actAndVerify(tabId, msg, run) {
-  if (!msg.diff) return await run();
+  if (!msg.diff) {
+    const url0 = (await chrome.tabs.get(tabId).catch(() => null))?.url;
+    const result = await run();
+    // The navigate event answers at navigation START, while tab.url still
+    // shows the old page: a follow-up command matching the destination URL
+    // missed the tab (stress: nav "x=cspnav" right after a CSP-page link
+    // click). pagehide used to answer at about the commit — wait for it,
+    // bounded, so slow servers still answer promptly.
+    if (url0 && typeof result === 'string' && / — page navigating$/.test(result)) await waitForCommit(tabId, url0, null, 3000);
+    return result;
+  }
   const ownership = ownershipSeq.get(tabId) || 0;
   const check = () => {
     if (!Number.isFinite(msg.deadlineAt) || Date.now() >= msg.deadlineAt)
@@ -4110,7 +4120,8 @@ async function actAndVerify(tabId, msg, run) {
 // pendingUrl means there is none.
 async function docId(tabId) {
   try {
-    const [r] = await chrome.scripting.executeScript({ target: { tabId }, world: 'ISOLATED', func: () => 0 });
+    // injectImmediately: only the document identity is needed — never wait for a slow page's document_idle.
+    const [r] = await chrome.scripting.executeScript({ target: { tabId }, world: 'ISOLATED', injectImmediately: true, func: () => 0 });
     return r?.documentId || null;
   } catch {
     return null;
@@ -4125,6 +4136,7 @@ async function waitForCommit(tabId, url0, doc0, timeout = 8000) {
     if (!t.pendingUrl && t.url && t.url !== url0) return { committed: true, url: t.url };
     if (t.pendingUrl) moving = true;
     else if (moving) {
+      if (!doc0) return null; // no baseline to compare (plain-click wait): it landed or was dropped — either way, done
       const d = await docId(tabId);
       return doc0 && d && d !== doc0 ? { committed: true, url: t.url } : null;
     }
