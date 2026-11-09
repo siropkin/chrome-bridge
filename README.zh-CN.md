@@ -136,6 +136,7 @@ table "1. Playa Phone (playaphone.com) 122 poin… hide | 41 comments" @e14
 - **智能体触碰的每个标签页都戴 🟣 小标签**,只读的标签页也不例外。小标签显示当前正在做什么(`🟣 taking screenshot…`),并保留历史操作记录。被驱动的标签页还会加入 🟣 标签页分组,页面无法伪造它。
 - **小标签上的 ⏏ 会断开智能体对该标签页的控制。** 桥接会拒绝后续命令,直到显式执行 `mark`;智能体的操作说明要求重新接管前先征得你的同意。已经开始的操作仍可能完成。这是工作流控制,不是防范恶意本地智能体的安全边界。
 - **工具栏弹窗一键交还标签页**:智能体在当前标签页工作时,**⏏ Release this tab** 把它交还给你——和页面标签上的 ⏏ 一样,也适用于无法显示标签的页面(chrome://、PDF、应用商店)。
+- **为本地智能体关闭某个配置**:弹窗 → ⚙ → **Local AI agents**(默认开启)。关闭后,该 Chrome 配置会断开与本机助手的连接——本机智能体看不到也用不了它,它正在驱动的标签页会被交还给你。Cloud AI apps 不受影响。
 - **`node cli.mjs watch`** 在终端里实时显示每条命令。
 
 ![本地测试会话中的真实操作历史和释放控件,已放大展示](docs/store/screenshot-5-controls.png)
@@ -147,7 +148,7 @@ Cloud Bridge 让云端 AI 应用(Claude.ai、ChatGPT 和其他远程 MCP 客户�
 1. 工具栏弹窗 → ⚙ → 打开 **Cloud AI apps**,粘贴 Cloud Bridge 的地址 → **Connect**。hub 会在新标签页打开:用 GitHub 登录,核对验证码与弹窗一致,点击 **Connect**。
 2. 重新打开弹窗的 ⚙ Settings,Cloud AI apps 显示 *Connected*。点击 **Add to Claude or ChatGPT** 查看步骤:复制连接器链接,在 AI 应用里添加为自定义连接器,然后登录并允许。
 
-关闭 **Cloud AI apps** 会立即让这个浏览器退出 Cloud Bridge(丢弃令牌);再次打开会重新连接。hub([siropkin/cloud-bridge](https://github.com/siropkin/cloud-bridge))目前还没有公开托管,暂时需要你自己运行。
+关闭 **Cloud AI apps** 会立即让这个浏览器退出 Cloud Bridge(丢弃令牌);再次打开会重新连接。hub([siropkin/cloud-bridge](https://github.com/siropkin/cloud-bridge))的预览版运行在 `https://cloud-bridge.ivan-seredkin.workers.dev`,你也可以自己部署(见其 README)。
 
 两条连接同时开启时,智能体会看到:
 

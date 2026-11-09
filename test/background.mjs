@@ -30,9 +30,13 @@ function popupListener({ failedTab, ready = Promise.resolve(), owners = new Map(
   const humanReclaimed = new Map();
   const diagnostics = [];
   const events = [];
+  const storage = {};
+  const connects = [];
+  const localLink = { id: 'local', closed: 0, socket: { close() { localLink.closed++; } } };
   const sender = { id: 'bridge', url: 'chrome-extension://bridge/popup.html' };
-  vm.runInNewContext(listenerSource, {
-    chrome: { runtime: { id: 'bridge', getURL: (path) => 'chrome-extension://bridge/' + path, onMessage: { addListener: (handler) => { listener = handler; } } } },
+  const context = {
+    chrome: { runtime: { id: 'bridge', getURL: (path) => 'chrome-extension://bridge/' + path, onMessage: { addListener: (handler) => { listener = handler; } } }, storage: { local: { set: async (o) => Object.assign(storage, o) } } },
+    localOn: true, localLoaded: true, localReady: Promise.resolve(), links: new Map([['local', localLink]]), connect: (link) => connects.push(link.id),
     ready, idReady: Promise.resolve(), cloudReady: Promise.resolve(), cloudState: () => ({ paired: false }), PROFILE_NAME: 'poplar', drivenTabs, humanReclaimed,
     linkOpen: (id) => id === 'local',
     linkSend: (id, data) => { events.push([id, JSON.parse(data)]); return true; },
@@ -44,7 +48,8 @@ function popupListener({ failedTab, ready = Promise.resolve(), owners = new Map(
       drivenTabs.delete(tabId);
     },
     persist() {},
-  });
+  };
+  vm.runInNewContext(listenerSource, context);
   const send = async (message, origin = sender) => {
     let response;
     let open = true;
@@ -60,8 +65,45 @@ function popupListener({ failedTab, ready = Promise.resolve(), owners = new Map(
     assert.equal(replied, true, 'listener must reply through sendResponse');
     return response;
   };
-  return { send, drivenTabs, humanReclaimed, diagnostics, events, raw: (message, origin) => listener(message, origin, () => {}) };
+  return { send, drivenTabs, humanReclaimed, diagnostics, events, context, storage, connects, localLink, raw: (message, origin) => listener(message, origin, () => {}) };
 }
+
+test('popup: switching local off hangs up BEFORE releasing, and sweeps again for a tab marked mid-release (review finding)', async () => {
+  const order = [];
+  const { send, drivenTabs, context, localLink } = popupListener();
+  localLink.socket.close = () => order.push('close');
+  context.linkSend = (id, data) => { order.push(JSON.parse(data).kind); return true; };
+  let first = true;
+  context.releaseTab = async (tabId) => {
+    order.push('release ' + tabId);
+    drivenTabs.delete(tabId);
+    if (first) { first = false; drivenTabs.add(9); } // a command that marked mid-sweep
+  };
+  const off = await send({ type: 'local-toggle', enabled: false });
+  assert.deepEqual(order, ['local-off', 'close', 'release 7', 'release 8', 'release 9']);
+  assert.equal(off.released, 3);
+  assert.equal(drivenTabs.size, 0);
+});
+
+test('popup: Local AI agents off releases only local tabs, tells the server, hangs up; on dials again', async () => {
+  const { send, drivenTabs, events, context, storage, connects, localLink } = popupListener({ owners: new Map([[8, 'cloud']]) });
+  assert.equal((await send({ type: 'bridge-state', tabId: 7 })).local, true, 'on by default');
+  const off = await send({ type: 'local-toggle', enabled: false });
+  assert.deepEqual(JSON.parse(JSON.stringify(off)), { ok: true, local: false, released: 1 });
+  assert.equal(context.localOn, false);
+  assert.equal(storage.localAgents, false, 'the switch survives a restart');
+  assert.deepEqual([...drivenTabs], [8], 'the cloud-driven tab stays driven');
+  assert.deepEqual(events.at(-1), ['local', { type: 'event', kind: 'local-off' }], 'the server learns why this profile left');
+  assert.equal(localLink.closed, 1);
+  assert.equal((await send({ type: 'bridge-state', tabId: 7 })).local, false);
+  const on = await send({ type: 'local-toggle', enabled: true });
+  assert.equal(on.local, true);
+  assert.equal(storage.localAgents, true);
+  assert.deepEqual(connects, [], 'already open: no second dial');
+  context.linkOpen = () => false;
+  await send({ type: 'local-toggle', enabled: true });
+  assert.deepEqual(connects, ['local']);
+});
 
 test('popup listener supports callback-only Chrome runtime for every async request', async () => {
   const { send } = popupListener();
@@ -86,7 +128,7 @@ test('popup listener rejects unauthorized senders without mutations', async () =
     { id: 'bridge', url: 'https://example.test/' },
     { id: 'bridge', url: 'chrome-extension://bridge/popup.html', tab: { id: 7 } },
   ]) {
-    for (const type of ['diagnostics', 'bridge-state', 'release-active']) {
+    for (const type of ['diagnostics', 'bridge-state', 'release-active', 'local-toggle']) {
       assert.match((await send({ type, tabId: 7, action: 'configure', enabled: true }, sender)).error, /restricted/);
     }
   }
@@ -845,7 +887,7 @@ const linksSource = source.slice(source.indexOf('// --- Links ---'), source.inde
 
 const commandsSource = fs.readFileSync(new URL('../extension/commands.js', import.meta.url), 'utf8');
 
-function linksHarness({ owners = new Map(), driven = [], idReady = Promise.resolve(), cloud, handle, fetchImpl } = {}) {
+function linksHarness({ owners = new Map(), driven = [], idReady = Promise.resolve(), cloud, localAgents, localRead, handle, fetchImpl } = {}) {
   const sockets = [];
   const logs = [];
   const timers = [];
@@ -863,7 +905,7 @@ function linksHarness({ owners = new Map(), driven = [], idReady = Promise.resol
     recv(obj) { return this.onmessage({ data: typeof obj === 'string' ? obj : JSON.stringify(obj) }); }
   }
   const drivenTabs = new Set(driven);
-  const storage = { cloud };
+  const storage = { cloud, localAgents };
   const created = [];
   const intervals = [];
   const context = vm.createContext({
@@ -874,7 +916,7 @@ function linksHarness({ owners = new Map(), driven = [], idReady = Promise.resol
     URL, fetch: fetchImpl,
     chrome: {
       runtime: { getManifest: () => ({ version: '9.9.9' }) }, alarms: { create() {}, onAlarm: { addListener: (fn) => { alarm = fn; } } },
-      storage: { local: { get: async (k) => ({ [k]: storage[k] }), set: async (o) => Object.assign(storage, structuredClone(o)) } },
+      storage: { local: { get: async (k) => (k === 'localAgents' && localRead ? { localAgents: await localRead } : { [k]: storage[k] }), set: async (o) => Object.assign(storage, structuredClone(o)) } },
       tabs: { create: async (o) => created.push(o) },
     },
     logLine: (line) => logs.push(line), drivenTabs, ownerOf: (tabId) => (drivenTabs.has(tabId) ? owners.get(tabId) || 'local' : null),
@@ -885,7 +927,7 @@ function linksHarness({ owners = new Map(), driven = [], idReady = Promise.resol
     pageErrorsFor: async () => null, currentActivity: () => false,
   });
   vm.runInContext(commandsSource, context); // the worker's importScripts('commands.js')
-  vm.runInContext(linksSource + '\nthis.links = links; this.linkOpen = linkOpen; this.cloudState = cloudState; this.cloudPair = cloudPair; this.connect = connect;', context);
+  vm.runInContext(linksSource + '\nthis.links = links; this.linkOpen = linkOpen; this.cloudState = cloudState; this.cloudPair = cloudPair; this.connect = connect; this.setLocal = (on) => { localOn = on; };', context);
   const flush = () => new Promise((r) => setImmediate(r));
   const fire = (ms) => timers.splice(0).filter((t) => t.ms === ms || (timers.push(t), false)).forEach((t) => t.fn());
   return { context, sockets, timers, handled, painted, logs, flush, fire, alarm: () => alarm(), storage, created, intervals };
@@ -984,6 +1026,69 @@ test('links: a drop reconnects that link with its backoff, paints only its tabs,
   assert.match(h.sockets[3].url, /^ws:\/\/127\.0\.0\.1:9333\/ws\?v=/);
 });
 
+test('links: Local AI agents off — no dial at boot, on the alarm or after a drop, and no offline paint', async () => {
+  const off = linksHarness({ localAgents: false });
+  await off.flush();
+  off.alarm();
+  await off.flush();
+  assert.equal(off.sockets.length, 0, 'switched off in storage: this profile never reaches the local server');
+  const h = linksHarness({ driven: [7] });
+  await h.flush();
+  h.sockets[0].open();
+  h.timers.length = 0;
+  h.context.setLocal(false);
+  h.sockets[0].drop();
+  h.fire(2500);
+  h.fire(500);
+  h.alarm();
+  await h.flush();
+  assert.equal(h.sockets.length, 1, 'switched off live: the reconnect and the alarm stand down');
+  assert.deepEqual(h.painted, [], 'off on purpose is not an outage');
+});
+
+test('links: an alarm that wakes the worker before the stored switch loads never dials a switched-off profile (review finding)', async () => {
+  const h = linksHarness({ localAgents: false });
+  h.alarm(); // same tick as the script load: the storage read hasn't landed
+  await h.flush();
+  h.alarm();
+  await h.flush();
+  assert.equal(h.sockets.length, 0);
+});
+
+test('links: a dial still awaiting when Local AI agents goes off opens no socket; a command on a closing socket runs nothing (review finding)', async () => {
+  const h = linksHarness();
+  await h.flush();
+  h.sockets[0].drop();
+  h.context.connect(h.context.links.get('local')); // passes the entry check…
+  h.context.setLocal(false); // …then the switch flips while dial() awaits
+  await h.flush();
+  assert.equal(h.sockets.length, 1, 'the post-dial recheck stands down: no second socket');
+  const live = linksHarness();
+  await live.flush();
+  live.sockets[0].open();
+  live.context.setLocal(false);
+  await live.sockets[0].recv({ id: 4, type: 'click', urlMatch: 'x' });
+  assert.deepEqual(live.handled, [], 'nothing ran');
+  assert.equal(live.sockets[0].sent[0].ok, false);
+  assert.match(live.sockets[0].sent[0].error, /Local AI agents was switched off.*⚙ Settings/);
+});
+
+test('links: a stored "off" read slower than the boot watchdog hangs up the socket the watchdog opened (review finding)', async () => {
+  let finishRead;
+  const h = linksHarness({ localRead: new Promise((r) => { finishRead = r; }) });
+  await h.flush();
+  h.fire(5000); // the watchdog gives up on the read and connects with the default (on)
+  await h.flush();
+  h.sockets[0].open();
+  finishRead(false);
+  await h.flush();
+  assert.equal(h.context.linkOpen('local'), false);
+  assert.ok(h.sockets[0].sent.some((e) => e.kind === 'local-off'), 'the server learns why');
+  h.alarm();
+  await h.flush();
+  assert.equal(h.sockets.length, 1, 'and it stays down');
+});
+
 test('links: a seat-taken loser stands down without a hot reconnect', async () => {
   const h = linksHarness();
   await h.flush();
@@ -1006,6 +1111,7 @@ function ownershipHarness({ driven = [], owners = [], reclaimed = [] } = {}) {
   const context = vm.createContext({
     drivenTabs: new Set(driven), tabOwner: new Map(owners), humanReclaimed: new Map(reclaimed.map((id) => [id, Date.now()])),
     links: new Map([['local', { label: 'local' }], ['cloud', { label: 'cloud' }]]),
+    localOn: true, LOCAL_OFF_ERROR: 'Local AI agents was switched off',
     persist() {}, setFavicon: async () => {}, recordActivity: (tabId) => recorded.push(tabId),
     markTab: async (tabId) => { context.drivenTabs.add(tabId); marked.push(tabId); },
     chrome: { tabs: { query: async () => tabs } },
@@ -1014,6 +1120,15 @@ function ownershipHarness({ driven = [], owners = [], reclaimed = [] } = {}) {
   vm.runInContext(findTabSource, context);
   return { context, marked, recorded };
 }
+
+test('ownership: with Local AI agents off, an in-flight local command cannot claim a tab; cloud still can (review finding)', async () => {
+  const { context, marked } = ownershipHarness();
+  context.localOn = false;
+  await assert.rejects(context.findTab({ type: 'click', urlMatch: 'a.test', _link: 'local' }), /Local AI agents was switched off/);
+  assert.deepEqual(marked, [], 'nothing claimed after the switch handed the tabs back');
+  assert.equal((await context.findTab({ type: 'click', urlMatch: 'a.test', _link: 'cloud' })).id, 7);
+  assert.equal(context.tabOwner.get(7), 'cloud');
+});
 
 test('ownership: another link may only read a driven tab — every other command is refused before it marks or records', async () => {
   const { context, marked, recorded } = ownershipHarness({ driven: [7], owners: [[7, 'cloud']] });

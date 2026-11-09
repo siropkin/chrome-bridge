@@ -125,10 +125,36 @@ function linkSend(id, data) {
     return false;
   }
 }
+// Local AI agents switch (popup → ⚙ Settings), on unless the human turned it
+// off. Off, the local link never dials: agents on this computer can't see or
+// reach this profile until it's on again. Cloud AI apps don't depend on it.
+// Off until the stored switch is read: a keepalive alarm that wakes a cold
+// worker runs before that read lands and must not dial a profile the human
+// switched off (found by review). The boot watchdog sets it if the read wedges.
+let localOn = true;
+let localLoaded = false;
+const LOCAL_OFF_ERROR = "Local AI agents was switched off in this Chrome profile's chrome-bridge popup — ask the user to switch it on (⚙ Settings → Local AI agents)";
+const localReady = chrome.storage.local
+  .get('localAgents')
+  .then(({ localAgents }) => {
+    if (localAgents !== false) return;
+    localOn = false;
+    // A read slower than the boot watchdog: it already connected with the
+    // default (on) — hang up like the toggle does, or the open socket
+    // refuses every command, the server's routing probes included (found by
+    // review).
+    if (linkOpen('local')) linkSend('local', JSON.stringify({ type: 'event', kind: 'local-off' }));
+    links.get('local')?.socket?.close();
+  })
+  .catch(() => {})
+  .finally(() => {
+    localLoaded = true;
+  });
 addLink({
   id: 'local',
   label: 'local',
   url: WS_URL,
+  enabled: () => localLoaded && localOn,
   async dial() {
     // ?boot= feeds the server's stale-code check (#63) — see BOOT_TS_P.
     let boot = null;
@@ -316,6 +342,9 @@ async function connect(link) {
   let s;
   try {
     const url = await link.dial();
+    // Switched off while the dial awaited (the human's toggle, or a link
+    // whose setting just loaded as off): don't open a socket nobody closes.
+    if (link.enabled && !link.enabled()) return;
     s = link.socket = new WebSocket(url, link.protocols?.());
   } catch {
     return;
@@ -372,6 +401,13 @@ async function connect(link) {
       // The losing side was silent — a cloned profile dir (machine migration)
       // bounced this worker forever and nothing anywhere said why.
       logLine('seat taken — another live connection holds this profile id (SW reconnect race, or a cloned Chrome profile dir); standing down, the keepalive re-probes');
+      return;
+    }
+    // Switched off while this socket was still open: run nothing more.
+    if (link.enabled && !link.enabled()) {
+      try {
+        s.send(JSON.stringify({ id: msg.id, ok: false, error: LOCAL_OFF_ERROR }));
+      } catch {}
       return;
     }
     const reply = await runCommand(link, msg);
@@ -726,10 +762,11 @@ async function cloudPollPairing() {
 // when the timer WON: logging from the timer itself fired on every healthy
 // boot too, 5s after the id had loaded — a false wedge in every swlogs.
 Promise.race([
-  Promise.all([idReady, installReady, cloudReady]),
+  Promise.all([idReady, installReady, cloudReady, localReady]),
   new Promise((r) => setTimeout(() => r('wedged'), 5000)),
 ]).then((won) => {
   if (won === 'wedged') logLine('profile-id storage read wedged (5s) — connecting without a stable id');
+  localLoaded = true; // a wedged read keeps the default: on
   for (const link of links.values()) connect(link);
   cloudPollPairing();
 });
@@ -1615,7 +1652,7 @@ function remapTabId(newTabId, oldTabId) {
 // is idempotent on a non-driven tab, so no entry guard needed; it also clears
 // device emulation (release = the tab is the human's again, ALL of it).
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (['diagnostics', 'bridge-state', 'release-active', 'cloud-state', 'cloud-pair', 'cloud-toggle', 'cloud-unpair'].includes(msg?.type) &&
+  if (['diagnostics', 'bridge-state', 'release-active', 'local-toggle', 'cloud-state', 'cloud-pair', 'cloud-toggle', 'cloud-unpair'].includes(msg?.type) &&
       (sender?.id !== chrome.runtime.id || sender.url !== chrome.runtime.getURL('popup.html') || sender.tab)) {
     sendResponse({ ok: false, error: msg.type === 'diagnostics' ? 'Logging settings are restricted to the popup.' : 'Tab controls are restricted to the popup.' });
     return;
@@ -1639,6 +1676,44 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return { ok: true, ...cloudState() };
       })
       .then(sendResponse, (error) => sendResponse({ ok: false, error: 'Could not reach the hub: ' + errMsg(error), ...cloudState() }));
+    return true;
+  }
+  if (msg?.type === 'local-toggle') {
+    Promise.all([ready, localReady])
+      .then(async () => {
+        const local = links.get('local');
+        localOn = !!msg.enabled;
+        localLoaded = true;
+        if (localOn) {
+          await chrome.storage.local.set({ localAgents: true }).catch(() => {});
+          if (!linkOpen('local')) connect(local);
+          return { ok: true, local: true, released: 0 };
+        }
+        // Off, in this order (found by review): stop serving first — tell
+        // the server why this profile is leaving (its "not connected" errors
+        // name the switch), hang up, and every local claim now refuses
+        // (assertLinkOn) — THEN hand back every tab a local agent drives, so
+        // no pill says an AI is working when none can reach it. A command
+        // that marked mid-sweep is caught by the next pass.
+        linkSend('local', JSON.stringify({ type: 'event', kind: 'local-off' }));
+        local.socket?.close();
+        await chrome.storage.local.set({ localAgents: false }).catch(() => {});
+        let released = 0;
+        for (let pass = 0; pass < 3; pass++) {
+          const mine = [...drivenTabs].filter((tabId) => ownerOf(tabId) === 'local');
+          if (!mine.length) break;
+          for (const tabId of mine) {
+            try {
+              await releaseTab(tabId, { flash: true });
+              released++;
+            } catch {}
+          }
+        }
+        persist();
+        logLine(`local AI agents switched off in the popup — released ${released} tab(s), local link down`);
+        return { ok: true, local: false, released };
+      })
+      .then(sendResponse, (error) => sendResponse({ ok: false, error: String(error) }));
     return true;
   }
   if (msg?.type === 'diagnostics') {
@@ -1682,7 +1757,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // profile: the popup shows it and puts it in the copied tab reference —
     // the human never sees the code name anywhere else.
     // cloud: the Settings → Cloud Bridge state rides along (no second round trip).
-    Promise.all([ready, idReady, cloudReady]).then(() => ({ count: drivenTabs.size, active: msg.tabId != null && drivenTabs.has(msg.tabId), connected: linkOpen('local'), profile: PROFILE_NAME, cloud: cloudState() }))
+    // local: the Local AI agents switch.
+    Promise.all([ready, idReady, cloudReady, localReady]).then(() => ({ count: drivenTabs.size, active: msg.tabId != null && drivenTabs.has(msg.tabId), connected: linkOpen('local'), local: localOn, profile: PROFILE_NAME, cloud: cloudState() }))
       .then(sendResponse, (error) => sendResponse({ error: String(error) }));
     return true;
   }
@@ -4720,6 +4796,11 @@ function assertNotReclaimed(tabId, msg) {
 // filling. Driven tabs with no recorded owner (state from a build before
 // links) are local's. With only the local link, nothing is ever refused.
 const ownerOf = (tabId) => (drivenTabs.has(tabId) ? tabOwner.get(tabId) || 'local' : null);
+// A local command still in flight when the human switched Local AI agents off
+// must not claim a tab after the switch handed them all back.
+function assertLinkOn(msg) {
+  if (msg._link === 'local' && !localOn) throw new Error(LOCAL_OFF_ERROR);
+}
 const linkLabel = (id) => links.get(id)?.label || id;
 function assertLinkMayDrive(tabId, msg) {
   const owner = ownerOf(tabId);
@@ -4804,6 +4885,7 @@ async function findTab(msg) {
   if (!['release', 'mark', 'unemulate', 'activate'].includes(msg.type) && !drivenTabs.has(matches[0].id)) {
     // This command created the claim — if it then hits Chrome's permanent
     // "nothing here is drivable" wall, onmessage undoes THIS mark (#37).
+    assertLinkOn(msg);
     msg._markedByMe = true;
     tabOwner.set(matches[0].id, msg._link); // markTab persists it
     markTab(matches[0].id).catch(() => {});
@@ -5383,6 +5465,10 @@ async function handle(msg) {
     // land when the page commits (onUpdated re-applies both after load),
     // and the 8s waitForLoad below keeps the documented cap by itself.
     const tab = await chrome.tabs.create({ url: msg.url, active: false });
+    if (msg._link === 'local' && !localOn) {
+      chrome.tabs.remove(tab.id).catch(() => {}); // switched off mid-open: no unclaimed stray
+      throw new Error(LOCAL_OFF_ERROR);
+    }
     msg._tabId = tab.id;
     // Listener before the favicon/banner work: those are two executeScript
     // round trips, and a fast page can hit 'complete' inside that window
@@ -5499,6 +5585,7 @@ async function handle(msg) {
 
   if (msg.type === 'mark') {
     const tab = await findTab(msg);
+    assertLinkOn(msg);
     if (!drivenTabs.has(tab.id)) tabOwner.set(tab.id, msg._link); // findTab skips mark's auto-mark — claim here
     await markTab(tab.id);
     return { id: tab.id };

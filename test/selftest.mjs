@@ -1701,7 +1701,23 @@ try {
     // v1.6.0 name tag taught a selector the id never would).
     const byName = await cli('--profile', 'oak-test', 'snap', 'named.example');
     assert(byName.status === 0 && byName.stdout.includes('"urlMatch":"named.example"'), 'multi-seat: --profile accepts the profile name as well as the id', byName.stdout + byName.stderr);
+    // Local AI agents switched off in the popup: the extension says so, then
+    // hangs up. Agents asking for that profile learn the real cause (not
+    // "load extension/ at chrome://extensions"); reconnecting clears it.
+    ext4.send({ type: 'event', kind: 'local-off' });
+    await new Promise((r) => setTimeout(r, 50));
     ext4.socket.destroy();
+    await new Promise((r) => setTimeout(r, 100));
+    const hvOff = JSON.parse((await cli('health')).stdout);
+    assert(JSON.stringify(hvOff.localOff) === '["oak-test"]', 'local-off: health names the switched-off profile', JSON.stringify(hvOff));
+    const offProfile = await cli('--profile', 'oak-test', 'snap', 'named.example');
+    assert(offProfile.status !== 0 && offProfile.stderr.includes("profile 'oak-test' has Local AI agents switched off") && offProfile.stderr.includes('⚙ Settings'), 'local-off: --profile names the switch, not a missing extension', offProfile.stdout + offProfile.stderr);
+    const offFeed = (await fetch(`http://127.0.0.1:${PORT}/log`).then((r) => r.json())).lines;
+    assert(offFeed.some((a) => a.line.includes('Local AI agents switched off in the popup @oak-test')), 'local-off: the feed shows it', JSON.stringify(offFeed.slice(-3)));
+    const ext4back = await wsClient(PORT, 'named-test', 'oak-test');
+    await new Promise((r) => setTimeout(r, 100));
+    assert(!('localOff' in JSON.parse((await cli('health')).stdout)), 'local-off: switching back on (reconnect) clears it');
+    ext4back.socket.destroy();
     await new Promise((r) => setTimeout(r, 100));
 
     // an extension without probe support (pre-1.5.0) must fail routing loudly —

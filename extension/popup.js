@@ -49,6 +49,26 @@ function render() {
   const busy = n > 0;
   renderRelease(n);
   $('idle').hidden = true;
+  $('off-card').hidden = true;
+  // Local AI agents switched off (Settings): this profile is unreachable for
+  // agents on this computer whatever the helper is doing — no setup push, no
+  // "reconnecting". Cloud AI apps still work on their own.
+  const localOn = lastKnownState?.local !== false;
+  $('local-enabled').checked = localOn;
+  $('local-setup').hidden = !localOn;
+  if (!localOn) {
+    $('setup-card').hidden = true;
+    $('local-status').textContent = "Off: agents on this computer can't see or use this profile";
+    const c = lastKnownState?.cloud;
+    if (c?.paired && c.enabled && c.connected) {
+      $('idle').hidden = false;
+      if (busy) setStatus(`AI is working in ${n} tab${n > 1 ? 's' : ''}`, 'busy');
+      else setStatus('Ready for cloud AI apps', 'ok');
+      return;
+    }
+    $('off-card').hidden = false;
+    return setStatus('AI agents are off for this profile', 'down');
+  }
   if (bridgeDown) {
     $('local-status').textContent = 'Not connected: the helper on this computer isn\'t running';
     // Cloud-only is a complete setup: cloud AI apps reach this browser without
@@ -184,6 +204,7 @@ chrome.tabs.query({ active: true, currentWindow: true }).then(async ([tab]) => {
     }
     render();
   };
+  refreshBridge = refreshState;
   $('release-tab').addEventListener('click', async () => {
     $('release-tab').disabled = true;
     let failure;
@@ -208,6 +229,30 @@ chrome.tabs.query({ active: true, currentWindow: true }).then(async ([tab]) => {
     render();
   });
 });
+
+// Local AI agents switch (Settings, plus the main card's "Turn on" while it's
+// off). Off releases the tabs local agents drive and hangs up the local link.
+let refreshBridge = null; // set once the current tab is known
+async function localToggle(enabled) {
+  $('local-enabled').disabled = $('local-on').disabled = true;
+  let response;
+  try {
+    response = await chrome.runtime.sendMessage({ type: 'local-toggle', enabled });
+    if (!response?.ok) throw new Error(response?.error || 'no acknowledgement from the extension');
+  } catch (error) {
+    response = { ok: false, error: String(error?.message || error) };
+  }
+  try {
+    await refreshBridge?.();
+  } catch {}
+  $('local-enabled').disabled = $('local-on').disabled = false;
+  if (!response.ok) {
+    $('local-enabled').checked = !enabled;
+    $('local-status').textContent = "Couldn't switch: " + response.error;
+  }
+}
+$('local-enabled').addEventListener('change', () => localToggle($('local-enabled').checked));
+$('local-on').addEventListener('click', () => localToggle(true));
 
 // --- Settings view ------------------------------------------------------------
 $('open-settings').addEventListener('click', () => {

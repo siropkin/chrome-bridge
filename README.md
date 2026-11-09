@@ -138,6 +138,7 @@ A real run, checked live on GitHub: [recipes/github.com.md](recipes/github.com.m
 - **Every tab the agent touches wears a 🟣 pill**, including tabs it only reads. The pill shows what's happening right now (`🟣 taking screenshot…`) and keeps a history of past actions. Driven tabs also join a 🟣 tab group, which a page can't fake.
 - **⏏ on the pill disconnects the agent from that tab.** The bridge refuses subsequent commands until an explicit `mark`; the agent is instructed to ask you before reclaiming it. An action already running may still finish. This is a workflow control, not a security boundary against a malicious local agent.
 - **The toolbar popup hands a tab back in one click**: while the agent works in the tab you're on, **⏏ Release this tab** gives it back — the same as the ⏏ on the page's pill, and it also works on pages that can't show the pill (chrome://, PDF, the Web Store).
+- **Switch a profile off for local agents**: popup → ⚙ → **Local AI agents** (on by default). Off, that Chrome profile disconnects from the helper on your computer — agents there can't see or use it, and any tab they were driving is handed back. Cloud AI apps aren't affected.
 - **`node cli.mjs watch`** prints every command live in your terminal.
 
 ![Actual on-page action history and release control, enlarged from a local test session](docs/store/screenshot-5-controls.png)
@@ -149,7 +150,7 @@ Cloud Bridge lets cloud AI apps (Claude.ai, ChatGPT, other remote-MCP clients) d
 1. Toolbar popup → ⚙ → turn on **Cloud AI apps**, paste your Cloud Bridge address → **Connect**. A tab opens on the hub: sign in with GitHub, check the code matches the popup, click **Connect**.
 2. Reopen the popup's ⚙ Settings. Cloud AI apps reads *Connected*. **Add to Claude or ChatGPT** shows the steps: copy the connector link, paste it as a custom connector in the app, then sign in and allow.
 
-Turning **Cloud AI apps** off signs this browser out of Cloud Bridge at once (it forgets the token); turning it on again connects anew. The hub ([siropkin/cloud-bridge](https://github.com/siropkin/cloud-bridge)) isn't publicly hosted yet, so for now you run your own.
+Turning **Cloud AI apps** off signs this browser out of Cloud Bridge at once (it forgets the token); turning it on again connects anew. A preview of the hub ([siropkin/cloud-bridge](https://github.com/siropkin/cloud-bridge)) runs at `https://cloud-bridge.ivan-seredkin.workers.dev`, or you can deploy your own (its README shows how).
 
 What agents see while two links are on:
 

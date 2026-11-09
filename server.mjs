@@ -66,6 +66,20 @@ try {
 //                 meant the work one), msg.profile overrides with an explicit
 //                 id (prefix match) or the exact profile name.
 const seats = new Map(); // profileId -> { socket, v, name, install, boot, pending: Map, nextId }
+// Profiles whose human switched Local AI agents off in the popup (name, or id
+// when unnamed → when). The extension says so right before it hangs up, so
+// "not connected" errors name the real cause instead of sending agents to
+// chrome://extensions. Memory only: after a restart the generic hint covers it.
+const localOff = new Map();
+function notConnected() {
+  const off = [...localOff.keys()];
+  return (
+    'extension not connected — load extension/ at chrome://extensions' +
+    (off.length
+      ? ` (${off.join(', ')}: Local AI agents is switched off in that profile's chrome-bridge popup — ask the user to switch it on in ⚙ Settings)`
+      : " (already loaded? the user may have switched Local AI agents off in its popup's ⚙ Settings)")
+  );
+}
 
 // Drift warnings (drift.mjs): this server process vs its checkout, each
 // connected extension vs the checkout's manifest. Stale-CODE (#63): a dev
@@ -176,7 +190,7 @@ function ask(seat, msg, timeoutMs = CMD_TIMEOUT_MS, dispatch) {
         return;
       }
       if (triesLeft <= 0) {
-        reject(new Error('extension not connected — load extension/ at chrome://extensions'));
+        reject(new Error(notConnected()));
         return;
       }
       setTimeout(() => attempt(triesLeft - 1), 250);
@@ -195,7 +209,11 @@ function seatByProfile(want) {
   // name ('@poplar'), so that's what a human (or agent) will reach for first.
   const pids = [...seats.keys()].filter((p) => p.startsWith(want) || seats.get(p)?.name === want);
   if (pids.length > 1) throw new Error(`--profile '${want}' matches ${pids.length} profiles — a few more characters disambiguate`);
-  if (!pids.length) throw new Error(`no connected profile matching '${want}' — run: cli.mjs profiles`);
+  if (!pids.length) {
+    const off = [...localOff.keys()].find((k) => k === want || k.startsWith(want));
+    if (off) throw new Error(`profile '${off}' has Local AI agents switched off in its chrome-bridge popup — ask the user to switch it on (⚙ Settings → Local AI agents); it reconnects by itself`);
+    throw new Error(`no connected profile matching '${want}' — run: cli.mjs profiles (a profile missing there may have Local AI agents switched off in its popup's ⚙ Settings)`);
+  }
   return seats.get(pids[0]);
 }
 // Reconnect grace for the pinned path, symmetric with ask()'s 10s no-socket
@@ -232,7 +250,7 @@ async function route(msg, dispatch) {
       msg.profile = seat.pid;
       return ask(seat, msg, CMD_TIMEOUT_MS, dispatch); // pinned: that seat's rows, untagged
     }
-    if (!seats.size) throw new Error('extension not connected — load extension/ at chrome://extensions');
+    if (!seats.size) throw new Error(notConnected());
     if (seats.size === 1) return ask(seats.values().next().value, msg, CMD_TIMEOUT_MS, dispatch);
     const rows = [];
     const seenIds = new Map(); // "id url" -> first seat reporting it
@@ -274,7 +292,7 @@ async function route(msg, dispatch) {
     // "why"). fix prunes dead-id memory extension-side; Chrome-side markers
     // are cleaned by the cli releasing each residue tab through the normal,
     // tested path — not a second cleaner here.
-    if (!seats.size) throw new Error('extension not connected — load extension/ at chrome://extensions');
+    if (!seats.size) throw new Error(notConnected());
     let entries = [...seats.entries()];
     if (msg.profile) {
       const seat = await seatByProfileGrace(String(msg.profile));
@@ -310,7 +328,7 @@ async function route(msg, dispatch) {
   if (msg.profile) {
     seat = await seatByProfileGrace(String(msg.profile));
   } else if (seats.size === 0) {
-    throw new Error('extension not connected — load extension/ at chrome://extensions');
+    throw new Error(notConnected());
   } else if (seats.size === 1) {
     seat = seats.values().next().value;
   } else {
@@ -718,6 +736,8 @@ const server = http.createServer((req, res) => {
         ok: true,
         extension: !![...seats.values()].find((s) => s.socket && !s.socket.destroyed),
         profiles: [...seats.entries()].map(([pid, s]) => ({ id: pid, v: s.v, ...(s.name ? { name: s.name } : {}), ...(s.install ? { install: s.install } : {}) })),
+        // Profiles the human switched off for local agents (popup → ⚙ Settings).
+        ...(localOff.size ? { localOff: [...localOff.keys()] } : {}),
         // Drift warnings (the CLI prints them to stderr) — the same texts
         // ride /cmd replies below, filtered to the profile a command ran on.
         warn: currentDrift().map((w) => w.text),
@@ -891,6 +911,7 @@ server.on('upgrade', (req, socket) => {
     socket.end(encodeFrame(JSON.stringify({ type: 'seat-taken' }))); // end() flushes before FIN — write()+destroy() can lose the bounce frame
     return;
   }
+  localOff.delete(name || id); // switched back on: it connects again
   const seat = {
     pid: id,
     v,
@@ -926,6 +947,16 @@ server.on('upgrade', (req, socket) => {
           new Date().toTimeString().slice(0, 8) +
           ` ⏏ human released a tab via the pill${msg.url ? ' (' + String(msg.url).slice(0, 60) + ')' : ''} @${seatTag(this.pid)}`
         ).replace(/[\x00-\x1f\x7f\x9b]/g, ' '); // same ANSI/newline strip as pushAct — the URL is page-influenced
+        activity.push({ seq: ++actSeq, line, cmd: null });
+        if (activity.length > 300) activity.shift();
+        diagnostics.lifecycle(msg, this.pid);
+        return;
+      }
+      // The human switched Local AI agents off in this profile's popup; the
+      // extension hangs up right after this frame.
+      if (msg?.type === 'event' && msg.kind === 'local-off') {
+        localOff.set(this.name || this.pid, Date.now());
+        const line = `${new Date().toTimeString().slice(0, 8)} ⏻ Local AI agents switched off in the popup @${seatTag(this.pid)}`;
         activity.push({ seq: ++actSeq, line, cmd: null });
         if (activity.length > 300) activity.shift();
         diagnostics.lifecycle(msg, this.pid);

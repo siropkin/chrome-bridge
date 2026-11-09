@@ -96,6 +96,10 @@
     <button id="setup">Copy setup prompt</button>
     <div id="setup-status" class="feedback" role="status"></div>
   </div>
+  <div id="off-card" hidden>
+    <div class="msg">Agents on this computer can't see or use this Chrome profile.</div>
+    <button id="local-on">Turn on Local AI agents</button>
+  </div>
   <div id="idle" hidden>
     <button id="copy">Copy tab ID for my agent</button>
     <div class="hint">Paste it in your agent's chat to have it work in this tab.</div>
@@ -109,10 +113,13 @@
   <div class="head"><button id="close-settings" class="quiet">‹ Back</button><span class="view-title">Settings</span></div>
 
   <div class="setting">
-    <div class="row"><span><b>Local AI agents</b><span id="local-status" class="sub">Claude Code, Cursor and other agents on this computer</span></span></div>
-    <button id="setup-again" class="secondary" style="margin-top:8px">Copy setup prompt</button>
-    <div class="hint">Paste it into your agent (Claude Code, Cursor…). It installs what's needed and connects.</div>
-    <div id="setup-again-status" class="feedback" role="status"></div>
+    <label class="row" for="local-enabled"><span><b>Local AI agents</b><span id="local-status" class="sub">Claude Code, Cursor and other agents on this computer</span></span><input id="local-enabled" class="switch" type="checkbox" checked></label>
+    <!-- hidden while the switch is off: nothing to set up then -->
+    <div id="local-setup">
+      <button id="setup-again" class="secondary" style="margin-top:8px">Copy setup prompt</button>
+      <div class="hint">Paste it into your agent (Claude Code, Cursor…). It installs what's needed and connects.</div>
+      <div id="setup-again-status" class="feedback" role="status"></div>
+    </div>
   </div>
 
   <div class="setting">

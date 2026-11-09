@@ -453,6 +453,9 @@ async function runCommand(cmdName, args) {
         print(h);
         // Stale-extension-code warnings, precomputed by the server (#63).
         for (const w of h.warn || []) console.error('⚠ ' + w);
+        // Not a fault to fix: the human switched these profiles off for local
+        // agents (popup → ⚙ Settings → Local AI agents).
+        if (h.localOff?.length) console.error(`note: Local AI agents is switched off in the chrome-bridge popup of: ${h.localOff.join(', ')} — unreachable until the user switches it on (⚙ Settings)`);
         // Exit 1 when the extension is disconnected: `health && …` preflights
         // and SDK-style gating read the exit code, and 0 here lied about a
         // bridge that can't run a command. The JSON still prints — which half

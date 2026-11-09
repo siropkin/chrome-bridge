@@ -728,3 +728,63 @@ test('popup Remove extension asks Chrome to uninstall it with its own confirm di
   assert.deepEqual(JSON.parse(JSON.stringify(calls)), [{ showConfirmDialog: true }]);
   assert.equal(element('remove-status').textContent, undefined, 'Cancel in Chrome\'s dialog: nothing to report');
 });
+
+test('popup: Local AI agents off — the profile says so, offers to turn it on, and never pushes setup', async () => {
+  for (const healthDown of [false, true]) {
+    let local = false;
+    const sent = [];
+    const { element, settle } = popupHarness(async (m) => {
+      sent.push(m);
+      if (m.type === 'local-toggle') {
+        local = m.enabled;
+        return { ok: true, local, released: 0 };
+      }
+      return m.type === 'bridge-state' ? { count: 0, active: false, connected: local, local, profile: 'poplar' } : {};
+    }, { tab: { id: 7 }, healthDown });
+    await settle();
+    assert.equal(element('status-text').textContent, 'AI agents are off for this profile', `healthDown=${healthDown}`);
+    assert.equal(element('status-dot').className, 'dot down');
+    assert.equal(element('off-card').hidden, false);
+    assert.equal(element('setup-card').hidden, true, 'off on purpose: no setup prompt');
+    assert.equal(element('idle').hidden, true, 'no agent can use a tab ID');
+    assert.equal(element('local-enabled').checked, false);
+    assert.equal(element('local-setup').hidden, true);
+    assert.match(element('local-status').textContent, /^Off: agents on this computer can't see/);
+    await element('local-on').handlers.click();
+    await settle();
+    assert.deepEqual(JSON.parse(JSON.stringify(sent.find((m) => m.type === 'local-toggle'))), { type: 'local-toggle', enabled: true });
+    assert.equal(element('off-card').hidden, true);
+    assert.equal(element('local-enabled').checked, true);
+    assert.equal(element('local-setup').hidden, false);
+    assert.equal(element('status-text').textContent, healthDown ? 'Not connected to an AI agent' : 'Ready for your AI agent');
+  }
+});
+
+test('popup: Local AI agents off with cloud AI apps connected is still ready (for the cloud)', async () => {
+  const cloud = { paired: true, enabled: true, connected: true, hub: 'https://cb.example', profile: 'poplar', pairing: null, notice: '' };
+  const { element, settle } = popupHarness(async (m) => (m.type === 'bridge-state' ? { count: 0, active: false, connected: false, local: false, profile: 'poplar', cloud } : {}), { tab: { id: 7 } });
+  await settle();
+  assert.equal(element('status-text').textContent, 'Ready for cloud AI apps');
+  assert.equal(element('idle').hidden, false, 'the tab ID works for cloud AI apps');
+  assert.equal(element('off-card').hidden, true);
+  assert.equal(element('local-enabled').checked, false);
+});
+
+test('popup: switching Local AI agents off sends it; a failed switch reverts and says why', async () => {
+  let fail = false;
+  const sent = [];
+  const { element, settle } = popupHarness(async (m) => {
+    sent.push(m);
+    if (m.type === 'local-toggle') return fail ? { ok: false, error: 'storage unavailable' } : { ok: true, local: m.enabled, released: 2 };
+    return m.type === 'bridge-state' ? { count: 0, active: false, connected: true, local: true, profile: 'poplar' } : {};
+  }, { tab: { id: 7 } });
+  await settle();
+  assert.equal(element('local-enabled').checked, true, 'on by default');
+  fail = true;
+  element('local-enabled').checked = false;
+  await element('local-enabled').handlers.change();
+  assert.deepEqual(JSON.parse(JSON.stringify(sent.filter((m) => m.type === 'local-toggle'))), [{ type: 'local-toggle', enabled: false }]);
+  assert.equal(element('local-enabled').checked, true, 'still on: the switch shows the truth');
+  assert.equal(element('local-status').textContent, "Couldn't switch: storage unavailable");
+  assert.equal(element('local-enabled').disabled, false);
+});

@@ -28,6 +28,7 @@ No checkout, or no extension ever connected? Have the user install the extension
 
 - `bridge server not running` → run `node <repo>/cli.mjs start` yourself (it waits briefly for a loaded extension to reconnect).
 - `"extension":false` after `start` → only the user can fix it at `chrome://extensions`: enable the extension (Web Store install) or Load unpacked `<repo>/extension` (from source). You can't click that.
+- `"localOff":["<name>"]` / `has Local AI agents switched off` → the user switched that profile off for local agents (popup → ⚙ Settings → **Local AI agents**). Ask them to switch it on if you need it; it reconnects by itself. Never work around it.
 - `⚠ … run cli.mjs update` (a Web Store extension and the checkout differ, or the server runs older code than its checkout) → run `node <repo>/cli.mjs update` yourself: it matches the checkout to the extension and restarts the server. It refuses rather than move local edits or commits; tell the user then. Restarting drops other sessions' in-flight commands, so don't run it mid-task on a shared bridge without asking. Server or CLI from an older checkout without `update`? Run the line it prints.
 - `⚠ extension X is loaded, the repo has Y` / `⚠ extension code on disk changed…` (unpacked install running stale code) → `node <repo>/cli.mjs extreload`; still warning → ask the user to reload it at `chrome://extensions`.
 - Web Store build + unpacked build in ONE Chrome → both drive the same tabs; `tabs` warns and commands refuse — the user must unload one.
