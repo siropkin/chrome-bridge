@@ -716,8 +716,9 @@ test('real release invalidates queued work before asynchronous cleanup completes
     failedSinceOk: new Map(), emulatedTabs: new Set([7]), cdpRefs: new Map(),
     stopTick() {}, clearEmulation() {},
     withCdp: () => cleanup.promise,
-    chrome: { ...context.chrome, action: { setBadgeText: async () => {} } },
+    chrome: { ...context.chrome, action: { setBadgeText: async (o) => { badges.push(o); } } },
   });
+  const badges = [];
   const release = source.slice(source.indexOf('async function releaseTab('), source.indexOf('// Re-banner a driven tab'));
   vm.runInContext(release, context);
   const predecessor = context.withSnap(7, () => blocker.promise);
@@ -728,6 +729,8 @@ test('real release invalidates queued work before asynchronous cleanup completes
   assert.equal(context.drivenTabs.has(7), false);
   assert.equal(context.tabOwner.has(7), false, 'release drops the link ownership with the driven state');
   assert.equal(context.humanReclaimed.has(7), true);
+  // null, not '': an empty per-tab value hid the global pairing-code badge on released tabs (review).
+  assert.deepEqual(JSON.parse(JSON.stringify(badges)), [{ tabId: 7, text: null }]);
   context.humanReclaimed.clear();
   context.drivenTabs.add(7);
   const refused = assert.rejects(following, /cancelled/);
@@ -907,6 +910,7 @@ function linksHarness({ owners = new Map(), driven = [], idReady = Promise.resol
   const drivenTabs = new Set(driven);
   const storage = { cloud, localAgents };
   const created = [];
+  const badge = [];
   const intervals = [];
   const context = vm.createContext({
     WS_URL: 'ws://127.0.0.1:9333/ws', BOOT_TS_P: Promise.resolve(123), PROFILE_ID: 'pid', PROFILE_NAME: 'oak', INSTALL_TYPE: 'dev',
@@ -918,6 +922,7 @@ function linksHarness({ owners = new Map(), driven = [], idReady = Promise.resol
       runtime: { getManifest: () => ({ version: '9.9.9' }) }, alarms: { create() {}, onAlarm: { addListener: (fn) => { alarm = fn; } } },
       storage: { local: { get: async (k) => (k === 'localAgents' && localRead ? { localAgents: await localRead } : { [k]: storage[k] }), set: async (o) => Object.assign(storage, structuredClone(o)) } },
       tabs: { create: async (o) => created.push(o) },
+      action: { setBadgeText: async (o) => badge.push(['text', o.text]), setBadgeBackgroundColor: async () => {}, setTitle: async (o) => badge.push(['title', o.title]) },
     },
     logLine: (line) => logs.push(line), drivenTabs, ownerOf: (tabId) => (drivenTabs.has(tabId) ? owners.get(tabId) || 'local' : null),
     inflight: new Map(), pillBusy: new Map(), tabActivity: new Map(), idleLabel: () => 'AI idle',
@@ -930,7 +935,7 @@ function linksHarness({ owners = new Map(), driven = [], idReady = Promise.resol
   vm.runInContext(linksSource + '\nthis.links = links; this.linkOpen = linkOpen; this.cloudState = cloudState; this.cloudPair = cloudPair; this.cloudSignOut = cloudSignOut; this.connect = connect; this.setLocal = (on) => { localOn = on; };', context);
   const flush = () => new Promise((r) => setImmediate(r));
   const fire = (ms) => timers.splice(0).filter((t) => t.ms === ms || (timers.push(t), false)).forEach((t) => t.fn());
-  return { context, sockets, timers, handled, painted, logs, flush, fire, alarm: () => alarm(), storage, created, intervals };
+  return { context, sockets, timers, handled, painted, logs, flush, fire, alarm: () => alarm(), storage, created, intervals, badge };
 }
 
 test('links: boot dials local with its handshake query, journal queues until open', async () => {
@@ -1332,6 +1337,8 @@ test('cloud: pairing starts a device code, opens the approval tab, polls, then d
   assert.deepEqual(started.pairing.code, 'ABCD-EFGH');
   assert.deepEqual(calls[0], ['/pair/start', { kind: 'chrome', name: 'oak' }]);
   assert.deepEqual(plain(h.created), [{ url: 'http://localhost:8787/pair?code=ABCD-EFGH' }]);
+  // The confirm page compares against the toolbar icon: the popup closes when that page opens.
+  assert.deepEqual(h.badge.slice(-2), [['text', 'ABCD'], ['title', 'chrome-bridge — Cloud Bridge code ABCD-EFGH']]);
   for (let i = 0; i < 2; i++) {
     h.fire(3000);
     await h.flush();
@@ -1341,6 +1348,7 @@ test('cloud: pairing starts a device code, opens the approval tab, polls, then d
   assert.equal(h.storage.cloud.hub, 'http://localhost:8787');
   assert.equal(h.storage.cloud.enabled, true);
   assert.equal(h.storage.cloud.pairing, null);
+  assert.deepEqual(h.badge.slice(-2), [['text', ''], ['title', 'chrome-bridge']], 'paired: the code badge goes');
   await h.flush();
   const arm = h.sockets.find((s) => s.url.includes('/arm'));
   assert.deepEqual(plain(arm?.protocols), ['cloud-bridge.v1', 'cbtoken.cba_new.' + 'y'.repeat(43)]);

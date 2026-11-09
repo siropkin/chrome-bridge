@@ -466,11 +466,23 @@ const cloudReady = chrome.storage.local
   .get('cloud')
   .then(({ cloud }) => {
     if (cloud && typeof cloud === 'object') cloudCfg = { ...cloudCfg, ...cloud };
+    cloudBadge(); // a pairing that outlived the worker keeps its badge; none clears a stale one
   })
   .catch(() => {});
 function saveCloud(patch) {
   cloudCfg = { ...cloudCfg, ...patch };
+  if ('pairing' in patch) cloudBadge();
   return chrome.storage.local.set({ cloud: cloudCfg }).catch(() => {});
+}
+// While a pairing waits, the toolbar icon shows the code's first 4 characters:
+// the hub's confirm page says to compare them, and the popup (which shows the
+// whole code) closes the moment that page opens (Ivan, live: "where i see that
+// number?"). Global badge: per-tab driven markers (•) still win on their tabs.
+function cloudBadge() {
+  const code = cloudCfg.pairing?.code;
+  chrome.action?.setBadgeText({ text: code ? String(code).slice(0, 4) : '' })?.catch(() => {});
+  if (code) chrome.action?.setBadgeBackgroundColor({ color: '#7c3aed' })?.catch(() => {});
+  chrome.action?.setTitle({ title: code ? `chrome-bridge — Cloud Bridge code ${code}` : 'chrome-bridge' })?.catch(() => {});
 }
 function cloudArmUrl(hub) {
   const u = new URL('/arm', hub);
@@ -1526,7 +1538,9 @@ async function releaseTab(tabId, opts = {}) {
   if (opts.flash) humanReclaimed.set(tabId, Date.now());
   drivenTabs.delete(tabId);
   tabOwner.delete(tabId);
-  chrome.action.setBadgeText({ tabId, text: '' }).catch(() => {}); // the everywhere-marker (markTab) — restore it everywhere too
+  // null, not '': an empty per-tab value would hide the global badge (the
+  // Cloud Bridge pairing code) on this tab for the rest of its life (review).
+  chrome.action.setBadgeText({ tabId, text: null }).catch(() => {}); // the everywhere-marker (markTab) — restore it everywhere too
   // The human's ⏏ (flash) also cuts a live net capture short — the same
   // detached/wake handshake onDetach uses: the capture reports "cut short"
   // and detaches NOW instead of sleeping out its --dur on a tab it no

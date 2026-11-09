@@ -145,7 +145,7 @@ table "1. Playa Phone (playaphone.com) 122 poin… hide | 41 comments" @e14
 
 Cloud Bridge 让云端 AI 应用(Claude.ai、ChatGPT 和其他远程 MCP 客户端)通过你登录的中转站(hub)驱动这个 Chrome,本地智能体照常工作。配对某个配置文件之前,它一直是关闭的:
 
-1. 工具栏弹窗 → ⚙ → 打开 **Cloud AI apps** → **Connect**(已预填公共 Cloud Bridge;如果你自己运行 hub,点 **Use another Cloud Bridge address**)。hub 会在新标签页打开:用 GitHub 登录,核对验证码与弹窗一致,点击 **Connect**。
+1. 工具栏弹窗 → ⚙ → 打开 **Cloud AI apps** → **Connect**(已预填公共 Cloud Bridge;如果你自己运行 hub,点 **Use another Cloud Bridge address**)。hub 会在新标签页打开:用 GitHub 登录,点击 **Connect**(等待期间,页面上的验证码前 4 位也会显示在 chrome-bridge 工具栏图标上)。
 2. 确认后的页面会显示 **Now add Cloud Bridge to your AI app**:复制链接,点击 **Open Claude** 或 **Open ChatGPT**,按下面两三行步骤操作。之后,弹窗的 **Add to Claude** / **Add to ChatGPT**(⚙ Settings 中 Cloud AI apps 下方)会复制链接并打开同样的步骤。Claude 每次操作前都会询问;对信任的操作选择 **Always allow**。
 
 关闭 **Cloud AI apps** 会立即让这个浏览器退出 Cloud Bridge:浏览器丢弃令牌,hub 也删除这个配置的记录,AI 应用不再列出它。再次打开会重新连接。在连接任何 Chrome 之前就添加的连接器已经带有 Chrome 工具;在 Chrome 连接之前,它们会回复如何连接。公共 hub(`https://cloud-bridge.ivan-seredkin.workers.dev`,[siropkin/cloud-bridge](https://github.com/siropkin/cloud-bridge) 的预览版)由 chrome-bridge 的开发者运行;它保存哪些数据见 [PRIVACY.md](PRIVACY.md)。你也可以自己部署(见其 README)。
