@@ -536,6 +536,11 @@ const CLOUD_TOOLS = (link) =>
   globalThis.BridgeCommands.TOOLS.filter((t) => !(t.command && link?.policy?.commands?.[t.command] === 'off')).map(({ command, ...t }) => t);
 
 const cloudText = (text, isError = false) => ({ content: [{ type: 'text', text }], isError });
+// The dispatch deadline the local server stamps on every command (server.mjs
+// ask()): a --diff action queued past it refuses to run rather than act late.
+// Without one, every cloud --diff action expired before running (found live).
+// Inside the hub's own 120s call timeout; a human hand-off gets its timeout.
+const cloudDeadline = (msg) => Date.now() + (msg.human ? Math.min(Number(msg.timeout) || 120000, 280000) + 5000 : 70000);
 // The module's errors are worded for the CLI; the cloud has no cli.mjs.
 const cloudWords = (text) => String(text).replace(' (see: cli.mjs profiles)', ': pick the Chrome with the tool\'s profile argument instead');
 
@@ -751,7 +756,7 @@ async function cloudArgv(link, argv) {
     return cloudText(cloudWords(errMsg(err)), true);
   }
   if (parsed.name === 'fetch') return cloudFetch(link, parsed);
-  const reply = await runCommand(link, { ...parsed.msg });
+  const reply = await runCommand(link, { ...parsed.msg, deadlineAt: cloudDeadline(parsed.msg) });
   const warnings = C.replyWarnings(reply);
   if (!reply.ok) return cloudText([String(reply.error), ...warnings].join('\n'), true);
   if (parsed.name === 'doctor') {

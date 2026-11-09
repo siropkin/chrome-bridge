@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Chrome Bridge - AI Agent Browser Automation",
-  "version": "1.32.0",
+  "version": "1.32.1",
   "minimum_chrome_version": "117",
   "description": "Open-source browser automation for shell-capable AI agents. Uses existing Chrome tabs and a local Node.js server.",
   "icons": { "128": "icons/icon128.png", "48": "icons/icon48.png", "32": "icons/icon32.png", "16": "icons/icon16.png" },

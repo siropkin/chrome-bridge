@@ -1281,7 +1281,7 @@ test('cloud: tools/list offers chrome, chrome_batch and the typed tools, minus t
 test('cloud: typed tools build the command line and run it through the same grammar and policy', async () => {
   const { call, handled, text, ws, flush } = await cloudArm();
   assert.equal(text(await call('chrome_snap', { tab: 'github', skeleton: true, find: 'the search box' })), 'ok');
-  assert.deepEqual(plain(handled.at(-1)), { type: 'snap', urlMatch: 'github', scope: null, diff: false, href: false, skeleton: true, find: 'the search box', _link: 'cloud' });
+  assert.deepEqual({ ...plain(handled.at(-1)), deadlineAt: undefined }, { deadlineAt: undefined, type: 'snap', urlMatch: 'github', scope: null, diff: false, href: false, skeleton: true, find: 'the search box', _link: 'cloud' });
   await call('chrome_fill', { tab: 'github', target: '@e5', value: '--not a flag' });
   assert.deepEqual([handled.at(-1).type, handled.at(-1).value, handled.at(-1).diff], ['fill', '--not a flag', true], 'the value rides after --, actions observe with --diff');
   await call('chrome_press', { tab: 'github', key: 'Enter', target: '@e5' });
@@ -1335,7 +1335,7 @@ test('cloud: upload takes data: URLs, and public URLs downloaded by the hub — 
   ]);
   assert.deepEqual(asked, ['https://files.test/docs/report%201.pdf'], 'the hub downloads the URL');
   await call('chrome_upload', { tab: 'github', target: '#file', files: [{ name: 'a.png', base64: 'iVBORw0KGgo=', mimeType: 'image/png' }], chooser: true });
-  assert.deepEqual(plain(handled.at(-1)), { type: 'upload', urlMatch: 'github', target: '#file', files: [{ name: 'a.png', mimeType: 'image/png', data: 'iVBORw0KGgo=' }], chooser: true, diff: true, _link: 'cloud' });
+  assert.deepEqual({ ...plain(handled.at(-1)), deadlineAt: undefined }, { deadlineAt: undefined, type: 'upload', urlMatch: 'github', target: '#file', files: [{ name: 'a.png', mimeType: 'image/png', data: 'iVBORw0KGgo=' }], chooser: true, diff: true, _link: 'cloud' });
   const n = handled.length;
   const refusals = [
     ['upload github @e1 a.png', /^a\.png is not a URL\. Cloud Bridge can't read files on the user's computer: give a public http\(s\) URL/],
@@ -1362,6 +1362,17 @@ test('cloud: upload takes data: URLs, and public URLs downloaded by the hub — 
   await pending;
   await h.flush();
   assert.match(ws.sent.find((m) => m.id === 'up').result.content[0].text, /^the connection to Cloud Bridge dropped before it answered$/);
+});
+
+test('cloud: every command carries a dispatch deadline like the local server\'s (--diff actions refused without one, found live)', async () => {
+  const { call, handled } = await cloudArm();
+  const t0 = Date.now();
+  await call('chrome_click', { tab: 'github', target: '@e1' });
+  await call('chrome', { command: 'wait github --human' });
+  const [click, human] = handled;
+  assert.ok(click.diff && Number.isFinite(click.deadlineAt), 'actAndVerify refuses a --diff action without a finite deadlineAt');
+  assert.ok(click.deadlineAt >= t0 + 60000 && click.deadlineAt <= Date.now() + 70000, 'about the server\'s 70s, inside the hub\'s 120s');
+  assert.ok(human.deadlineAt >= t0 + 120000, 'a human hand-off gets its own timeout');
 });
 
 test('cloud: a command line runs through the CLI grammar, tagged with the cloud link', async () => {
