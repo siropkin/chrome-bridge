@@ -1,16 +1,16 @@
-// chrome-bridge popup. Main view: a status line and ONE card for the state the
-// bridge is in, each with one main button —
-//   not running  → copy the setup prompt for the agent
-//   agent busy   → release its tabs (the human's emergency stop; the one
-//                  reclaim path that works even when a driven tab can't show the
-//                  pill: chrome://, Web Store, PDF)
-//   idle         → copy this tab's id:<tabId> reference for the agent (the exact
-//                  <match> every cli command understands — see findTab)
-// plus an amber update banner when the extension and the bridge on disk differ.
-// ⚙ opens Settings: Cloud access (Cloud Bridge pairing), diagnostic logs, the
-// profile name. Tabs come from chrome.tabs (extension pages have the tabs
-// permission too); release, cloud and logging ride the service worker via
-// runtime messaging. Bridge status comes from GET /health — a GET, so the
+// chrome-bridge popup. Main view: a status line, and ONE card —
+//   helper not running → copy the setup prompt for the agent
+//   otherwise          → copy this tab's id:<tabId> reference for the agent
+//                        (the exact <match> every cli command understands)
+// While the agent drives tabs, the status says so and a red ■ beside ⚙ stops
+// it in all of them (the human's emergency stop — the one reclaim path that
+// works even when a driven tab can't show the pill: chrome://, Web Store, PDF);
+// "Stop the agent in this tab" appears when this tab is one of them. An amber
+// banner asks for an update when the extension and the bridge on disk differ.
+// ⚙ opens Settings: this profile's name, agents on this computer (setup
+// prompt), cloud AI apps (Cloud Bridge), diagnostic logs.
+// Tabs come from chrome.tabs; stop, cloud and logging ride the service worker
+// via runtime messaging. Bridge status comes from GET /health — a GET, so the
 // server's drive-by guards don't apply, and <all_urls> covers 127.0.0.1.
 // The popup is tested in a vm whose elements are plain objects: no classList,
 // document.body or timers here (className/textContent/hidden only).
@@ -36,23 +36,26 @@ function setStatus(text, kind) {
 }
 
 function render() {
-  // Release first, whatever the status line says: the worker's driven tabs
-  // don't depend on the local helper (the cloud link drives tabs without it,
-  // and a crashed server leaves its tabs marked) — the emergency stop must
-  // never hide behind "Not running" or "Reconnecting…".
-  // An unknown state (null: the worker didn't answer) keeps the last known
-  // tabs — "unknown" must never read as "nothing to release".
+  // Stop first, whatever the status line says: the worker's driven tabs don't
+  // depend on the local helper (the cloud link drives tabs without it, and a
+  // crashed server leaves its tabs marked) — the emergency stop must never
+  // hide behind "Not running" or "Reconnecting…". An unknown state (null: the
+  // worker didn't answer) keeps the last known tabs — "unknown" must never
+  // read as "nothing to stop".
   if (bridgeState) lastKnownState = bridgeState;
-  const busy = (lastKnownState?.count || 0) > 0;
-  renderDriven(busy);
+  const n = lastKnownState?.count || 0;
+  const busy = n > 0;
+  renderStop(n);
   $('idle').hidden = true;
   if (bridgeDown) {
     setStatus('Not running', 'down');
+    $('local-status').textContent = "The helper isn't running — copy the setup prompt into your agent";
     $('setup-card').hidden = false;
     return;
   }
   if (!bridgeHealth) return; // health hasn't answered yet: "Checking…" stays
   $('setup-card').hidden = true;
+  $('local-status').textContent = 'Claude Code, Cursor and others can use this browser';
   if (!(bridgeHealth.ok && bridgeHealth.extension)) return setStatus('Starting…', '');
   // Per-profile truth: /health's `extension` is ANY seat — with several
   // profiles connected, this profile's own worker can be down (or mid-reload)
@@ -61,22 +64,21 @@ function render() {
   if (bridgeState === null) return setStatus('Reloading — reopen this in a moment', '');
   if (bridgeState && bridgeState.connected === false) return setStatus('Reconnecting…', '');
   if (updateNeeded) setStatus('Update needed', 'warn');
-  else setStatus(busy ? 'Working' : 'Ready', busy ? 'busy' : 'ok');
-  if (bridgeState) $('idle').hidden = busy;
+  else if (busy) setStatus(`Working in ${n} tab${n > 1 ? 's' : ''}`, 'busy');
+  else setStatus('Ready', 'ok');
+  if (bridgeState) $('idle').hidden = false; // the tab ID stays copyable while the agent works
 }
 
-function renderDriven(busy) {
-  $('driven').hidden = !busy;
-  if (busy) {
-    const n = lastKnownState.count;
-    $('driven-count').textContent = `🟣 AI is using ${n} tab${n > 1 ? 's' : ''}`;
-    $('release-all').textContent = n > 1 ? `Release all ${n} tabs` : 'Release it';
-    // Only this profile's tabs: with several profiles connected, the stop button
-    // must not read wider than it is.
-    const several = (bridgeHealth?.profiles?.length || 0) > 1;
-    $('driven-msg').textContent = 'Tabs it uses wear a 🟣 pill. Releasing hands them back to you' + (several ? ' (in this Chrome profile).' : '.');
-    $('release-tab').hidden = !(lastKnownState.active && n > 1);
-  }
+// The ■ beside ⚙ (all of this profile's agent tabs — with several profiles
+// connected, the label must not read wider than it is) and the in-card link
+// for this tab only.
+function renderStop(n) {
+  $('release-all').hidden = n === 0;
+  const several = (bridgeHealth?.profiles?.length || 0) > 1;
+  const label = `Stop the agent in ${n > 1 ? `all ${n} tabs` : 'its tab'}${several ? ' (this Chrome profile)' : ''}`;
+  $('release-all').title = label;
+  $('release-all').setAttribute?.('aria-label', label);
+  $('release-tab').hidden = !(n > 0 && lastKnownState?.active);
 }
 
 // Version drift: Chrome auto-updates a store extension, but the bridge on disk
@@ -167,7 +169,7 @@ chrome.tabs.query({ active: true, currentWindow: true }).then(async ([tab]) => {
       let failure;
       try {
         const response = await chrome.runtime.sendMessage(msg);
-        if (response?.error || !Number.isInteger(response?.count) || response.count < 0) throw new Error(response?.error || 'Release acknowledgement unavailable');
+        if (response?.error || !Number.isInteger(response?.count) || response.count < 0) throw new Error(response?.error || 'no acknowledgement from the extension');
       } catch (error) {
         failure = error;
       }
@@ -178,7 +180,7 @@ chrome.tabs.query({ active: true, currentWindow: true }).then(async ([tab]) => {
         bridgeState = null;
         render();
       }
-      $('status').textContent = failure ? 'Release failed: ' + failure : 'Released ✓ — the tabs are yours again';
+      $('status').textContent = failure ? 'Stop failed: ' + failure : 'Stopped ✓ — the tabs are yours again';
       $('release-tab').disabled = $('release-all').disabled = false;
     });
   };
@@ -226,15 +228,18 @@ function renderCloud(state, error) {
   $('cloud-enabled').checked = s.paired ? s.enabled : formOpen;
   $('cloud-pair-row').hidden = !formOpen;
   $('cloud-paired').hidden = !s.paired;
+  if (!s.paired) $('cloud-help').hidden = true;
   $('cloud-pair').textContent = s.pairing ? 'Start again' : 'Connect';
   $('cloud-code').hidden = !s.pairing;
   if (s.pairing) $('cloud-code').textContent = `Code ${s.pairing.code} — confirm it in the tab that opened (${s.pairing.verificationUri})`;
+  // The switch already says on/off: the line says what that means right now.
   let line;
-  if (s.pairing) line = 'Waiting for you to confirm at Cloud Bridge…';
+  if (s.pairing) line = 'Waiting for you to confirm in the tab that opened…';
   else if (!s.paired) line = 'Let Claude.ai or ChatGPT use this browser';
-  else if (!s.enabled) line = `Off · connected to ${host}`;
-  else if (s.connected) line = `On · cloud AI apps can use “${s.profile}”`;
-  else line = `On · reaching ${host}…`;
+  else if (!s.enabled) line = "Paused: cloud AI apps can't use this browser";
+  else if (s.connected) line = 'Claude.ai and ChatGPT can use this browser';
+  else line = "Can't reach Cloud Bridge right now — retrying";
+  $('cloud-status').title = host ? 'Cloud Bridge: ' + host : '';
   $('cloud-status').textContent = [error, s.notice, line].filter(Boolean).join(' · ');
 }
 async function cloudRequest(msg) {
@@ -256,9 +261,20 @@ $('cloud-enabled').addEventListener('change', () => {
   $('cloud-pair-row').hidden = !cloudFormOpen;
 });
 $('cloud-unpair').addEventListener('click', () => cloudRequest({ type: 'cloud-unpair' }));
+// Add to Claude or ChatGPT: the connector link alone means nothing to the
+// app's user — the steps say where it goes.
+$('cloud-add').addEventListener('click', () => {
+  $('cloud-help').hidden = !$('cloud-help').hidden;
+});
 $('cloud-copy-mcp').addEventListener('click', () => {
-  const url = new URL('/mcp', cloudState.hub).href;
-  copyTo(url, 'cloud-status', `Copied ${url} ✓ — add it as a custom connector in Claude or ChatGPT`);
+  navigator.clipboard.writeText(new URL('/mcp', cloudState.hub).href).then(
+    () => {
+      $('cloud-copy-mcp').textContent = 'Copied ✓';
+    },
+    (e) => {
+      $('cloud-copy-mcp').textContent = 'Copy failed: ' + e;
+    }
+  );
 });
 
 // Diagnostic logs: the switch saves at once; the size limit, folder and
@@ -271,21 +287,24 @@ function renderLogging() {
     $('logging-enabled').checked = false;
     $('log-limit').value = '';
     $('log-folder').value = '';
-    $('logging-status').textContent = 'State unknown: status unavailable. Retry or reopen Settings.';
+    $('logging-status').textContent = "Couldn't read this setting (status unavailable). Retry or reopen Settings.";
     return;
   }
   $('logging-enabled').checked = loggingState.enabled;
   $('log-limit').value = String(loggingState.limitMiB);
   $('log-folder').value = loggingState.directory;
-  // Usage only when there is something to report: an empty "Off · 0.00 / 10 MiB" is noise.
-  const usage = loggingState.bytes == null ? 'usage unavailable' : loggingState.bytes || loggingState.enabled ? `${(loggingState.bytes / 1024 / 1024).toFixed(2)} / ${loggingState.limitMiB} MiB` : '';
-  $('logging-status').textContent = [loggingState.enabled ? 'On' : 'Off', usage, loggingState.error ? 'Storage error' : ''].filter(Boolean).join(' · ');
+  // The switch says on/off; the line says what that means: how much is used.
+  const mb = (b) => (b / 1024 / 1024).toFixed(1).replace(/\.0$/, '');
+  let line;
+  if (!loggingState.enabled) line = loggingState.bytes ? `Off · ${mb(loggingState.bytes)} MB kept from before` : 'Local files that help debug problems';
+  else line = loggingState.bytes == null ? `Up to ${loggingState.limitMiB} MB` : `Using ${mb(loggingState.bytes)} of ${loggingState.limitMiB} MB`;
+  $('logging-status').textContent = line + (loggingState.error ? ' · storage error' : '');
 }
 
 async function loggingRequest(action, extra = {}) {
   if (loggingBusy || (action !== 'status' && !loggingState)) return;
   loggingBusy = true;
-  for (const id of ['logging-enabled', 'log-limit', 'logging-save', 'logging-delete', 'logging-confirm']) $(id).disabled = true;
+  for (const id of ['logging-enabled', 'log-limit', 'logging-delete', 'logging-confirm']) $(id).disabled = true;
   $('logging-retry').disabled = true;
   const request = async (requestedAction, values = {}) => {
     const response = await chrome.runtime.sendMessage({ type: 'diagnostics', action: requestedAction, ...values });
@@ -307,7 +326,7 @@ async function loggingRequest(action, extra = {}) {
     if (loggingState) $('logging-status').textContent = 'Change acknowledgement unavailable; current status refreshed. ' + $('logging-status').textContent;
   } finally {
     loggingBusy = false;
-    for (const id of ['logging-enabled', 'log-limit', 'logging-save']) $(id).disabled = !loggingState;
+    for (const id of ['logging-enabled', 'log-limit']) $(id).disabled = !loggingState;
     $('logging-delete').disabled = !loggingState || loggingState.bytes === 0;
     $('logging-confirm').disabled = !loggingState;
     $('logging-retry').hidden = !!loggingState;
@@ -318,15 +337,17 @@ async function loggingRequest(action, extra = {}) {
 async function saveLimit() {
   const limitMiB = Number($('log-limit').value);
   if (!Number.isInteger(limitMiB) || limitMiB < 1 || limitMiB > 100) {
-    $('logging-status').textContent = 'Enter a whole-number limit from 1 to 100 MiB.';
+    $('logging-status').textContent = 'Enter a whole number of MB from 1 to 100.';
     return;
   }
   await loggingRequest('configure', { enabled: $('logging-enabled').checked, limitMiB });
 }
+// The limit saves itself on change (Enter submits the form — same save).
 $('logging-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   await saveLimit();
 });
+$('log-limit').addEventListener('change', saveLimit);
 // The switch saves only on/off, with the SAVED limit: an unsaved (or invalid)
 // value in Details must neither block the switch nor ride along with it.
 $('logging-enabled').addEventListener('change', async () => {

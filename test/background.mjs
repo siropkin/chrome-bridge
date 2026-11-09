@@ -1095,7 +1095,7 @@ test('cloud: a paired profile dials /arm with its token as a subprotocol, says h
   assert.deepEqual(plain(ws.protocols), ['cloud-bridge.v1', 'cbtoken.' + PAIRED.token]);
   assert.equal(ws.sent[0].method, 'arm/hello');
   assert.deepEqual({ ...ws.sent[0].params, offlineHint: undefined }, { kind: 'chrome', name: 'oak', version: '9.9.9', selector: 'profile', offlineHint: undefined });
-  assert.match(ws.sent[0].params.offlineHint, /profile chrome-bridge calls "oak".*Cloud access is on in the chrome-bridge popup's ⚙ Settings/);
+  assert.match(ws.sent[0].params.offlineHint, /profile chrome-bridge calls "oak".*Cloud AI apps is on in the chrome-bridge popup's ⚙ Settings/);
   assert.equal(intervals[0].ms, 20000);
   intervals[0].fn();
   assert.equal(ws.sent.at(-1), 'ping');

@@ -458,7 +458,7 @@ function cloudOpen(link, s) {
   const version = chrome.runtime.getManifest().version;
   s.send(JSON.stringify({ jsonrpc: '2.0', method: 'arm/hello', params: {
     kind: 'chrome', name: PROFILE_NAME, version, selector: 'profile',
-    offlineHint: `Ask the user to open Chrome (the profile chrome-bridge calls "${PROFILE_NAME}") and check that Cloud access is on in the chrome-bridge popup's ⚙ Settings`,
+    offlineHint: `Ask the user to open Chrome (the profile chrome-bridge calls "${PROFILE_NAME}") and check that Cloud AI apps is on in the chrome-bridge popup's ⚙ Settings`,
   } }));
   s._ping = setInterval(() => {
     try {

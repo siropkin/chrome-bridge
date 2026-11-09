@@ -18,11 +18,11 @@ The connected AI agent receives page content and may send it to its model provid
 
 ## Cloud Bridge (optional, off by default)
 
-Turning on **Cloud access** in the popup's ⚙ Settings and connecting a profile opens a second WebSocket, from your browser to the hub URL you enter, so cloud AI apps you authorize at that hub (Claude.ai, ChatGPT…) can drive this profile. While it is paired and switched on:
+Turning on **Cloud AI apps** in the popup's ⚙ Settings and connecting a profile opens a second WebSocket, from your browser to the hub URL you enter, so cloud AI apps you authorize at that hub (Claude.ai, ChatGPT…) can drive this profile. While it is paired and switched on:
 
 - Commands arrive from the hub, and their results go back to it: page structure and text, screenshots, console and network lines, fetched bodies — whatever the command returns. The hub passes them to the AI app that called, which may send them to its model provider.
 - There is no end-to-end encryption: MCP ends at the hub, so the hub's operator can technically read what passes through it. The connection is TLS on a hosted hub. The reference hub ([siropkin/cloud-bridge](https://github.com/siropkin/cloud-bridge)) stores call metadata only for 30 days: time, AI app, profile, tool name (`chrome`, `chrome_batch`), success, duration, and the hub's own error message (an error the extension returns is stored as a fixed marker, since its text can echo the command). Not arguments, not results.
-- Commands that would read your disk or clipboard, or manage the local install, are refused over this link. The Cloud access switch cuts the link immediately; **Disconnect** deletes the token from the browser.
+- Commands that would read your disk or clipboard, or manage the local install, are refused over this link. The Cloud AI apps switch pauses the link immediately; **Sign out of Cloud Bridge** deletes the token from the browser.
 
 ## Permissions, and why
 
@@ -40,7 +40,7 @@ The automation command channel stays on `127.0.0.1`. That does not keep the webs
 Local browser storage only, on your machine:
 
 - a randomly generated profile id (to tell your Chrome profiles apart in the CLI),
-- if you paired Cloud Bridge: the hub URL, the hub's access token for this profile, the on/off switch and a pending pairing code. **Disconnect** deletes the token, the switch and the pending code; the hub URL stays so pairing again is one click,
+- if you paired Cloud Bridge: the hub URL, the hub's access token for this profile, the on/off switch and a pending pairing code. **Sign out of Cloud Bridge** deletes the token, the switch and the pending code; the hub URL stays so pairing again is one click,
 - per-tab session state: driven markers, emulation and status flags, and the pill's recent-activity narration (short labels describing recent actions, which can include element text or search terms from the page).
 
 All of it lives in session storage and is cleared when the browser closes — except two things in local storage, which survive restarts: the profile id (it names your profile in the CLI; it is random, not derived from any account) and, once you pair, the Cloud Bridge settings above, including the hub's access token. No browsing history, website credentials, or page content is persisted beyond the browser session.

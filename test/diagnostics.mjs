@@ -347,7 +347,7 @@ test('popup reconciles applied mutations after lost or failed acknowledgements',
       assert.equal(element('logging-enabled').checked, settings.enabled);
       assert.equal(element('log-limit').value, String(settings.limitMiB));
       assert.equal(element('logging-delete').disabled, settings.bytes === 0);
-      assert.equal(element('logging-save').disabled, false);
+      assert.equal(element('log-limit').disabled, false);
       assert.match(element('logging-status').textContent, /acknowledgement.*current status/i);
       assert.doesNotMatch(element('logging-status').textContent, /private|saved|deleted/i);
     }
@@ -371,9 +371,9 @@ test('popup unknown logging state disables mutations and recovers by retry or re
     element('log-limit').value = '25';
     await element('logging-form').handlers.submit({ preventDefault() {} });
     assert.equal(element('logging-enabled').indeterminate, true);
-    assert.match(element('logging-status').textContent, /unknown.*unavailable/i);
+    assert.match(element('logging-status').textContent, /Couldn't read this setting.*unavailable/i);
     assert.doesNotMatch(element('logging-status').textContent, /private|\bOn\b|\bOff\b/);
-    for (const id of ['logging-enabled', 'log-limit', 'logging-save', 'logging-delete', 'logging-confirm']) assert.equal(element(id).disabled, true, id);
+    for (const id of ['logging-enabled', 'log-limit', 'logging-delete', 'logging-confirm']) assert.equal(element(id).disabled, true, id);
     assert.equal(element('logging-retry').hidden, false);
     assert.equal(element('logging-retry').disabled, false);
     offline = false;
@@ -385,12 +385,12 @@ test('popup unknown logging state disables mutations and recovers by retry or re
     assert.equal(element('logging-enabled').indeterminate, false);
     assert.equal(element('logging-enabled').checked, false);
     assert.equal(element('log-limit').value, '25');
-    assert.equal(element('logging-save').disabled, false);
+    assert.equal(element('log-limit').disabled, false);
     assert.equal(element('logging-retry').hidden, true);
     offline = true;
     await open();
     assert.equal(element('logging-enabled').indeterminate, true);
-    assert.equal(element('logging-save').disabled, true);
+    assert.equal(element('log-limit').disabled, true);
   }
 });
 
@@ -403,15 +403,19 @@ test('popup active release preserves remaining controls and refreshes the active
     return { count: driven.size };
   }, { tab: { id: 7 }, health: { ok: true, extension: true, profiles: [{}, {}] } });
   await settle();
+  assert.equal(element('status-text').textContent, 'Working in 2 tabs');
+  assert.equal(element('idle').hidden, false, 'the tab ID stays copyable while the agent works');
+  assert.equal(element('release-tab').hidden, false, 'this tab is one of them: the in-card stop shows');
+  assert.equal(element('release-all').title, 'Stop the agent in all 2 tabs (this Chrome profile)', 'several profiles: the stop must not read wider than it is');
   await element('release-tab').handlers.click();
-  assert.equal(element('driven').hidden, false);
-  assert.equal(element('status-text').textContent, 'Working');
-  assert.equal(element('driven-count').textContent, '🟣 AI is using 1 tab');
-  assert.equal(element('release-tab').hidden, true, 'one tab left: "Release it" covers it');
-  assert.equal(element('release-all').textContent, 'Release it');
-  assert.match(element('driven-msg').textContent, /in this Chrome profile/, 'several profiles: the stop button must not read wider than it is');
+  assert.equal(element('release-all').hidden, false);
+  assert.equal(element('status-text').textContent, 'Working in 1 tab');
+  assert.equal(element('release-tab').hidden, true, 'this tab is no longer driven');
+  assert.equal(element('release-all').title, 'Stop the agent in its tab (this Chrome profile)');
+  assert.equal(element('status').textContent, 'Stopped ✓ — the tabs are yours again');
   await element('release-all').handlers.click();
-  assert.equal(element('driven').hidden, true);
+  assert.equal(element('release-all').hidden, true);
+  assert.equal(element('status-text').textContent, 'Ready');
 });
 
 test('popup shows one card per state: setup when the bridge is down, the tab ID copy when idle', async () => {
@@ -421,7 +425,8 @@ test('popup shows one card per state: setup when the bridge is down, the tab ID 
   assert.equal(down.element('status-text').textContent, 'Not running');
   assert.equal(down.element('setup-card').hidden, false);
   assert.equal(down.element('idle').hidden, true, 'no agent to paste a tab ID to');
-  assert.equal(down.element('driven').hidden, true);
+  assert.equal(down.element('release-all').hidden, true);
+  assert.match(down.element('local-status').textContent, /isn't running/);
   let copied = '';
   const up = popupHarness(state, { tab: { id: 7 }, clipboard: { writeText: async (t) => { copied = t; } } });
   await up.settle();
@@ -476,11 +481,11 @@ test('popup release errors and missing acknowledgements never claim success', as
     }, { tab: { id: 7 } });
     await settle();
     await element('release-all').handlers.click();
-    assert.match(element('status').textContent, /Release failed/);
-    assert.doesNotMatch(element('status').textContent, /Released/);
-    assert.equal(element('driven').hidden, false);
+    assert.match(element('status').textContent, /Stop failed/);
+    assert.doesNotMatch(element('status').textContent, /Stopped/);
+    assert.equal(element('release-all').hidden, false);
     assert.equal(element('release-all').disabled, false);
-    if (failure !== 'refresh') assert.equal(element('driven-count').textContent, '🟣 AI is using 1 tab');
+    if (failure !== 'refresh') assert.equal(element('status-text').textContent, 'Working in 1 tab');
   }
 });
 
@@ -529,7 +534,7 @@ test('popup Cloud access (Settings): unpaired, the switch opens the address form
   assert.equal(element('cloud-code').hidden, false);
   assert.match(element('cloud-code').textContent, /^Code ABCD-EFGH — confirm it in the tab that opened/);
   assert.equal(element('cloud-pair').textContent, 'Start again');
-  assert.equal(element('cloud-status').textContent, 'Waiting for you to confirm at Cloud Bridge…');
+  assert.equal(element('cloud-status').textContent, 'Waiting for you to confirm in the tab that opened…');
   assert.equal(sent.filter((m) => m.type === 'cloud-state').length, 0, 'state comes with bridge-state: no extra round trip');
 });
 
@@ -544,27 +549,40 @@ test('popup Cloud access (Settings): paired shows the switch, copy link and disc
     return { ok: true, ...cloud };
   }, { tab: { id: 7 } });
   await settle();
-  assert.equal(element('cloud-status').textContent, 'On · cloud AI apps can use “poplar”');
+  assert.equal(element('cloud-status').textContent, 'Claude.ai and ChatGPT can use this browser', 'the switch says on; the line says what it means');
+  assert.equal(element('cloud-help').hidden, true);
+  await element('cloud-add').handlers.click();
+  assert.equal(element('cloud-help').hidden, false, 'Add to Claude or ChatGPT shows where the link goes');
   assert.equal(element('cloud-enabled').checked, true);
   assert.equal(element('cloud-pair-row').hidden, true, 'a paired profile shows no address form');
   assert.equal(element('cloud-paired').hidden, false);
   element('cloud-enabled').checked = false;
   await element('cloud-enabled').handlers.change();
   assert.deepEqual(JSON.parse(JSON.stringify(sent.at(-1))), { type: 'cloud-toggle', enabled: false });
-  assert.equal(element('cloud-status').textContent, 'Off · connected to localhost:8787');
+  assert.equal(element('cloud-status').textContent, "Paused: cloud AI apps can't use this browser");
   await element('cloud-unpair').handlers.click();
   assert.equal(element('cloud-status').textContent, 'Let Claude.ai or ChatGPT use this browser');
   assert.equal(element('cloud-pair-row').hidden, true);
   assert.equal(element('cloud-paired').hidden, true);
 });
 
-test('popup: Release stays reachable when the local helper is down or reconnecting (review finding)', async () => {
+test('popup: Stop stays reachable when the local helper is down or reconnecting (review finding)', async () => {
   for (const variant of ['down', 'reconnecting']) {
     const { element, settle } = popupHarness(async (m) => (m.type === 'bridge-state' ? { count: 2, active: true, connected: variant !== 'reconnecting', profile: 'poplar' } : {}), { tab: { id: 7 }, healthDown: variant === 'down' });
     await settle();
-    assert.equal(element('driven').hidden, false, variant);
-    assert.equal(element('release-all').textContent, 'Release all 2 tabs');
+    assert.equal(element('release-all').hidden, false, variant);
+    assert.equal(element('release-all').title, 'Stop the agent in all 2 tabs');
+    assert.equal(element('release-tab').hidden, false, `${variant}: this tab is driven — its stop link shows too`);
     assert.equal(element('status-text').textContent, variant === 'down' ? 'Not running' : 'Reconnecting…');
+  }
+});
+
+test('popup: the stop links live outside the cards that hide by state (review finding)', () => {
+  const html = fs.readFileSync(new URL('../extension/popup.html', import.meta.url), 'utf8');
+  for (const card of ['idle', 'setup-card', 'update']) {
+    const start = html.indexOf(`<div id="${card}"`);
+    const block = html.slice(start, html.indexOf('\n  </div>', start));
+    assert.doesNotMatch(block, /id="release-(tab|all)"/, `a stop control inside #${card} hides with it`);
   }
 });
 
@@ -596,7 +614,11 @@ test('popup diagnostic logs: the switch saves at once, keeping the limit', async
   element('logging-enabled').checked = true;
   await element('logging-enabled').handlers.change();
   assert.deepEqual(JSON.parse(JSON.stringify(sent.at(-1))), { type: 'diagnostics', action: 'configure', enabled: true, limitMiB: 25 });
-  assert.match(element('logging-status').textContent, /^On · /);
+  assert.equal(element('logging-status').textContent, 'Using 0 of 25 MB', 'the switch says on; the line says how much is used');
+  element('log-limit').value = '30';
+  await element('log-limit').handlers.change();
+  assert.deepEqual(JSON.parse(JSON.stringify(sent.at(-1))), { type: 'diagnostics', action: 'configure', enabled: true, limitMiB: 30 }, 'the limit saves itself on change: no Save button');
+  assert.equal(element('logging-status').textContent, 'Using 0 of 30 MB');
   element('close-settings').handlers.click();
   assert.equal(element('main').hidden, false);
   assert.equal(element('settings-view').hidden, true);

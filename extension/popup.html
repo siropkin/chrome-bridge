@@ -3,41 +3,54 @@
 <title>chrome-bridge</title>
 <style>
   body { box-sizing: border-box; width: 340px; min-width: 340px; margin: 0; padding: 14px; font: 13px system-ui, sans-serif; color: #1f1333; background: #fff; }
-  .head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
-  #bridge-status { display: flex; align-items: center; gap: 7px; font-weight: 600; font-size: 14px; }
+  .head { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; }
+  #bridge-status { display: flex; align-items: center; gap: 7px; font-weight: 600; font-size: 14px; flex: 1; }
   #bridge-status .dot { width: 9px; height: 9px; border-radius: 50%; background: #bbb; }
   #bridge-status.ok .dot { background: #22c55e; }
   #bridge-status.busy .dot { background: #7c3aed; }
   #bridge-status.warn .dot { background: #f59e0b; }
   #bridge-status.down .dot { background: #d4d4d8; }
   #bridge-status.down { color: #71717a; }
-  /* the one way into Settings: big enough to find at a glance */
-  #open-settings { width: 34px; height: 34px; padding: 0; border: 0; border-radius: 8px; background: #f3f0ff; color: #5b21b6; font-size: 22px; line-height: 34px; cursor: pointer; }
-  #open-settings:hover { background: #ede9fe; }
   .msg { color: #3f3555; line-height: 1.45; margin-bottom: 12px; }
   .big { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
-  /* Same violet→indigo→cyan gradient as the in-page pill. */
-  button { width: 100%; padding: 9px 0; border: 0; border-radius: 8px; background: linear-gradient(135deg, #7c3aed, #4f46e5, #0e7490); color: #fff; font: 600 13px system-ui, sans-serif; cursor: pointer; }
-  button:disabled { opacity: 0.5; cursor: default; }
-  button.secondary, #release-tab, #cloud-unpair, #cloud-copy-mcp, #logging-delete, #logging-cancel, #logging-retry { background: #fff; color: #7c3aed; border: 1px solid #c4b5fd; }
-  #release-tab { margin-top: 8px; }
-  button.small { width: auto; flex: none; padding: 6px 10px; font-size: 12px; }
-  #release-all { background: #b91c1c; }
-  .hint { margin-top: 6px; color: #6b5f85; font-size: 11px; } /* AA on white */
+  .hint { margin-top: 6px; color: #6b5f85; font-size: 11px; line-height: 1.4; } /* AA on white */
   .feedback { min-height: 15px; margin-top: 6px; color: #5b21b6; font-size: 12px; overflow-wrap: anywhere; }
   .feedback:empty { min-height: 0; margin-top: 0; }
+
+  /* Buttons — four roles, nothing else:
+     primary   gradient (the pill's violet→indigo→cyan): the ONE main action of a view
+     secondary white with a violet outline: an alternative action
+     danger    red: stopping the agent, confirming a delete
+     quiet     violet text only: small or reversible actions (Back, Details, Sign out…)
+     quiet+danger: red text only, the small stop link
+     plus icon buttons in the header (⚙, and the red stop icon while the agent works). */
+  button { width: 100%; padding: 9px 0; border: 0; border-radius: 8px; background: linear-gradient(135deg, #7c3aed, #4f46e5, #0e7490); color: #fff; font: 600 13px system-ui, sans-serif; cursor: pointer; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button.secondary { background: #fff; color: #7c3aed; border: 1px solid #c4b5fd; }
+  button.danger { background: #b91c1c; }
+  button.quiet { width: auto; padding: 4px 0; background: none; color: #7c3aed; font-weight: 600; font-size: 12px; }
+  button.quiet:hover { text-decoration: underline; }
+  button.small { width: auto; flex: none; padding: 6px 10px; font-size: 12px; }
+  button.icon { width: 32px; height: 32px; padding: 0; flex: none; background: none; line-height: 32px; }
+  #open-settings { color: #6b5f85; font-size: 24px; }
+  #open-settings:hover { color: #5b21b6; }
+  #release-all { color: #b91c1c; }
+  #release-all svg { vertical-align: middle; }
+  #release-all:hover { color: #7f1d1d; }
+  button.quiet.danger { background: none; color: #b91c1c; }
+
   /* the extension and the bridge on disk are out of step — amber: it still works, partly */
   #update { background: #fef3c7; color: #78350f; border-radius: 8px; padding: 10px; margin-bottom: 12px; }
   #copy-update { margin-top: 8px; background: #fff; color: #78350f; border: 1px solid #b45309; }
+
   /* Settings view */
-  #close-settings { width: auto; padding: 4px 6px; background: none; color: #7c3aed; font-weight: 600; }
-  .view-title { font-weight: 600; font-size: 14px; }
+  .view-title { font-weight: 600; font-size: 14px; flex: 1; text-align: center; margin-right: 40px; }
   .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .row b { display: block; font-size: 13px; }
-  .row .sub { display: block; color: #6b5f85; font-size: 11px; overflow-wrap: anywhere; }
+  .row .sub { display: block; color: #6b5f85; font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
   .row .sub b { display: inline; font-size: inherit; color: #3f3555; }
   .setting { padding: 12px 0; border-top: 1px solid #ede9fe; }
-  .setting:first-of-type { border-top: 0; padding-top: 4px; }
+  .setting:first-of-type { border-top: 0; padding-top: 2px; }
   input[type=checkbox].switch { appearance: none; width: 34px; height: 20px; flex: none; border-radius: 10px; background: #d4d4d8; position: relative; cursor: pointer; margin: 0; }
   input[type=checkbox].switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .12s; }
   input[type=checkbox].switch:checked { background: #7c3aed; }
@@ -45,24 +58,25 @@
   input[type=checkbox].switch:disabled { opacity: 0.5; cursor: default; }
   .field { display: block; width: 100%; box-sizing: border-box; font: 12px ui-monospace, monospace; padding: 7px; border: 1px solid #c4b5fd; border-radius: 6px; margin: 8px 0; }
   #cloud-code { margin-top: 8px; font: 12px ui-monospace, monospace; background: #ede9fe; color: #5b21b6; border-radius: 6px; padding: 6px 8px; overflow-wrap: anywhere; }
-  .pair-buttons { display: flex; gap: 6px; margin-top: 8px; }
-  .pair-buttons[hidden] { display: none; } /* display:flex would beat the hidden attribute */
-  details summary { cursor: pointer; color: #7c3aed; font-size: 12px; margin-top: 6px; }
+  #cloud-add { margin-top: 8px; }
+  #cloud-help { margin-top: 8px; padding: 8px 10px; border-radius: 6px; background: #f6f3ff; color: #3f3555; font-size: 12px; line-height: 1.5; }
+  #cloud-help ol { margin: 0; padding-left: 18px; }
+  #cloud-help li { margin: 2px 0; }
+  details summary { cursor: pointer; color: #7c3aed; font-size: 12px; font-weight: 600; margin-top: 6px; }
   .setting-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 0; }
   #log-limit { width: 64px; padding: 4px; font: inherit; }
-  #logging-save, #logging-delete, #logging-confirm, #logging-cancel, #logging-retry { margin-top: 6px; }
-  #logging-confirm { background: #b91c1c; }
-  .foot { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; padding-top: 10px; border-top: 1px solid #ede9fe; }
+  .foot { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; padding-top: 10px; border-top: 1px solid #ede9fe; }
   #rate { color: #7c3aed; font-size: 11px; text-decoration: none; }
   #rate:hover { text-decoration: underline; }
 </style>
 
-<!-- Main view: a status line, then ONE card for the state the bridge is in
-     (setup / agent working / idle), each with one main button. -->
+<!-- Main view: status line (+ ■ stop while the agent works, ⚙), then ONE
+     card: set up the helper, or copy this tab's ID for the agent. -->
 <div id="main">
   <div class="head">
     <div id="bridge-status" role="status"><span class="dot"></span><span id="status-text">Checking…</span></div>
-    <button id="open-settings" title="Settings" aria-label="Settings">⚙</button>
+    <button id="release-all" class="icon" hidden><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/><rect x="8" y="8" width="8" height="8" rx="1.5" fill="currentColor"/></svg></button>
+    <button id="open-settings" class="icon" title="Settings" aria-label="Settings">⚙</button>
   </div>
   <div id="update" hidden>
     <div id="update-text"></div>
@@ -75,65 +89,69 @@
     <button id="setup">Copy setup prompt</button>
     <div id="setup-status" class="feedback" role="status"></div>
   </div>
-  <div id="driven" hidden>
-    <div class="big" id="driven-count"></div>
-    <div class="msg" id="driven-msg">Tabs it uses wear a 🟣 pill. Releasing hands them back to you.</div>
-    <button id="release-all">Release all tabs</button>
-    <button id="release-tab" hidden>Release this tab only</button>
-  </div>
   <div id="idle" hidden>
-    <div class="msg">Your AI agent isn't using any tabs right now.</div>
-    <button id="copy" class="secondary">Copy tab ID for my agent</button>
+    <button id="copy">Copy tab ID for my agent</button>
     <div class="hint">Paste it in your agent's chat to have it work in this tab.</div>
   </div>
+  <!-- outside every card: it must show whenever this tab is driven, even while
+       the helper is down or reconnecting (the cloud link drives tabs without it) -->
+  <button id="release-tab" class="quiet danger" hidden>Stop the agent in this tab</button>
   <div id="status" class="feedback" role="status"></div>
 </div>
 
-<!-- Settings view (⚙): plain rows with switches; details stay folded. -->
+<!-- Settings view (⚙): the profile, then the two ways an AI reaches this
+     browser (agents on this computer, cloud AI apps), then logs. -->
 <div id="settings-view" hidden>
-  <div class="head"><button id="close-settings">‹ Back</button><span class="view-title">Settings</span><span></span></div>
+  <div class="head"><button id="close-settings" class="quiet">‹ Back</button><span class="view-title">Settings</span></div>
+
+  <div class="setting" id="profile" hidden>
+    <div class="row"><span><b>This Chrome profile: <span id="profile-name"></span></b><span class="sub">Agents use this name to pick this profile</span></span></div>
+  </div>
 
   <div class="setting">
-    <label class="row" for="cloud-enabled"><span><b>Cloud access</b><span id="cloud-status" class="sub">Let Claude.ai or ChatGPT use this browser</span></span><input id="cloud-enabled" class="switch" type="checkbox"></label>
+    <div class="row"><span><b>Agents on this computer</b><span id="local-status" class="sub">Claude Code, Cursor and others</span></span><button id="setup-again" class="secondary small">Copy setup prompt</button></div>
+    <div class="hint">To add an agent, paste the setup prompt into it.</div>
+    <div id="setup-again-status" class="feedback" role="status"></div>
+  </div>
+
+  <div class="setting">
+    <label class="row" for="cloud-enabled"><span><b>Cloud AI apps</b><span id="cloud-status" class="sub">Let Claude.ai or ChatGPT use this browser</span></span><input id="cloud-enabled" class="switch" type="checkbox"></label>
     <div id="cloud-pair-row" hidden>
       <div class="hint">Paste your Cloud Bridge address. A page opens where you sign in and confirm.</div>
       <input id="cloud-hub" class="field" type="url" placeholder="https://cloud-bridge.you.workers.dev" aria-label="Cloud Bridge address">
       <button id="cloud-pair">Connect</button>
     </div>
     <div id="cloud-code" hidden></div>
-    <div id="cloud-paired" class="pair-buttons" hidden>
-      <button id="cloud-copy-mcp">Copy link for Claude/ChatGPT</button>
-      <button id="cloud-unpair">Disconnect</button>
+    <div id="cloud-paired" hidden>
+      <button id="cloud-add" class="secondary">Add to Claude or ChatGPT</button>
+      <div id="cloud-help" hidden>
+        <ol>
+          <li>Copy the connector link: <button id="cloud-copy-mcp" class="quiet">Copy link</button></li>
+          <li><b>Claude:</b> Settings → Connectors → Add custom connector, and paste it. <b>ChatGPT:</b> chatgpt.com/plugins → add a custom MCP server, and paste it.</li>
+          <li>When the app asks, sign in with GitHub and click Allow.</li>
+        </ol>
+      </div>
+      <button id="cloud-unpair" class="quiet">Sign out of Cloud Bridge</button>
     </div>
   </div>
 
   <div class="setting">
     <label class="row" for="logging-enabled"><span><b>Diagnostic logs</b><span id="logging-status" class="sub" role="status">Loading…</span></span><input id="logging-enabled" class="switch" type="checkbox" disabled></label>
-    <button id="logging-retry" hidden>Retry</button>
+    <button id="logging-retry" class="quiet" hidden>Retry</button>
     <details id="logging-details">
       <summary>Details</summary>
       <form id="logging-form">
-        <div class="hint">Local files that help debug problems. Shared by all connected profiles; the oldest records rotate out.</div>
-        <label class="setting-row" for="log-limit">Size limit (MiB) <input id="log-limit" type="number" min="1" max="100" step="1" value="10" required disabled></label>
+        <div class="hint">Local files on this computer, shared by all connected profiles. The oldest entries roll off at the limit.</div>
+        <label class="setting-row" for="log-limit">Size limit (MB) <input id="log-limit" type="number" min="1" max="100" step="1" value="10" required disabled></label>
         <input id="log-folder" class="field" type="text" readonly aria-label="Log folder">
-        <button id="logging-save" type="submit" disabled>Save</button>
       </form>
-      <button id="logging-delete" disabled>Delete logs</button>
+      <button id="logging-delete" class="quiet" disabled>Delete logs…</button>
       <div id="logging-confirmation" hidden>
         <div class="hint">Delete all diagnostic records? The settings stay as they are.</div>
-        <button id="logging-confirm">Delete records</button>
-        <button id="logging-cancel">Cancel</button>
+        <button id="logging-confirm" class="danger">Delete records</button>
+        <button id="logging-cancel" class="quiet">Cancel</button>
       </div>
     </details>
-  </div>
-
-  <div class="setting">
-    <div class="row"><span><b>Another AI agent</b><span class="sub">Set up one more agent on this computer</span></span><button id="setup-again" class="secondary small">Copy setup prompt</button></div>
-    <div id="setup-again-status" class="feedback" role="status"></div>
-  </div>
-
-  <div class="setting" id="profile" hidden>
-    <div class="row"><span><b>This Chrome profile</b><span class="sub">Your agent calls it “<b id="profile-name"></b>”</span></span></div>
   </div>
 
   <div class="foot"><a id="rate" href="https://chromewebstore.google.com/detail/chrome-bridge/kmhjlnokjigmnimgjjmiahlinjbcebkg" target="_blank" rel="noopener">★ Rate it on the Chrome Web Store</a><span id="version" class="hint" style="margin:0"></span></div>

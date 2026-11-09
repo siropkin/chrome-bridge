@@ -137,7 +137,7 @@ A real run, checked live on GitHub: [recipes/github.com.md](recipes/github.com.m
 
 - **Every tab the agent touches wears a 🟣 pill**, including tabs it only reads. The pill shows what's happening right now (`🟣 taking screenshot…`) and keeps a history of past actions. Driven tabs also join a 🟣 tab group, which a page can't fake.
 - **⏏ on the pill disconnects the agent from that tab.** The bridge refuses subsequent commands until an explicit `mark`; the agent is instructed to ask you before reclaiming it. An action already running may still finish. This is a workflow control, not a security boundary against a malicious local agent.
-- **The toolbar popup's red Release button hands every agent tab back at once** (or just the current one).
+- **The toolbar popup stops the agent in one click**: the red stop button beside ⚙ hands every agent tab back at once, and *Stop the agent in this tab* just the current one.
 - **`node cli.mjs watch`** prints every command live in your terminal.
 
 ![Actual on-page action history and release control, enlarged from a local test session](docs/store/screenshot-5-controls.png)
@@ -146,10 +146,10 @@ A real run, checked live on GitHub: [recipes/github.com.md](recipes/github.com.m
 
 Cloud Bridge lets cloud AI apps (Claude.ai, ChatGPT, other remote-MCP clients) drive this Chrome through a hub you sign in to, while your local agent keeps working. It's off until you pair a profile:
 
-1. Toolbar popup → ⚙ → turn on **Cloud access**, paste your hub's address → **Connect**. A tab opens on the hub: sign in with GitHub, check the code matches the popup, click **Connect**.
-2. Reopen the popup's ⚙ Settings. Cloud access reads *On · cloud AI apps can use “&lt;profile&gt;”*. **Copy link for Claude/ChatGPT** and add it as a custom connector there.
+1. Toolbar popup → ⚙ → turn on **Cloud AI apps**, paste your Cloud Bridge address → **Connect**. A tab opens on the hub: sign in with GitHub, check the code matches the popup, click **Connect**.
+2. Reopen the popup's ⚙ Settings. Cloud AI apps reads *Claude.ai and ChatGPT can use this browser*. **Add to Claude or ChatGPT** shows the steps: copy the connector link, paste it as a custom connector in the app, then sign in and allow.
 
-The Cloud access switch turns the cloud link off at once, and **Disconnect** drops the hub's token. The hub ([siropkin/cloud-bridge](https://github.com/siropkin/cloud-bridge)) isn't publicly hosted yet, so for now you run your own.
+The Cloud AI apps switch pauses the cloud link at once, and **Sign out of Cloud Bridge** drops the hub's token. The hub ([siropkin/cloud-bridge](https://github.com/siropkin/cloud-bridge)) isn't publicly hosted yet, so for now you run your own.
 
 What agents see while two links are on:
 

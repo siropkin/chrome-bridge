@@ -36,10 +36,10 @@ TWO BRIDGE BUILDS IN ONE CHROME (e.g. the Web Store build + an unpacked repo bui
 
 ## Cloud Bridge: local and cloud at once
 
-A profile can also be paired with a Cloud Bridge hub (popup → ⚙ → Cloud access), so cloud AI apps (Claude.ai, ChatGPT) drive it while local agents keep using the CLI. Each command source is a **link** (`local`, `Cloud Bridge`) and owns the tabs it drives:
+A profile can also be paired with a Cloud Bridge hub (popup → ⚙ → Cloud AI apps), so cloud AI apps (Claude.ai, ChatGPT) drive it while local agents keep using the CLI. Each command source is a **link** (`local`, `Cloud Bridge`) and owns the tabs it drives:
 
 - From your link, a tab driven through the other one is read-only: `snap`, `shot`, `measure`, `console`, `ask`, `perf`, `net` work; anything else is refused before it runs (`⚠ this tab is driven through the Cloud Bridge link …`). Open your own tab rather than asking for the other one.
-- `tabs` tags such tabs `"link":"<label>"`; `close --all` skips them (`skipped` + `note`); `release` and `doctor --fix` touch only your link's tabs. The popup's red Release button covers every link.
+- `tabs` tags such tabs `"link":"<label>"`; `close --all` skips them (`skipped` + `note`); `release` and `doctor --fix` touch only your link's tabs. The popup's red stop button (beside ⚙) covers every link.
 - Through the cloud, the AI app sees two MCP tools: `chrome {command}` (one command line in this CLI's syntax) and `chrome_batch {lines}` (stops at the first failure). `shot <match> x.png` returns the image. Disk, clipboard and local-install forms (`upload`, `paste` without `-- text`, `fetch --out`, `net --har`, `start`, `extreload`, …) are refused with the alternative, and so is anything the user turned Off at the hub (`wait --js` follows `eval`'s rule).
 
 ## Minimize focus changes
