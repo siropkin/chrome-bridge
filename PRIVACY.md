@@ -18,11 +18,11 @@ The connected AI agent receives page content and may send it to its model provid
 
 ## Cloud Bridge (optional, off by default)
 
-Pairing a profile in the popup's **Cloud Bridge** section opens a second WebSocket, from your browser to the hub URL you enter, so cloud AI apps you authorize at that hub (Claude.ai, ChatGPT…) can drive this profile. While it is paired and switched on:
+Pairing a profile under the popup's **Settings → Cloud Bridge** opens a second WebSocket, from your browser to the hub URL you enter, so cloud AI apps you authorize at that hub (Claude.ai, ChatGPT…) can drive this profile. While it is paired and switched on:
 
 - Commands arrive from the hub, and their results go back to it: page structure and text, screenshots, console and network lines, fetched bodies — whatever the command returns. The hub passes them to the AI app that called, which may send them to its model provider.
 - There is no end-to-end encryption: MCP ends at the hub, so the hub's operator can technically read what passes through it. The connection is TLS on a hosted hub. The reference hub ([siropkin/cloud-bridge](https://github.com/siropkin/cloud-bridge)) stores call metadata only for 30 days: time, AI app, profile, tool name (`chrome`, `chrome_batch`), success, duration, and the hub's own error message (an error the extension returns is stored as a fixed marker, since its text can echo the command). Not arguments, not results.
-- Commands that would read your disk or clipboard, or manage the local install, are refused over this link. The switch in the popup cuts the link immediately; **Unpair** deletes the token from the browser.
+- Commands that would read your disk or clipboard, or manage the local install, are refused over this link. The Cloud Bridge switch cuts the link immediately; **Unpair** deletes the token from the browser.
 
 ## Permissions, and why
 

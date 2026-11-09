@@ -41,7 +41,9 @@
   #logging-delete, #logging-cancel { margin-top: 6px; background: #fff; color: #7c3aed; border: 1px solid #7c3aed; }
   #logging-confirm { margin-top: 6px; background: #b91c1c; }
   #cloud-hub { display: block; width: 100%; box-sizing: border-box; font: 12px ui-monospace, monospace; padding: 5px; margin: 6px 0; }
-  #cloud-unpair, #cloud-copy-mcp { margin-top: 6px; background: #fff; color: #7c3aed; border: 1px solid #7c3aed; }
+  .pair-buttons { display: flex; gap: 6px; margin-top: 6px; }
+  .pair-buttons[hidden] { display: none; } /* display:flex would beat the hidden attribute */
+  #cloud-unpair, #cloud-copy-mcp { background: #fff; color: #7c3aed; border: 1px solid #7c3aed; }
   #cloud-code { margin-top: 6px; font: 12px ui-monospace, monospace; background: #ede9fe; color: #5b21b6; border-radius: 6px; padding: 6px 8px; }
   #cloud-status { overflow-wrap: anywhere; }
 </style>
@@ -63,20 +65,6 @@
   <button id="release-all">⏏ Release all agent tabs</button>
 </div>
 <div class="divider"></div>
-<!-- Cloud Bridge: a second, opt-in link to a hub that cloud AIs (Claude.ai,
-     ChatGPT…) reach. Local keeps working beside it. popup.js fills it. -->
-<details id="cloud">
-  <summary>Cloud Bridge<span id="cloud-badge"></span></summary>
-  <div id="cloud-status" class="hint" role="status">Loading…</div>
-  <label class="setting-row" for="cloud-enabled">Let Cloud Bridge drive this profile <input id="cloud-enabled" type="checkbox" disabled></label>
-  <input id="cloud-hub" type="url" placeholder="https://cloud-bridge.you.workers.dev" aria-label="Cloud Bridge hub URL">
-  <button id="cloud-pair">Pair this profile</button>
-  <div id="cloud-code" hidden></div>
-  <button id="cloud-copy-mcp" hidden>Copy MCP URL for your AI app</button>
-  <button id="cloud-unpair" hidden>Unpair this profile</button>
-  <div class="hint">AI apps you allow at the hub can then use this Chrome. Local agents keep working.</div>
-</details>
-<div class="divider"></div>
 <!-- Collapsed once the bridge runs (setting up another agent is occasional);
      popup.js opens it when the bridge is down — then it's the next step. -->
 <details id="install">
@@ -88,6 +76,20 @@
 <div class="divider"></div>
 <details id="settings">
   <summary>Settings</summary>
+  <!-- Cloud Bridge: an opt-in second link to a hub cloud AIs (Claude.ai,
+       ChatGPT…) reach; local keeps working beside it. popup.js fills it. -->
+  <label class="setting-row" for="cloud-enabled"><span><b>Cloud Bridge</b> · cloud AI apps drive this profile</span> <input id="cloud-enabled" type="checkbox" disabled></label>
+  <div id="cloud-status" class="hint" role="status">Loading…</div>
+  <div id="cloud-pair-row">
+    <input id="cloud-hub" type="url" placeholder="https://cloud-bridge.you.workers.dev" aria-label="Cloud Bridge hub URL">
+    <button id="cloud-pair">Pair this profile</button>
+  </div>
+  <div id="cloud-code" hidden></div>
+  <div id="cloud-paired" class="pair-buttons" hidden>
+    <button id="cloud-copy-mcp">Copy MCP URL</button>
+    <button id="cloud-unpair">Unpair</button>
+  </div>
+  <div class="divider"></div>
   <form id="logging-form">
     <label class="setting-row" for="logging-enabled">Diagnostic logging <input id="logging-enabled" type="checkbox" disabled></label>
     <label class="setting-row" for="log-limit">Log limit (MiB) <input id="log-limit" type="number" min="1" max="100" step="1" value="10" required disabled></label>

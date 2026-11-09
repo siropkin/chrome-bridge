@@ -4,8 +4,8 @@
 // human's release controls — the one reclaim path that works even when a
 // driven tab can't show the pill (chrome://, Web Store, PDF). Pure popup for
 // tabs (extension pages have the tabs permission too); release rides the
-// service worker via runtime messaging. Fourth: Cloud Bridge pairing and its
-// on/off switch (also through the worker, which owns the link).
+// service worker via runtime messaging. Fourth, under Settings: Cloud Bridge
+// pairing and its on/off switch (also through the worker, which owns the link).
 // Bridge status comes from GET /health — a GET, so the server's drive-by
 // guards don't apply, and <all_urls> host permission covers 127.0.0.1.
 // NOTE: 9333 is hardcoded in FOUR places — server.mjs, cli.mjs,
@@ -247,10 +247,11 @@ $('logging-confirm').addEventListener('click', async () => {
   $('logging-confirmation').hidden = true;
 });
 
-// Cloud Bridge: pair this profile with a hub (device code approved in a tab),
-// switch the link on/off, unpair. The worker owns the link and the pairing
-// poll; the popup only shows its state. Opening the approval tab closes the
-// popup — reopening it shows the result, so no timers here.
+// Cloud Bridge (in Settings): pair this profile with a hub (device code
+// approved in a tab), switch the link on/off, unpair. The worker owns the link
+// and the pairing poll; its state rides on bridge-state, which every popup open
+// asks for. Opening the approval tab closes the popup — reopening it shows the
+// result, so no timers and no refresh here.
 let cloudState = null;
 function renderCloud(state, error) {
   if (state && typeof state.paired === 'boolean') cloudState = state;
@@ -266,12 +267,13 @@ function renderCloud(state, error) {
   $('cloud-hub').value = $('cloud-hub').value || s.hub || '';
   $('cloud-enabled').disabled = !s.paired;
   $('cloud-enabled').checked = s.paired && s.enabled;
-  $('cloud-unpair').hidden = !s.paired;
-  $('cloud-copy-mcp').hidden = !s.paired;
-  $('cloud-pair').textContent = s.paired || s.pairing ? 'Pair again' : 'Pair this profile';
+  // Paired: the switch, the status and two small buttons — the hub form only
+  // while there is something to pair.
+  $('cloud-paired').hidden = !s.paired;
+  $('cloud-pair-row').hidden = s.paired;
+  $('cloud-pair').textContent = s.pairing ? 'Pair again' : 'Pair this profile';
   $('cloud-code').hidden = !s.pairing;
   if (s.pairing) $('cloud-code').textContent = `Code ${s.pairing.code} — approve it in the tab that opened (${s.pairing.verificationUri})`;
-  $('cloud-badge').textContent = s.paired && s.enabled ? ' · on' : '';
   let line;
   if (s.pairing) line = 'Waiting for you to approve the code at the hub…';
   else if (!s.paired) line = 'Off · not paired. Enter your hub URL, then pair.';
@@ -291,9 +293,6 @@ async function cloudRequest(msg) {
   $('cloud-pair').disabled = $('cloud-unpair').disabled = false;
   renderCloud(response, response?.ok === false ? response.error || 'Request failed' : '');
 }
-$('cloud').addEventListener('toggle', () => {
-  if ($('cloud').open) cloudRequest({ type: 'cloud-state' });
-});
 $('cloud-pair').addEventListener('click', () => cloudRequest({ type: 'cloud-pair', hub: $('cloud-hub').value.trim() }));
 $('cloud-enabled').addEventListener('change', () => cloudRequest({ type: 'cloud-toggle', enabled: $('cloud-enabled').checked }));
 $('cloud-unpair').addEventListener('click', () => cloudRequest({ type: 'cloud-unpair' }));

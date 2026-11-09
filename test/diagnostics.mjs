@@ -248,6 +248,20 @@ test('popup width is independent of the viewport Chrome sizes from its content',
   assert.doesNotMatch(body, /\b(?:max-width|vw|dvw|svw)\b/);
 });
 
+test('popup: a toggled element whose CSS sets display still hides (author display beats the hidden attribute)', () => {
+  const html = fs.readFileSync(new URL('../extension/popup.html', import.meta.url), 'utf8');
+  const css = html.match(/<style>([\s\S]*?)<\/style>/)[1];
+  for (const [, tag] of html.matchAll(/<(\w+\b[^>]*\shidden\b[^>]*)>/g)) {
+    const id = /\bid="([^"]+)"/.exec(tag)?.[1];
+    const classes = (/\bclass="([^"]+)"/.exec(tag)?.[1] || '').split(/\s+/).filter(Boolean);
+    for (const sel of [id && '#' + id, ...classes.map((c) => '.' + c)].filter(Boolean)) {
+      const esc = sel.replace(/[.#]/g, '\\$&');
+      if (new RegExp(`${esc}\\s*\\{[^}]*\\bdisplay\\s*:`).test(css))
+        assert.match(css, new RegExp(`${esc}\\[hidden\\]\\s*\\{[^}]*display\\s*:\\s*none`), `${sel} sets display — it needs ${sel}[hidden] { display: none } or the hidden attribute does nothing`);
+    }
+  }
+});
+
 test('popup setup restarts fetched code and reloads stale extensions', () => {
   const prompt = fs.readFileSync(new URL('../extension/setup-prompt.txt', import.meta.url), 'utf8');
   assert.match(prompt, /cli\.mjs stop && node ~\/chrome-bridge\/cli\.mjs start/);
@@ -480,7 +494,7 @@ test('clearing or disabling invalidates in-flight records; storage failures do n
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
-test('popup Cloud Bridge: state from bridge-state, pairing shows the code, toggle and unpair go to the worker', async () => {
+test('popup Cloud Bridge (Settings): unpaired shows the hub form; pairing shows the code', async () => {
   const sent = [];
   let cloud = { paired: false, enabled: false, connected: false, hub: '', profile: 'poplar', pairing: null, notice: '' };
   const { element, settle } = popupHarness(async (message) => {
@@ -490,15 +504,13 @@ test('popup Cloud Bridge: state from bridge-state, pairing shows the code, toggl
       if (!message.hub) return { ok: false, error: 'Enter the Cloud Bridge hub URL, e.g. https://cloud-bridge.<you>.workers.dev', ...cloud };
       cloud = { ...cloud, hub: 'http://localhost:8787', pairing: { code: 'ABCD-EFGH', verificationUri: 'http://localhost:8787/pair?code=ABCD-EFGH' } };
     }
-    if (message.type === 'cloud-state') cloud = { ...cloud, paired: true, enabled: true, connected: true, pairing: null };
-    if (message.type === 'cloud-toggle') cloud = { ...cloud, enabled: message.enabled, connected: false };
-    if (message.type === 'cloud-unpair') cloud = { ...cloud, paired: false, enabled: false };
     return { ok: true, ...cloud };
   }, { tab: { id: 7 } });
   await settle();
   assert.equal(element('cloud-status').textContent, 'Off · not paired. Enter your hub URL, then pair.');
   assert.equal(element('cloud-enabled').disabled, true, 'nothing to switch on before pairing');
-  assert.equal(element('cloud-unpair').hidden, true);
+  assert.equal(element('cloud-pair-row').hidden, false);
+  assert.equal(element('cloud-paired').hidden, true);
   await element('cloud-pair').handlers.click();
   assert.match(element('cloud-status').textContent, /^Enter the Cloud Bridge hub URL/, 'the worker\'s next step is shown');
   element('cloud-hub').value = ' http://localhost:8787 ';
@@ -506,21 +518,34 @@ test('popup Cloud Bridge: state from bridge-state, pairing shows the code, toggl
   assert.deepEqual(JSON.parse(JSON.stringify(sent.at(-1))), { type: 'cloud-pair', hub: 'http://localhost:8787' });
   assert.equal(element('cloud-code').hidden, false);
   assert.match(element('cloud-code').textContent, /^Code ABCD-EFGH — approve it in the tab that opened/);
+  assert.equal(element('cloud-pair').textContent, 'Pair again');
   assert.equal(element('cloud-status').textContent, 'Waiting for you to approve the code at the hub…');
-  // Reopening the section after approving refreshes from the worker.
-  element('cloud').open = true;
-  await element('cloud').handlers.toggle();
+  assert.equal(sent.filter((m) => m.type === 'cloud-state').length, 0, 'state comes with bridge-state: no extra round trip');
+});
+
+test('popup Cloud Bridge (Settings): paired hides the hub form; switch and unpair go to the worker', async () => {
+  const sent = [];
+  let cloud = { paired: true, enabled: true, connected: true, hub: 'http://localhost:8787', profile: 'poplar', pairing: null, notice: '' };
+  const { element, settle } = popupHarness(async (message) => {
+    sent.push(message);
+    if (message.type === 'bridge-state') return { count: 0, active: false, connected: true, profile: 'poplar', cloud };
+    if (message.type === 'cloud-toggle') cloud = { ...cloud, enabled: message.enabled, connected: false };
+    if (message.type === 'cloud-unpair') cloud = { ...cloud, paired: false, enabled: false };
+    return { ok: true, ...cloud };
+  }, { tab: { id: 7 } });
   await settle();
   assert.equal(element('cloud-status').textContent, 'On · connected to localhost:8787 as poplar');
-  assert.equal(element('cloud-badge').textContent, ' · on');
   assert.equal(element('cloud-enabled').checked, true);
-  assert.equal(element('cloud-copy-mcp').hidden, false);
+  assert.equal(element('cloud-pair-row').hidden, true, 'a paired profile shows no hub form');
+  assert.equal(element('cloud-paired').hidden, false);
   element('cloud-enabled').checked = false;
   await element('cloud-enabled').handlers.change();
   assert.deepEqual(JSON.parse(JSON.stringify(sent.at(-1))), { type: 'cloud-toggle', enabled: false });
   assert.equal(element('cloud-status').textContent, 'Off · paired with localhost:8787');
   await element('cloud-unpair').handlers.click();
   assert.equal(element('cloud-status').textContent, 'Off · not paired. Enter your hub URL, then pair.');
+  assert.equal(element('cloud-pair-row').hidden, false);
+  assert.equal(element('cloud-paired').hidden, true);
 });
 
 test('popup Cloud Bridge: an older worker without cloud state leaves the section untouched', async () => {

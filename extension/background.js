@@ -1681,7 +1681,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // nothing about this one).
     // profile: the popup shows it and puts it in the copied tab reference —
     // the human never sees the code name anywhere else.
-    // cloud: the Cloud Bridge section's state rides along (no second round trip).
+    // cloud: the Settings → Cloud Bridge state rides along (no second round trip).
     Promise.all([ready, idReady, cloudReady]).then(() => ({ count: drivenTabs.size, active: msg.tabId != null && drivenTabs.has(msg.tabId), connected: linkOpen('local'), profile: PROFILE_NAME, cloud: cloudState() }))
       .then(sendResponse, (error) => sendResponse({ error: String(error) }));
     return true;

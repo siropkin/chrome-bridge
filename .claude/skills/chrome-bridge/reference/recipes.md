@@ -36,7 +36,7 @@ TWO BRIDGE BUILDS IN ONE CHROME (e.g. the Web Store build + an unpacked repo bui
 
 ## Cloud Bridge: local and cloud at once
 
-A profile can also be paired with a Cloud Bridge hub (popup → Cloud Bridge), so cloud AI apps (Claude.ai, ChatGPT) drive it while local agents keep using the CLI. Each command source is a **link** (`local`, `Cloud Bridge`) and owns the tabs it drives:
+A profile can also be paired with a Cloud Bridge hub (popup → Settings → Cloud Bridge), so cloud AI apps (Claude.ai, ChatGPT) drive it while local agents keep using the CLI. Each command source is a **link** (`local`, `Cloud Bridge`) and owns the tabs it drives:
 
 - From your link, a tab driven through the other one is read-only: `snap`, `shot`, `measure`, `console`, `ask`, `perf`, `net` work; anything else is refused before it runs (`⚠ this tab is driven through the Cloud Bridge link …`). Open your own tab rather than asking for the other one.
 - `tabs` tags such tabs `"link":"<label>"`; `close --all` skips them (`skipped` + `note`); `release` and `doctor --fix` touch only your link's tabs. The popup's "Release all" covers every link.
