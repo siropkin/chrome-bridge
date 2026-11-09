@@ -217,7 +217,7 @@ test('MCP tools: typed arguments build argv that the real grammar parses', async
     ['chrome_fill', { tab: 'gh', target: '@e1', value: '' }, { type: 'fill', urlMatch: 'gh', target: '@e1', value: '', diff: true }],
     ['chrome_fill', { tab: 'gh', target: '@e1', value: '--x  y' }, { type: 'fill', urlMatch: 'gh', target: '@e1', value: '--x  y', diff: true }],
     ['chrome_press', { tab: 'gh', key: 'Control+k' }, { type: 'press', urlMatch: 'gh', key: 'Control+k', target: null, diff: true }],
-    ['chrome_upload', { tab: 'gh', target: '#f', files: ['https://a.test/x.pdf', { url: 'https://a.test/y' }, { name: 'r é.txt', base64: 'aGk=' }] }, { type: 'upload', urlMatch: 'gh', target: '#f', files: [{ token: 'https://a.test/x.pdf' }, { token: 'https://a.test/y' }, { token: 'data:application/octet-stream;base64,aGk=#r%20%C3%A9.txt' }], diff: true }],
+    ['chrome_upload', { tab: 'gh', target: '#f', files: ['https://a.test/x.pdf', { url: 'https://a.test/y' }, { name: 'r é.txt', base64: 'aGk=' }] }, { type: 'upload', urlMatch: 'gh', target: '#f', files: [{ token: 'https://a.test/x.pdf' }, { token: 'https://a.test/y' }, { token: 'data:application/octet-stream;base64,aGk=#r%20%C3%A9.txt' }] }],
     ['chrome_close', { tab: 'gh' }, { type: 'close', urlMatch: 'gh' }],
   ];
   for (const [name, args, msg, view] of cases) {

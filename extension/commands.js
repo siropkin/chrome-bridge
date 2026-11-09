@@ -885,7 +885,9 @@
       inputSchema: schema({ tab: TAB, target: { type: 'string', description: 'The <input type=file> or an element wrapping it: @eN ref or CSS selector (with chooser: the button that opens the picker).' }, files: { type: 'array', description: 'One or more files.', items: { type: 'object', properties: { url: { type: 'string', description: 'A public http(s) URL to download the file from.' }, name: { type: 'string', description: 'File name, e.g. report.pdf (with base64).' }, base64: { type: 'string', description: 'The file bytes, base64-encoded.' }, mimeType: { type: 'string', description: 'e.g. application/pdf (with base64).' } } } }, chooser: { type: 'boolean', description: 'Click target and catch the file picker it opens.' } }, ['tab', 'target', 'files']),
       argv: (a) => {
         if (!Array.isArray(a.files) || !a.files.length) fail('chrome_upload needs files: [{url}] or [{name, base64, mimeType}]');
-        return ['upload', str(a, 'tab', 'chrome_upload'), str(a, 'target', 'chrome_upload'), ...a.files.map(fileToken), ...flag(a.chooser, '--chooser'), '--diff'];
+        // No --diff: a file selection isn't in the a11y tree, so the verdict reads
+        // "uncertain … act again" (live) — and acting again uploads twice.
+        return ['upload', str(a, 'tab', 'chrome_upload'), str(a, 'target', 'chrome_upload'), ...a.files.map(fileToken), ...flag(a.chooser, '--chooser')];
       },
     },
     {

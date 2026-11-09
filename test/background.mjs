@@ -1335,7 +1335,7 @@ test('cloud: upload takes data: URLs, and public URLs downloaded by the hub — 
   ]);
   assert.deepEqual(asked, ['https://files.test/docs/report%201.pdf'], 'the hub downloads the URL');
   await call('chrome_upload', { tab: 'github', target: '#file', files: [{ name: 'a.png', base64: 'iVBORw0KGgo=', mimeType: 'image/png' }], chooser: true });
-  assert.deepEqual({ ...plain(handled.at(-1)), deadlineAt: undefined }, { deadlineAt: undefined, type: 'upload', urlMatch: 'github', target: '#file', files: [{ name: 'a.png', mimeType: 'image/png', data: 'iVBORw0KGgo=' }], chooser: true, diff: true, _link: 'cloud' });
+  assert.deepEqual({ ...plain(handled.at(-1)), deadlineAt: undefined }, { deadlineAt: undefined, type: 'upload', urlMatch: 'github', target: '#file', files: [{ name: 'a.png', mimeType: 'image/png', data: 'iVBORw0KGgo=' }], chooser: true, _link: 'cloud' });
   const n = handled.length;
   const refusals = [
     ['upload github @e1 a.png', /^a\.png is not a URL\. Cloud Bridge can't read files on the user's computer: give a public http\(s\) URL/],
