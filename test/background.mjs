@@ -75,7 +75,7 @@ test('popup listener supports callback-only Chrome runtime for every async reque
   assert.equal(initial.profile, 'poplar', 'the popup shows the profile name and puts it in the copied reference');
   assert.equal((await send({ type: 'release-active', tabId: 7 })).count, 1);
   assert.equal((await send({ type: 'bridge-state', tabId: 7 })).active, false);
-  assert.equal((await send({ type: 'release-all' })).count, 1);
+  assert.equal((await send({ type: 'release-active', tabId: 8 })).count, 0);
   assert.equal((await send({ type: 'bridge-state' })).count, 0);
 });
 
@@ -86,7 +86,7 @@ test('popup listener rejects unauthorized senders without mutations', async () =
     { id: 'bridge', url: 'https://example.test/' },
     { id: 'bridge', url: 'chrome-extension://bridge/popup.html', tab: { id: 7 } },
   ]) {
-    for (const type of ['diagnostics', 'bridge-state', 'release-active', 'release-all']) {
+    for (const type of ['diagnostics', 'bridge-state', 'release-active']) {
       assert.match((await send({ type, tabId: 7, action: 'configure', enabled: true }, sender)).error, /restricted/);
     }
   }
@@ -98,7 +98,7 @@ test('popup listener rejects unauthorized senders without mutations', async () =
 test('popup listener reports release failures and preserves failed tabs', async () => {
   const { send, drivenTabs, humanReclaimed } = popupListener({ failedTab: 7 });
   assert.match((await send({ type: 'release-active', tabId: 7 })).error, /release unavailable/);
-  assert.match((await send({ type: 'release-all' })).error, /release unavailable/);
+  assert.equal((await send({ type: 'release-active', tabId: 8 })).count, 1, 'another tab still releases');
   assert.equal(drivenTabs.has(7), true);
   assert.equal(drivenTabs.has(8), false);
   assert.equal(humanReclaimed.has(7), false);
@@ -106,7 +106,7 @@ test('popup listener reports release failures and preserves failed tabs', async 
 });
 
 test('popup listener returns hydration failures through the callback', async () => {
-  for (const type of ['bridge-state', 'release-active', 'release-all']) {
+  for (const type of ['bridge-state', 'release-active']) {
     const { send } = popupListener({ ready: Promise.reject(new Error('hydration unavailable')) });
     assert.match((await send({ type, tabId: 7 })).error, /hydration unavailable/);
   }

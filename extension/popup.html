@@ -6,13 +6,15 @@
   .head { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
   .brand { flex: 1; font-weight: 700; font-size: 15px; }
   #profile { font-weight: 400; color: #6b5f85; }
-  #bridge-status { display: flex; align-items: center; gap: 7px; font-weight: 600; margin: -6px 0 12px; }
-  #bridge-status .dot { width: 9px; height: 9px; border-radius: 50%; background: #bbb; }
-  #bridge-status.ok .dot { background: #22c55e; }
-  #bridge-status.busy .dot { background: #7c3aed; }
-  #bridge-status.warn .dot { background: #f59e0b; }
-  #bridge-status.down .dot { background: #d4d4d8; }
+  /* the status dot sits on the product name; the status reads under it */
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #bbb; margin-right: 7px; vertical-align: 1px; }
+  .dot.ok { background: #22c55e; }
+  .dot.busy { background: #7c3aed; }
+  .dot.warn { background: #f59e0b; }
+  .dot.down { background: #d4d4d8; }
+  #bridge-status { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; margin: -8px 0 14px 16px; color: #3f3555; }
   #bridge-status.down { color: #71717a; }
+  #release-tab { font-size: 13px; padding: 0; }
   .msg { color: #3f3555; line-height: 1.45; margin-bottom: 12px; }
   .big { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
   .hint { margin-top: 6px; color: #6b5f85; font-size: 11px; line-height: 1.4; } /* AA on white */
@@ -23,7 +25,6 @@
      primary   gradient (the pill's violet→indigo→cyan): the ONE main action of a view
      secondary white with a violet outline: an alternative action
      danger    red: stopping the agent, confirming a delete
-               (danger-outline: the lesser of two stops — "Stop this tab")
      quiet     violet text only: small or reversible actions (Back, Delete logs…)
      plus the ⚙ icon button in the header. "small" sizes any of them down. */
   button { width: 100%; padding: 9px 0; border: 0; border-radius: 8px; background: linear-gradient(135deg, #7c3aed, #4f46e5, #0e7490); color: #fff; font: 600 13px system-ui, sans-serif; cursor: pointer; }
@@ -36,10 +37,6 @@
   button.icon { width: 32px; height: 32px; padding: 0; flex: none; background: none; line-height: 32px; }
   #open-settings { color: #6b5f85; font-size: 24px; }
   #open-settings:hover { color: #5b21b6; }
-  /* the stop buttons sit under the status title they act on, aligned with its text */
-  #stop-row { display: flex; gap: 6px; margin: -4px 0 14px 16px; }
-  #stop-row[hidden] { display: none; } /* display:flex would beat the hidden attribute */
-  button.danger-outline { background: #fff; color: #b91c1c; border: 1px solid #fca5a5; }
 
   /* the extension and the bridge on disk are out of step — amber: it still works, partly */
   #update { background: #fef3c7; color: #78350f; border-radius: 8px; padding: 10px; margin-bottom: 12px; }
@@ -76,21 +73,18 @@
   #rate:hover { text-decoration: underline; }
 </style>
 
-<!-- Main view: "Chrome Bridge · <profile> profile" and ⚙, the status line
-     (+ Stop all / Stop this tab under it while the agent works), then ONE card:
-     set up the helper, or copy this tab's ID. -->
+<!-- Main view: ● "Chrome Bridge · <profile> profile" and ⚙, the status under
+     it (+ ⏏ Release this tab when this tab is driven), then ONE card: set up
+     the helper, or copy this tab's ID. -->
 <div id="main">
   <div class="head">
-    <span class="brand">Chrome Bridge<span id="profile" hidden title="Agents use this name to pick this Chrome profile"> · <span id="profile-name"></span> profile</span></span>
+    <span class="brand"><span id="status-dot" class="dot"></span>Chrome Bridge<span id="profile" hidden title="Agents use this name to pick this Chrome profile"> · <span id="profile-name"></span> profile</span></span>
     <button id="open-settings" class="icon" title="Settings" aria-label="Settings">⚙</button>
   </div>
-  <div id="bridge-status" role="status"><span class="dot"></span><span id="status-text">Checking…</span></div>
-  <!-- outside every card: it must show whenever tabs are driven, even while the
-       helper is down or reconnecting (the cloud link drives tabs without it) -->
-  <div id="stop-row" hidden>
-    <button id="release-all" class="danger small">Stop all</button>
-    <button id="release-tab" class="danger-outline small" hidden>Stop this tab</button>
-  </div>
+  <!-- outside every card: Release must show whenever this tab is driven, even
+       while the helper is down or reconnecting (the cloud link drives tabs
+       without it). Same ⏏ and word as the pill on the page. -->
+  <div id="bridge-status" role="status"><span id="status-text">Checking…</span><button id="release-tab" class="quiet" hidden title="Hand this tab back to you: the agent stops driving it">⏏ Release this tab</button></div>
   <div id="update" hidden>
     <div id="update-text"></div>
     <button id="copy-update">Copy update prompt</button>

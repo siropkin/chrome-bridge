@@ -18,7 +18,7 @@ Use it to inspect a page, check a user flow, fill a form, or investigate network
 
 Needs macOS or Linux (Git Bash on Windows), Chrome ≥ 117 and Node ≥ 18.
 
-**Chrome Web Store (easiest).** Install the extension, click its toolbar button, choose **Copy setup prompt**, and paste the prompt to your agent (Claude Code, Cursor, …). The agent downloads the bridge, starts it, checks the connection and reports back. The popup shows ● Ready for your AI agent when it's done.
+**Chrome Web Store (easiest).** Install the extension, click its toolbar button, choose **Copy setup prompt**, and paste the prompt to your agent (Claude Code, Cursor, …). The agent downloads the bridge, starts it, checks the connection and reports back. When it's done, the popup's title has a green dot and reads **Ready for your AI agent**.
 
 **From source.** Tell your agent:
 
@@ -137,7 +137,7 @@ A real run, checked live on GitHub: [recipes/github.com.md](recipes/github.com.m
 
 - **Every tab the agent touches wears a 🟣 pill**, including tabs it only reads. The pill shows what's happening right now (`🟣 taking screenshot…`) and keeps a history of past actions. Driven tabs also join a 🟣 tab group, which a page can't fake.
 - **⏏ on the pill disconnects the agent from that tab.** The bridge refuses subsequent commands until an explicit `mark`; the agent is instructed to ask you before reclaiming it. An action already running may still finish. This is a workflow control, not a security boundary against a malicious local agent.
-- **The toolbar popup stops the agent in one click**: while it works, **Stop all** hands every agent tab back at once, and **Stop this tab** just the current one.
+- **The toolbar popup hands a tab back in one click**: while the agent works in the tab you're on, **⏏ Release this tab** gives it back — the same as the ⏏ on the page's pill, and it also works on pages that can't show the pill (chrome://, PDF, the Web Store).
 - **`node cli.mjs watch`** prints every command live in your terminal.
 
 ![Actual on-page action history and release control, enlarged from a local test session](docs/store/screenshot-5-controls.png)

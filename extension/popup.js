@@ -3,9 +3,9 @@
 //   no AI agent connected → copy the setup prompt for the agent
 //   otherwise             → copy this tab's id:<tabId> reference for the agent
 //                           (the exact <match> every cli command understands)
-// While the agent drives tabs, Stop all / Stop this tab sit under the status
-// (the human's emergency stop — the one reclaim path that works even when a
-// driven tab can't show the pill: chrome://, Web Store, PDF). An amber banner
+// When this tab is driven, ⏏ Release this tab sits on the status line — the
+// pill's own control, and the one way back on pages that can't show the pill
+// (chrome://, Web Store, PDF). An amber banner
 // asks for an update when the extension and the bridge on disk differ.
 // The header names this Chrome profile the way agents do ("poplar"). ⚙ opens
 // Settings: the two ways an AI reaches the browser — local AI agents (setup
@@ -32,21 +32,22 @@ let lastKnownState = null;
 let updateNeeded = false;
 
 function setStatus(text, kind) {
+  $('status-dot').className = kind ? 'dot ' + kind : 'dot';
   $('bridge-status').className = kind;
   $('status-text').textContent = text;
 }
 
 function render() {
-  // Stop first, whatever the status line says: the worker's driven tabs don't
+  // Release first, whatever the status says: the worker's driven tabs don't
   // depend on the local helper (the cloud link drives tabs without it, and a
-  // crashed server leaves its tabs marked) — the emergency stop must never
-  // hide behind "Not running" or "Reconnecting…". An unknown state (null: the
+  // crashed server leaves its tabs marked) — the way back must never hide
+  // behind "Not connected" or "Reconnecting…". An unknown state (null: the
   // worker didn't answer) keeps the last known tabs — "unknown" must never
-  // read as "nothing to stop".
+  // read as "nothing to release".
   if (bridgeState) lastKnownState = bridgeState;
   const n = lastKnownState?.count || 0;
   const busy = n > 0;
-  renderStop(n);
+  renderRelease(n);
   $('idle').hidden = true;
   if (bridgeDown) {
     $('local-status').textContent = 'Not connected: the helper on this computer isn\'t running';
@@ -85,16 +86,11 @@ function render() {
   if (bridgeState) $('idle').hidden = false; // the tab ID stays copyable while the agent works
 }
 
-// Stop all (this profile's agent tabs — with several profiles connected, the
-// tooltip must not read wider than it is) and Stop this tab, under the status.
-// One driven tab: a single "Stop" covers it.
-function renderStop(n) {
-  $('stop-row').hidden = n === 0;
-  const several = (bridgeHealth?.profiles?.length || 0) > 1;
-  $('release-all').textContent = n > 1 ? 'Stop all' : 'Stop';
-  $('release-all').title = `Stop the agent in ${n > 1 ? `all ${n} tabs` : 'its tab'}${several ? ' (this Chrome profile)' : ''}`;
-  $('release-tab').hidden = !(n > 1 && lastKnownState?.active);
-  $('release-tab').title = 'Stop the agent in this tab only';
+// ⏏ Release this tab — the pill's own control, for the tab the popup was
+// opened on (also the way back for pages that can't show the pill: chrome://,
+// PDF, the Web Store).
+function renderRelease(n) {
+  $('release-tab').hidden = !(n > 0 && lastKnownState?.active);
 }
 
 // Version drift: Chrome auto-updates a store extension, but the bridge on disk
@@ -188,29 +184,25 @@ chrome.tabs.query({ active: true, currentWindow: true }).then(async ([tab]) => {
     }
     render();
   };
-  const release = (btn, msg) => {
-    btn.addEventListener('click', async () => {
-      $('release-tab').disabled = $('release-all').disabled = true;
-      let failure;
-      try {
-        const response = await chrome.runtime.sendMessage(msg);
-        if (response?.error || !Number.isInteger(response?.count) || response.count < 0) throw new Error(response?.error || 'no acknowledgement from the extension');
-      } catch (error) {
-        failure = error;
-      }
-      try {
-        await refreshState();
-      } catch (error) {
-        failure ||= error;
-        bridgeState = null;
-        render();
-      }
-      $('status').textContent = failure ? 'Stop failed: ' + failure : 'Stopped ✓ — the tabs are yours again';
-      $('release-tab').disabled = $('release-all').disabled = false;
-    });
-  };
-  release($('release-tab'), { type: 'release-active', tabId: tab.id });
-  release($('release-all'), { type: 'release-all' });
+  $('release-tab').addEventListener('click', async () => {
+    $('release-tab').disabled = true;
+    let failure;
+    try {
+      const response = await chrome.runtime.sendMessage({ type: 'release-active', tabId: tab.id });
+      if (response?.error || !Number.isInteger(response?.count) || response.count < 0) throw new Error(response?.error || 'no acknowledgement from the extension');
+    } catch (error) {
+      failure = error;
+    }
+    try {
+      await refreshState();
+    } catch (error) {
+      failure ||= error;
+      bridgeState = null;
+      render();
+    }
+    $('status').textContent = failure ? 'Release failed: ' + failure : 'Released ✓ — this tab is yours again';
+    $('release-tab').disabled = false;
+  });
   await refreshState().catch(() => {
     bridgeState = null;
     render();

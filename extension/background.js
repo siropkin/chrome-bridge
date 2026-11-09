@@ -1615,7 +1615,7 @@ function remapTabId(newTabId, oldTabId) {
 // is idempotent on a non-driven tab, so no entry guard needed; it also clears
 // device emulation (release = the tab is the human's again, ALL of it).
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (['diagnostics', 'bridge-state', 'release-active', 'release-all', 'cloud-state', 'cloud-pair', 'cloud-toggle', 'cloud-unpair'].includes(msg?.type) &&
+  if (['diagnostics', 'bridge-state', 'release-active', 'cloud-state', 'cloud-pair', 'cloud-toggle', 'cloud-unpair'].includes(msg?.type) &&
       (sender?.id !== chrome.runtime.id || sender.url !== chrome.runtime.getURL('popup.html') || sender.tab)) {
     sendResponse({ ok: false, error: msg.type === 'diagnostics' ? 'Logging settings are restricted to the popup.' : 'Tab controls are restricted to the popup.' });
     return;
@@ -1696,30 +1696,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         humanReclaimed.set(msg.tabId, Date.now());
         persist();
         return { count: drivenTabs.size };
-      })
-      .then(sendResponse, (error) => sendResponse({ error: String(error) }));
-    return true;
-  }
-  if (msg?.type === 'release-all') {
-    // The emergency stop: every driven tab back to the human in one click,
-    // each with its own '✓ released' fade — and each gated like a ⏏ (the
-    // human said stop; the next agent command must not undo it). Copy the
-    // set first — releaseTab mutates drivenTabs while we iterate it.
-    ready
-      .then(async () => {
-        let n = 0;
-        const errors = [];
-        for (const id of [...drivenTabs]) {
-          try {
-            await releaseTab(id, { flash: true });
-            humanReclaimed.set(id, Date.now());
-            n++;
-          } catch (error) {
-            errors.push(String(error));
-          }
-        }
-        persist(); // one write for the whole sweep
-        return errors.length ? { count: n, error: errors.join('; ') } : { count: n };
       })
       .then(sendResponse, (error) => sendResponse({ error: String(error) }));
     return true;

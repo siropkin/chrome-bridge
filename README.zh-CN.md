@@ -16,7 +16,7 @@
 
 需要 macOS 或 Linux(Windows 上用 Git Bash)、Chrome ≥ 117 和 Node ≥ 18。
 
-**Chrome 应用商店(最简单)。** 安装扩展,点击工具栏按钮,选择 **Copy setup prompt**,把这段提示粘贴给你的智能体(Claude Code、Cursor……)。智能体会下载桥接器、启动服务、检查连接并向你汇报。完成后弹窗会显示 ● Ready for your AI agent。
+**Chrome 应用商店(最简单)。** 安装扩展,点击工具栏按钮,选择 **Copy setup prompt**,把这段提示粘贴给你的智能体(Claude Code、Cursor……)。智能体会下载桥接器、启动服务、检查连接并向你汇报。完成后弹窗标题旁会出现绿点,并显示 **Ready for your AI agent**。
 
 **从源码安装。** 告诉你的智能体:
 
@@ -135,7 +135,7 @@ table "1. Playa Phone (playaphone.com) 122 poin… hide | 41 comments" @e14
 
 - **智能体触碰的每个标签页都戴 🟣 小标签**,只读的标签页也不例外。小标签显示当前正在做什么(`🟣 taking screenshot…`),并保留历史操作记录。被驱动的标签页还会加入 🟣 标签页分组,页面无法伪造它。
 - **小标签上的 ⏏ 会断开智能体对该标签页的控制。** 桥接会拒绝后续命令,直到显式执行 `mark`;智能体的操作说明要求重新接管前先征得你的同意。已经开始的操作仍可能完成。这是工作流控制,不是防范恶意本地智能体的安全边界。
-- **工具栏弹窗一键停止智能体**:智能体工作时,**Stop all** 一次交还所有智能体标签页,**Stop this tab** 只交还当前标签页。
+- **工具栏弹窗一键交还标签页**:智能体在当前标签页工作时,**⏏ Release this tab** 把它交还给你——和页面标签上的 ⏏ 一样,也适用于无法显示标签的页面(chrome://、PDF、应用商店)。
 - **`node cli.mjs watch`** 在终端里实时显示每条命令。
 
 ![本地测试会话中的真实操作历史和释放控件,已放大展示](docs/store/screenshot-5-controls.png)

@@ -399,31 +399,33 @@ test('popup unknown logging state disables mutations and recovers by retry or re
   }
 });
 
-test('popup active release preserves remaining controls and refreshes the active state', async () => {
+test('popup: ⏏ Release this tab shows only for a driven current tab and refreshes the state', async () => {
   const driven = new Set([7, 8]);
+  const sent = [];
   const { element, settle } = popupHarness(async (message) => {
+    sent.push(message.type);
     if (message.type === 'bridge-state') return { count: driven.size, active: driven.has(7), connected: true };
-    if (message.type === 'release-active') driven.delete(7);
-    else driven.clear();
+    if (message.type === 'release-active') driven.delete(message.tabId);
     return { count: driven.size };
-  }, { tab: { id: 7 }, health: { ok: true, extension: true, profiles: [{}, {}] } });
+  }, { tab: { id: 7 } });
   await settle();
   assert.equal(element('status-text').textContent, 'AI is working in 2 tabs');
+  assert.equal(element('status-dot').className, 'dot busy', 'the status dot sits on the title');
   assert.equal(element('idle').hidden, false, 'the tab ID stays copyable while the agent works');
-  assert.equal(element('stop-row').hidden, false);
-  assert.equal(element('release-all').textContent, 'Stop all');
-  assert.equal(element('release-tab').hidden, false, 'this tab is one of them: Stop this tab shows');
-  assert.equal(element('release-all').title, 'Stop the agent in all 2 tabs (this Chrome profile)', 'several profiles: the stop must not read wider than it is');
+  assert.equal(element('release-tab').hidden, false, 'this tab is one of them');
+  assert.match(fs.readFileSync(new URL('../extension/popup.html', import.meta.url), 'utf8'), /id="release-tab"[^>]*>⏏ Release this tab</, "the pill's word and icon");
   await element('release-tab').handlers.click();
-  assert.equal(element('stop-row').hidden, false);
+  assert.equal(element('status').textContent, 'Released ✓ — this tab is yours again');
   assert.equal(element('status-text').textContent, 'AI is working in 1 tab');
-  assert.equal(element('release-all').textContent, 'Stop', 'one tab left: a single Stop covers it');
+  assert.equal(element('release-tab').hidden, true, 'another tab is driven, not this one: nothing to release here');
+  assert.ok(!sent.includes('release-all'), 'no stop-everything path');
+});
+
+test('popup: the agent in other tabs leaves no release control on this one', async () => {
+  const { element, settle } = popupHarness(async (m) => (m.type === 'bridge-state' ? { count: 3, active: false, connected: true, profile: 'poplar' } : {}), { tab: { id: 7 } });
+  await settle();
+  assert.equal(element('status-text').textContent, 'AI is working in 3 tabs');
   assert.equal(element('release-tab').hidden, true);
-  assert.equal(element('release-all').title, 'Stop the agent in its tab (this Chrome profile)');
-  assert.equal(element('status').textContent, 'Stopped ✓ — the tabs are yours again');
-  await element('release-all').handlers.click();
-  assert.equal(element('stop-row').hidden, true);
-  assert.equal(element('status-text').textContent, 'Ready for your AI agent');
 });
 
 test('popup shows one card per state: setup when the bridge is down, the tab ID copy when idle', async () => {
@@ -433,12 +435,14 @@ test('popup shows one card per state: setup when the bridge is down, the tab ID 
   assert.equal(down.element('status-text').textContent, 'Not connected to an AI agent');
   assert.equal(down.element('setup-card').hidden, false);
   assert.equal(down.element('idle').hidden, true, 'no agent to paste a tab ID to');
-  assert.equal(down.element('release-all').hidden, true);
+  assert.equal(down.element('release-tab').hidden, true);
+  assert.equal(down.element('status-dot').className, 'dot down');
   assert.match(down.element('local-status').textContent, /isn't running/);
   let copied = '';
   const up = popupHarness(state, { tab: { id: 7 }, clipboard: { writeText: async (t) => { copied = t; } } });
   await up.settle();
   assert.equal(up.element('status-text').textContent, 'Ready for your AI agent');
+  assert.equal(up.element('status-dot').className, 'dot ok');
   assert.match(up.element('local-status').textContent, /^Connected/);
   assert.equal(up.element('setup-card').hidden, true);
   assert.equal(up.element('idle').hidden, false);
@@ -460,6 +464,7 @@ test('popup update banner: version drift shows it with a copyable update prompt;
   await older.settle();
   assert.equal(older.element('update').hidden, false);
   assert.equal(older.element('status-text').textContent, 'Update needed');
+  assert.equal(older.element('status-dot').className, 'dot warn');
   assert.equal(older.element('update-text').textContent, 'Chrome Bridge on your computer and this extension are different versions. Copy this prompt to your AI agent and it will update it.', 'plain words for the person');
   assert.equal(older.element('update-text').title, 'This extension is 1.30.5; the bridge on your computer is 1.30.6.', 'exact versions on hover');
   await older.element('copy-update').handlers.click();
@@ -492,11 +497,11 @@ test('popup release errors and missing acknowledgements never claim success', as
       if (failure === 'refresh') return { count };
     }, { tab: { id: 7 } });
     await settle();
-    await element('release-all').handlers.click();
-    assert.match(element('status').textContent, /Stop failed/);
-    assert.doesNotMatch(element('status').textContent, /Stopped/);
-    assert.equal(element('stop-row').hidden, false);
-    assert.equal(element('release-all').disabled, false);
+    await element('release-tab').handlers.click();
+    assert.match(element('status').textContent, /Release failed/);
+    assert.doesNotMatch(element('status').textContent, /Released/);
+    assert.equal(element('release-tab').hidden, false);
+    assert.equal(element('release-tab').disabled, false);
     if (failure !== 'refresh') assert.equal(element('status-text').textContent, 'AI is working in 1 tab');
   }
 });
@@ -602,13 +607,11 @@ test('popup Cloud AI apps: a profile paused by an older version reconnects with 
   assert.equal(element('cloud-status').textContent, 'Connected: Claude.ai and ChatGPT apps you add can use this browser');
 });
 
-test('popup: Stop stays reachable when the local helper is down or reconnecting (review finding)', async () => {
+test('popup: Release stays reachable when the local helper is down or reconnecting (review finding)', async () => {
   for (const variant of ['down', 'reconnecting']) {
     const { element, settle } = popupHarness(async (m) => (m.type === 'bridge-state' ? { count: 2, active: true, connected: variant !== 'reconnecting', profile: 'poplar' } : {}), { tab: { id: 7 }, healthDown: variant === 'down' });
     await settle();
-    assert.equal(element('stop-row').hidden, false, variant);
-    assert.equal(element('release-all').title, 'Stop the agent in all 2 tabs');
-    assert.equal(element('release-tab').hidden, false, `${variant}: this tab is driven — Stop this tab shows too`);
+    assert.equal(element('release-tab').hidden, false, `${variant}: this tab is driven`);
     assert.equal(element('status-text').textContent, variant === 'down' ? 'Not connected to an AI agent' : 'Reconnecting to your AI agent…');
     assert.equal(element('idle').hidden, variant === 'down', 'reconnecting is a blip: the tab ID stays copyable');
   }
@@ -628,12 +631,12 @@ test('popup diagnostic logs: details show only while logging is on; Delete stays
   }
 });
 
-test('popup: the stop links live outside the cards that hide by state (review finding)', () => {
+test('popup: the release control lives outside the cards that hide by state (review finding)', () => {
   const html = fs.readFileSync(new URL('../extension/popup.html', import.meta.url), 'utf8');
   for (const card of ['idle', 'setup-card', 'update']) {
     const start = html.indexOf(`<div id="${card}"`);
     const block = html.slice(start, html.indexOf('\n  </div>', start));
-    assert.doesNotMatch(block, /id="(release-tab|release-all|stop-row)"/, `a stop control inside #${card} hides with it`);
+    assert.doesNotMatch(block, /id="release-tab"/, `a release control inside #${card} hides with it`);
   }
 });
 
@@ -645,7 +648,7 @@ test('popup: cloud-only (no local helper) is a complete setup, not "not connecte
     assert.equal(element('status-text').textContent, status);
     assert.equal(element('setup-card').hidden, true, 'no push to install a local helper');
     assert.equal(element('idle').hidden, false, 'the tab ID works for cloud AI apps too');
-    assert.equal(element('stop-row').hidden, count === 0);
+    assert.equal(element('release-tab').hidden, count === 0);
     assert.match(element('local-status').textContent, /isn't running/);
   }
 });
