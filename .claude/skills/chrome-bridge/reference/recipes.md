@@ -79,7 +79,7 @@ New errors come to you without asking: every command on a driven tab prints `⚠
 
 ## Wait for app state, not time
 
-`wait <match> --js "<expr>"` re-evaluates the expression on every DOM mutation, with a 200ms backstop, until it is truthy. It then prints the value (`condition met` for `true`, `found <tag>` for an element). Use it for any condition `--text` and css can't express: counts, attribute values, app-store fields with `--world main`, or `await fetch(…)` status checks. It replaces the `eval "await new Promise(r => setTimeout(r, 3000)); …"` pattern and shell `while eval …; sleep` loops. Those burn a tool call per poll and guess at timing; this returns the moment the state lands. A timeout reports the last value, or the predicate's last error.
+`wait <match> --js "<expr>"` re-evaluates the expression on every DOM mutation, with a 200ms backstop, until it is truthy. It then prints the value (`condition met` for `true`, `found <tag>` for an element). Use it for any condition `--text` and css can't express: counts, attribute values, app-store fields (page globals are visible), or `await fetch(…)` status checks. It replaces the `eval "await new Promise(r => setTimeout(r, 3000)); …"` pattern and shell `while eval …; sleep` loops. Those burn a tool call per poll and guess at timing; this returns the moment the state lands. A timeout reports the last value, or the predicate's last error.
 
 ## Fill a React form
 
