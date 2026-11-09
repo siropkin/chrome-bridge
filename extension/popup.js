@@ -313,7 +313,7 @@ function renderCloud(state, error) {
   $('cloud-pair-row').hidden = !formOpen;
   $('cloud-paired').hidden = !connected;
   $('cloud-off-hint').hidden = !connected;
-  if (!connected) $('cloud-help').hidden = true;
+  for (const app of ['claude', 'chatgpt']) $('cloud-add-' + app).href = cloudAddUrl(s.hub, app);
   $('cloud-code').hidden = !s.pairing;
   if (s.pairing) {
     // textContent + a <b> built by hand: the code comes from the hub (no innerHTML).
@@ -377,21 +377,24 @@ $('cloud-enabled').addEventListener('change', () => {
   cloudFormOpen = true;
   $('cloud-pair-row').hidden = false;
 });
-// Add to Claude or ChatGPT: the connector link alone means nothing to the
-// app's user — the steps say where it goes.
-$('cloud-add').addEventListener('click', () => {
-  $('cloud-help').hidden = !$('cloud-help').hidden;
-});
-$('cloud-copy-mcp').addEventListener('click', () => {
-  navigator.clipboard.writeText(new URL('/mcp', cloudState.hub).href).then(
-    () => {
-      $('cloud-copy-mcp').textContent = 'Copied ✓';
-    },
-    (e) => {
-      $('cloud-copy-mcp').textContent = 'Copy failed: ' + e;
-    }
-  );
-});
+// Add to Claude / Add to ChatGPT: the link opens Cloud Bridge's steps for that
+// app (a tab, so the steps outlive this popup); the click also copies the
+// connector link the steps ask to paste.
+function cloudAddUrl(hub, app) {
+  try {
+    const u = new URL('/add', hub);
+    u.searchParams.set('app', app);
+    return u.href;
+  } catch {
+    return '#';
+  }
+}
+for (const app of ['claude', 'chatgpt']) {
+  $('cloud-add-' + app).addEventListener('click', () => {
+    if (!cloudState?.hub) return;
+    return Promise.resolve(navigator.clipboard?.writeText(new URL('/mcp', cloudState.hub).href)).catch(() => {});
+  });
+}
 
 // Remove Chrome Bridge: the agent removes the local side (cli.mjs uninstall —
 // it lists first and never deletes someone's work), then the extension removes
@@ -407,6 +410,11 @@ $('remove-extension').addEventListener('click', () => {
     $('remove-status').textContent = 'Open chrome://extensions and click Remove on Chrome Bridge.';
     return;
   }
+  // Sign out of Cloud Bridge too: once removed, nothing is left to tell it, and
+  // AI apps would keep listing this profile. Not awaited: the confirm dialog
+  // needs this click's user activation (~5s), and the worker signs out while
+  // it shows. Cancel in Chrome's dialog leaves Cloud AI apps off (the switch shows it).
+  if (cloudState?.paired || cloudState?.pairing) cloudRequest({ type: 'cloud-unpair' });
   // Rejects when the person clicks Cancel in Chrome's dialog: nothing to say.
   Promise.resolve(m.uninstallSelf({ showConfirmDialog: true })).catch(() => {});
 });

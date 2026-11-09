@@ -60,10 +60,8 @@
   #cloud-code { margin-top: 8px; font-size: 12px; line-height: 1.5; background: #ede9fe; color: #3f3555; border-radius: 6px; padding: 8px 10px; }
   #cloud-code b { font: 600 13px ui-monospace, monospace; color: #5b21b6; }
   #cloud-open-page { display: block; margin-top: 4px; color: #7c3aed; font-weight: 600; text-decoration: none; }
-  #cloud-add { margin-top: 8px; }
-  #cloud-help { margin-top: 8px; padding: 8px 10px; border-radius: 6px; background: #f6f3ff; color: #3f3555; font-size: 12px; line-height: 1.5; }
-  #cloud-help ol { margin: 0; padding-left: 18px; }
-  #cloud-help li { margin: 2px 0; }
+  .add-row { display: flex; gap: 6px; margin-top: 8px; }
+  .add-row a.button { flex: 1; padding: 8px 0; border-radius: 8px; background: #fff; color: #7c3aed; border: 1px solid #c4b5fd; font: 600 13px system-ui, sans-serif; text-align: center; text-decoration: none; }
   /* a confirm: Cancel (secondary) and the action side by side, the action last */
   .button-row { display: flex; gap: 8px; margin-top: 8px; }
   .button-row button { flex: 1; }
@@ -134,15 +132,11 @@
       <button id="cloud-other" class="quiet">Use another Cloud Bridge address</button>
     </div>
     <div id="cloud-code" hidden><span id="cloud-code-text"></span> <a id="cloud-open-page" href="#" target="_blank" rel="noopener">Page didn't open? Open it</a></div>
+    <!-- Each copies the connector link and opens Cloud Bridge's steps for that
+         app (opening a tab closes this popup, so the steps can't live here). -->
     <div id="cloud-paired" hidden>
-      <button id="cloud-add" class="secondary">Add to Claude or ChatGPT</button>
-      <div id="cloud-help" hidden>
-        <ol>
-          <li>Copy the connector link: <button id="cloud-copy-mcp" class="quiet">Copy link</button></li>
-          <li><b>Claude:</b> Settings → Connectors → Add custom connector, and paste it. <b>ChatGPT:</b> chatgpt.com/plugins → add a custom MCP server, and paste it.</li>
-          <li>When the app asks, sign in with GitHub and click Allow.</li>
-        </ol>
-      </div>
+      <div class="add-row"><a id="cloud-add-claude" class="button secondary" href="#" target="_blank" rel="noopener">Add to Claude</a> <a id="cloud-add-chatgpt" class="button secondary" href="#" target="_blank" rel="noopener">Add to ChatGPT</a></div>
+      <div class="hint">Copies your Cloud Bridge link and opens the steps.</div>
     </div>
     <div class="hint" id="cloud-off-hint" hidden>Turning this off signs this browser out of Cloud Bridge.</div>
   </div>

@@ -913,7 +913,7 @@ function linksHarness({ owners = new Map(), driven = [], idReady = Promise.resol
     idReady, installReady: Promise.resolve(), WebSocket: FakeWS, crypto: { randomUUID: () => 'req-1' },
     setTimeout: (fn, ms) => timers.push({ fn, ms }), clearTimeout() {},
     setInterval: (fn, ms) => intervals.push({ fn, ms }) && intervals.length, clearInterval() {},
-    URL, fetch: fetchImpl,
+    URL, fetch: fetchImpl, AbortSignal,
     chrome: {
       runtime: { getManifest: () => ({ version: '9.9.9' }) }, alarms: { create() {}, onAlarm: { addListener: (fn) => { alarm = fn; } } },
       storage: { local: { get: async (k) => (k === 'localAgents' && localRead ? { localAgents: await localRead } : { [k]: storage[k] }), set: async (o) => Object.assign(storage, structuredClone(o)) } },
@@ -927,7 +927,7 @@ function linksHarness({ owners = new Map(), driven = [], idReady = Promise.resol
     pageErrorsFor: async () => null, currentActivity: () => false,
   });
   vm.runInContext(commandsSource, context); // the worker's importScripts('commands.js')
-  vm.runInContext(linksSource + '\nthis.links = links; this.linkOpen = linkOpen; this.cloudState = cloudState; this.cloudPair = cloudPair; this.connect = connect; this.setLocal = (on) => { localOn = on; };', context);
+  vm.runInContext(linksSource + '\nthis.links = links; this.linkOpen = linkOpen; this.cloudState = cloudState; this.cloudPair = cloudPair; this.cloudSignOut = cloudSignOut; this.connect = connect; this.setLocal = (on) => { localOn = on; };', context);
   const flush = () => new Promise((r) => setImmediate(r));
   const fire = (ms) => timers.splice(0).filter((t) => t.ms === ms || (timers.push(t), false)).forEach((t) => t.fn());
   return { context, sockets, timers, handled, painted, logs, flush, fire, alarm: () => alarm(), storage, created, intervals };
@@ -1390,4 +1390,82 @@ test('cloud: a failed re-pair keeps the paired hub (review finding)', async () =
   h.context.connect(h.context.links.get('cloud'));
   await h.flush();
   assert.equal(h.sockets.at(-1).url, 'ws://localhost:8787/arm', 'the token still goes to the hub that issued it');
+});
+
+test('cloud: switching off signs out at the hub too, and the hub\'s own 4401 for that socket shows no "forgot you" notice', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => { calls.push([new URL(url).pathname, init.method, init.headers.Authorization]); return { ok: true, status: 200, json: async () => ({ ok: true, revoked: true }) }; };
+  const { context, ws, storage, flush, sockets } = await cloudArm({ fetchImpl });
+  const r = await context.cloudSignOut();
+  assert.equal(r.ok, true);
+  assert.equal(r.notice, '');
+  assert.deepEqual(calls, [['/arm/revoke', 'POST', 'Bearer ' + PAIRED.token]]);
+  assert.equal(storage.cloud.token, '');
+  assert.equal(storage.cloud.enabled, false);
+  ws.drop(4401, 'signed out of Cloud Bridge'); // the hub closing the socket we just left
+  await flush();
+  assert.equal(storage.cloud.notice, '', 'leaving is not "the hub no longer knows this profile"');
+  assert.equal(sockets.filter((s) => s.url.includes('/arm')).length, 1, 'no redial');
+});
+
+test('cloud: signing out with the hub unreachable signs out here and retries there on the keepalive alarm until it answers', async () => {
+  let up = false;
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push([url, init.headers.Authorization]);
+    if (!up) throw new TypeError('Failed to fetch');
+    return { ok: true, status: 200, json: async () => ({ ok: true, revoked: true }) };
+  };
+  const { context, storage, logs, alarm, flush } = await cloudArm({ fetchImpl });
+  const r = await context.cloudSignOut();
+  assert.equal(r.ok, true);
+  assert.equal(storage.cloud.token, '');
+  assert.match(r.notice, /^Signed out here\. Cloud Bridge couldn't be reached, so AI apps may list this profile until it can be; chrome-bridge keeps trying\.$/);
+  assert.ok(logs.some((l) => l.includes('was unreachable')));
+  assert.deepEqual(plain(storage.cloud.unrevoked), [{ hub: PAIRED.hub, token: PAIRED.token }], 'kept only to retry the sign-out');
+  alarm();
+  await flush();
+  await flush();
+  assert.equal(storage.cloud.unrevoked.length, 1, 'still down: still pending');
+  up = true;
+  alarm();
+  await flush();
+  await flush();
+  assert.deepEqual(plain(storage.cloud.unrevoked), [], 'the hub answered: the token is gone for good');
+  assert.deepEqual(calls.map((c) => c[1]), Array(3).fill('Bearer ' + PAIRED.token));
+});
+
+test('cloud: pairing again revokes the old token at its hub', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    const path = new URL(url).pathname;
+    calls.push([url, init.headers.Authorization ?? null]);
+    if (path === '/pair/start') return { ok: true, status: 200, json: async () => ({ code: 'ABCD-EFGH', pollToken: 'pt', verificationUri: 'https://hub.example/pair?code=ABCD-EFGH', interval: 3, expiresIn: 600 }) };
+    return { ok: true, status: 200, json: async () => ({ ok: true, revoked: true }) };
+  };
+  const { context, ws, storage, flush } = await cloudArm({ fetchImpl });
+  await context.cloudPair('https://hub.example');
+  await flush();
+  assert.deepEqual(calls.map((c) => c[0]), ['https://hub.example/pair/start', 'http://localhost:8787/arm/revoke'], 'the old token goes to the hub that issued it');
+  assert.equal(calls[1][1], 'Bearer ' + PAIRED.token);
+  ws.drop(4401, 'signed out of Cloud Bridge');
+  await flush();
+  assert.equal(storage.cloud.notice, '');
+  assert.equal(storage.cloud.pairing.code, 'ABCD-EFGH', 'the new pairing survives the old socket closing');
+});
+
+test('cloud: a token signed out while a retry pass is in flight is kept for the next pass (review finding)', async () => {
+  const OLD = { hub: 'http://localhost:8787', token: 'cba_b2xk.' + 'o'.repeat(43) };
+  let release;
+  const gate = new Promise((r) => (release = r));
+  // The pass's fetch (OLD) hangs until released; the sign-out's fails at once, so it lands mid-pass.
+  const fetchImpl = async (url, init) => { if (init.headers.Authorization.includes(OLD.token)) await gate; throw new TypeError('Failed to fetch'); };
+  const { context, storage, alarm, flush } = await cloudArm({ fetchImpl, cloud: { ...PAIRED, unrevoked: [OLD] } });
+  alarm(); // a pass over [OLD] starts and waits on the hub
+  await flush();
+  await context.cloudSignOut(); // fails too: adds the current token while the pass waits
+  assert.equal(storage.cloud.unrevoked.length, 2);
+  release();
+  for (let i = 0; i < 4; i++) await flush();
+  assert.deepEqual(plain(storage.cloud.unrevoked).map((t) => t.token), [OLD.token, PAIRED.token]);
 });

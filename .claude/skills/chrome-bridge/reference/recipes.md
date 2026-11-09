@@ -43,6 +43,7 @@ A profile can also be paired with a Cloud Bridge hub (popup → ⚙ → Cloud AI
 - From your link, a tab driven through the other one is read-only: `snap`, `shot`, `measure`, `console`, `ask`, `perf`, `net` work; anything else is refused before it runs (`⚠ this tab is driven through the Cloud Bridge link …`). Open your own tab rather than asking for the other one.
 - `tabs` tags such tabs `"link":"<label>"`; `close --all` skips them (`skipped` + `note`); `release` and `doctor --fix` touch only your link's tabs. The human's ⏏ (the pill, or the popup's **⏏ Release this tab**) releases a tab whichever link drove it.
 - Through the cloud, the AI app sees two MCP tools: `chrome {command}` (one command line in this CLI's syntax) and `chrome_batch {lines}` (stops at the first failure). `shot <match> x.png` returns the image. Disk, clipboard and local-install forms (`upload`, `paste` without `-- text`, `fetch --out`, `net --har`, `start`, `extreload`, …) are refused with the alternative, and so is anything the user turned Off at the hub (`wait --js` follows `eval`'s rule).
+- Setup is the user's, in the popup: ⚙ → Cloud AI apps → Connect, then **Add to Claude** / **Add to ChatGPT** open the hub's steps. Switching it off signs the profile out at the hub too (AI apps stop listing it); the AI app's `chrome` tool then answers with how to connect again.
 
 ## Minimize focus changes
 

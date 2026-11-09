@@ -576,6 +576,7 @@ test('popup Cloud access (Settings): unpaired, the switch opens a one-click Conn
 
 test('popup Cloud AI apps (Settings): connected shows how to add it to Claude or ChatGPT; the switch off signs out', async () => {
   const sent = [];
+  let copied = '';
   let cloud = { paired: true, enabled: true, connected: true, hub: 'http://localhost:8787', profile: 'poplar', pairing: null, notice: '' };
   const { element, settle } = popupHarness(async (message) => {
     sent.push(message);
@@ -583,13 +584,15 @@ test('popup Cloud AI apps (Settings): connected shows how to add it to Claude or
     if (message.type === 'cloud-toggle') cloud = { ...cloud, enabled: message.enabled, connected: false };
     if (message.type === 'cloud-unpair') cloud = { ...cloud, paired: false, enabled: false };
     return { ok: true, ...cloud };
-  }, { tab: { id: 7 } });
+  }, { tab: { id: 7 }, clipboard: { writeText: async (t) => { copied = t; } } });
   await settle();
   assert.equal(element('cloud-status').textContent, 'Connected: Claude.ai and ChatGPT apps you add can use this browser', 'the switch says on; the line says what it means');
   assert.equal(element('cloud-off-hint').hidden, false, 'says what turning it off does');
-  assert.equal(element('cloud-help').hidden, true);
-  await element('cloud-add').handlers.click();
-  assert.equal(element('cloud-help').hidden, false, 'Add to Claude or ChatGPT shows where the link goes');
+  // Each opens Cloud Bridge's steps for that app in a tab (the popup closes) and copies the link they ask for.
+  assert.equal(element('cloud-add-claude').href, 'http://localhost:8787/add?app=claude');
+  assert.equal(element('cloud-add-chatgpt').href, 'http://localhost:8787/add?app=chatgpt');
+  await element('cloud-add-chatgpt').handlers.click();
+  assert.equal(copied, 'http://localhost:8787/mcp');
   assert.equal(element('cloud-enabled').checked, true);
   assert.equal(element('cloud-pair-row').hidden, true, 'a paired profile shows no address form');
   assert.equal(element('cloud-paired').hidden, false);
@@ -755,6 +758,21 @@ test('popup Remove Chrome Bridge: the uninstall prompt names this checkout; the 
   assert.equal(element('remove-status').textContent, 'Copied ✓ — paste it into your AI agent');
   element('remove-extension').handlers.click();
   assert.equal(element('remove-status').textContent, 'Open chrome://extensions and click Remove on Chrome Bridge.', 'no management API in this harness: the fallback names the manual step');
+});
+
+test('popup Remove extension signs out of Cloud Bridge too, without spending the click\'s user activation on it (review)', async () => {
+  const order = [];
+  const cloud = { paired: true, enabled: true, connected: true, hub: 'http://localhost:8787', profile: 'poplar', pairing: null, notice: '' };
+  const { element, settle } = popupHarness(async (m) => {
+    if (m.type === 'bridge-state') return { count: 0, active: false, connected: true, profile: 'poplar', cloud };
+    order.push(m.type);
+    return { ok: true, ...cloud, paired: false, enabled: false };
+  }, { tab: { id: 7 }, management: { uninstallSelf: async () => { order.push('uninstallSelf'); } } });
+  await settle();
+  element('remove-extension').handlers.click();
+  // Both in the click's own tick: an await before uninstallSelf could outlive the
+  // activation window (the revoke alone may take 5s) and Chrome would refuse the dialog.
+  assert.deepEqual(order, ['cloud-unpair', 'uninstallSelf']);
 });
 
 test('popup Remove extension asks Chrome to uninstall it with its own confirm dialog', async () => {

@@ -459,7 +459,9 @@ async function connect(link) {
 // narrated and refused exactly like a local one (plus this link's policy).
 const CLOUD_PROTOCOL = 'cloud-bridge.v1';
 const CLOUD_UNPAIRED = 4401; // the hub's "unknown or revoked arm token" close code
-let cloudCfg = { hub: '', token: '', enabled: false, pairing: null, notice: '' };
+// unrevoked: tokens signed out here while their hub was unreachable, kept only
+// to retry the sign-out there (see cloudRevokePending).
+let cloudCfg = { hub: '', token: '', enabled: false, pairing: null, notice: '', unrevoked: [] };
 const cloudReady = chrome.storage.local
   .get('cloud')
   .then(({ cloud }) => {
@@ -700,6 +702,59 @@ function cloudState() {
     pairing: p ? { code: p.code, verificationUri: p.verificationUri, expires: p.expires } : null, notice: cloudCfg.notice || '',
   };
 }
+// Signing out tells the hub too, so AI apps stop listing this profile (before,
+// off → on left a second "poplar" there, offline forever). The hub can't
+// replace a record by name (20 profile names, so two profiles can share one):
+// a token the hub didn't confirm stays in cloudCfg.unrevoked and is retried on
+// the keepalive alarm and on the next pairing until the hub answers.
+async function cloudRevoke(hub, token) {
+  if (!hub || !token) return true;
+  try {
+    const res = await fetch(new URL('/arm/revoke', hub).href, { method: 'POST', headers: { Authorization: 'Bearer ' + token }, signal: AbortSignal.timeout(5000) });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+let cloudRevoking = false;
+async function cloudRevokePending() {
+  if (cloudRevoking || !cloudCfg.unrevoked?.length) return;
+  cloudRevoking = true;
+  try {
+    const batch = cloudCfg.unrevoked;
+    const left = [];
+    for (const t of batch) if (!(await cloudRevoke(t.hub, t.token))) left.push(t);
+    // Entries added while these were in flight (cloudForget saves a NEW array) stay too.
+    const tried = new Set(batch);
+    await saveCloud({ unrevoked: [...left, ...(cloudCfg.unrevoked || []).filter((t) => !tried.has(t))] });
+  } finally {
+    cloudRevoking = false;
+  }
+}
+// Detach before closing: the hub's own 4401 for this socket must not read as
+// "the hub forgot this profile" (cloudUnpaired) while we're the ones leaving.
+function cloudDrop() {
+  const link = links.get('cloud');
+  const s = link.socket;
+  link.socket = null;
+  try {
+    s?.close();
+  } catch {}
+}
+// Forget this profile's token here; tell its hub (now, or until it answers).
+async function cloudForget(patch) {
+  const { hub, token } = cloudCfg;
+  cloudDrop();
+  await saveCloud({ ...patch, token: '', enabled: false });
+  if (await cloudRevoke(hub, token)) return true;
+  if (hub && token) await saveCloud({ unrevoked: [...(cloudCfg.unrevoked || []), { hub, token }].slice(-5) });
+  logLine('cloud: signed out here, but ' + hub + ' was unreachable — the sign-out there is retried until it answers');
+  return false;
+}
+async function cloudSignOut() {
+  if (await cloudForget({ pairing: null, notice: '' })) return { ok: true, ...cloudState() };
+  return { ok: true, ...cloudState(), notice: "Signed out here. Cloud Bridge couldn't be reached, so AI apps may list this profile until it can be; chrome-bridge keeps trying." };
+}
 async function hubPost(hub, path, body) {
   const res = await fetch(new URL(path, hub).href, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   return { status: res.status, body: await res.json().catch(() => ({})) };
@@ -718,7 +773,8 @@ async function cloudPair(hubInput) {
   // point the current token at another host.
   const { status, body } = await hubPost(hub.origin, '/pair/start', { kind: 'chrome', name: PROFILE_NAME });
   if (!body.code) return { ok: false, error: body.message || `The hub answered ${status}. Check the URL.` };
-  links.get('cloud').socket?.close();
+  // The previous token's record goes (now or on a later retry), or AI apps would list this profile twice.
+  cloudForget({}).then(() => cloudRevokePending());
   await saveCloud({ hub: hub.origin, token: '', enabled: false, notice: '', pairing: { code: body.code, pollToken: body.pollToken, verificationUri: body.verificationUri, interval: body.interval || 3, expires: Date.now() + (body.expiresIn || 600) * 1000 } });
   chrome.tabs.create({ url: body.verificationUri }).catch(() => {});
   cloudPollPairing();
@@ -780,6 +836,7 @@ chrome.alarms.create('keepalive', { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener(() => {
   for (const link of links.values()) if (!linkOpen(link.id)) connect(link);
   cloudPollPairing();
+  cloudRevokePending();
 });
 
 // --- Driven-tab marking -----------------------------------------------------
@@ -1670,10 +1727,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (msg.enabled) connect(cloud);
           else cloud.socket?.close();
         }
-        if (msg.type === 'cloud-unpair') {
-          await saveCloud({ token: '', enabled: false, pairing: null, notice: '' });
-          cloud.socket?.close();
-        }
+        if (msg.type === 'cloud-unpair') return cloudSignOut();
         cloudPollPairing(); // a pairing the worker forgot while it slept
         return { ok: true, ...cloudState() };
       })
