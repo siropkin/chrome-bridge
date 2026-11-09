@@ -49,7 +49,7 @@ Flags and edge cases: [reference/commands.md](reference/commands.md).
 - **Act:** `click [--dbl]` · `fill` (also native `<select>`) · `type` (per-key, for autocomplete) · `paste <match> @eN -- "text"` / `--html` (rich editors that revert `fill`) · `clear` · `press <match> Control+k` · `hover` · `drag <match> @a @b` · `scroll` · `upload <match> @eN <file…> [--chooser]` · `dialog <match> accept|dismiss`. App ignores synthetic events (canvas tools, Figma) or Enter won't submit → `--trusted` (CDP input; foreground tab only — `activate` first, or `emulate <match> focus` if it stays hidden).
 - **Pixels:** `shot` (see Screenshots) · `wait <match> --pixel-change` · `emulate <match> <w> <h> [mobile] [dsf=N]` · `emulate <match> focus` · `unemulate <match>`.
 - **Compose:** `wait` (`--text` / css / `--js` / `--human` / `--pixel-change`) · `batch`.
-- **Housekeeping:** `note <match> <text>` (narrate intent in the tab's pill) · `history [-n N] [--batch out]` · `doctor [--fix]` (leftover 🟣 markers) · `watch` (live feed — suggest it to the human) · `profiles` · `swlogs` · `extreload` · `update` · `health` · `start`.
+- **Housekeeping:** `note <match> <text>` (narrate intent in the tab's pill) · `history [-n N] [--batch out]` · `doctor [--fix]` (leftover 🟣 markers) · `watch` (live feed — suggest it to the human) · `profiles` · `swlogs` · `extreload` · `update` · `health` · `start` · `uninstall` (lists what goes; show the user, then `--yes`).
 
 Several Chrome profiles connected: a `<match>` found in more than one is refused — add `--profile <name or id>` (`profiles` lists them; `open`, `extreload` and `swlogs` always need it then). Personal vs work matters: if unsure, ask.
 

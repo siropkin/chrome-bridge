@@ -161,6 +161,16 @@
     </div>
   </div>
 
+  <div class="setting">
+    <div class="row"><span><b>Remove Chrome Bridge</b><span class="sub">From this computer, then from Chrome</span></span></div>
+    <div class="button-row">
+      <button id="copy-uninstall" class="secondary">Copy uninstall prompt</button>
+      <button id="remove-extension" class="danger">Remove extension</button>
+    </div>
+    <div class="hint">First paste the prompt into your AI agent: it removes the helper and its files from your computer. Then remove the extension; Chrome asks you to confirm.</div>
+    <div id="remove-status" class="feedback" role="status"></div>
+  </div>
+
   <div class="foot"><a id="rate" href="https://chromewebstore.google.com/detail/chrome-bridge/kmhjlnokjigmnimgjjmiahlinjbcebkg" target="_blank" rel="noopener">★ Rate it on the Chrome Web Store</a><span id="version" class="hint" style="margin:0"></span></div>
 </div>
 <script src="popup.js"></script>

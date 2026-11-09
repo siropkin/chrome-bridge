@@ -72,6 +72,7 @@ done
 echo
 if [[ $body =~ $EXT ]]; then
   echo "✓ extension connected — setup complete"
+  echo "  (to remove it later: node $ROOT/cli.mjs uninstall — it lists what goes before removing anything)"
 elif [[ -z $body ]]; then
   echo "⚠ server stopped responding — check $ROOT/server.log (restart: node $ROOT/cli.mjs start)"
 else

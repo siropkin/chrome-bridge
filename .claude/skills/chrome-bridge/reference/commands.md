@@ -223,6 +223,15 @@ update [--check]                  bring this checkout to the code matching the c
                                   commands. --check prints the plan, changes nothing
 start                             start the server (detached) if it's down
 stop                              stop the server
+uninstall [--yes]                 remove chrome-bridge from this computer: stop the server,
+                                  remove the agent skill (~/.claude/skills/chrome-bridge)
+                                  and delete this bridge folder. Without --yes it only lists
+                                  what it would remove. Never deletes someone's work: a git
+                                  checkout with local edits, untracked files, a stash, other
+                                  worktrees or commits origin doesn't have (any branch, tag or
+                                  detached HEAD) is kept, so is a folder inside another git
+                                  repo or a submodule; a download's recipes/ moves next to it
+                                  first. The Chrome extension is removed from its popup
 ```
 
 ## Notes per command

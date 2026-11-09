@@ -241,6 +241,13 @@ node cli.mjs extreload   # unpacked install only, when health asks for it
 
 </details>
 
+## Uninstall
+
+Toolbar popup → ⚙ → **Remove Chrome Bridge**:
+
+1. **Copy uninstall prompt** and paste it into your AI agent. It runs `node cli.mjs uninstall`, shows you what it would remove (the local server, the agent skill in `~/.claude/skills`, the bridge folder with its logs and settings), and removes it once you agree (`uninstall --yes`). Nothing of yours is deleted: a git checkout with local edits, untracked files, a stash, other worktrees or commits origin doesn't have (on any branch, tag or a detached HEAD) is kept and listed, and so is a bridge folder inside another git project or a submodule. From a download without git, your saved `recipes/` are moved next to it first.
+2. **Remove extension**: Chrome asks you to confirm. This also deletes everything the extension stored, including a Cloud Bridge sign-in.
+
 ## Development
 
 `node test/selftest.mjs` runs an end-to-end check against a fake extension (no Chrome needed). CI runs it on every push. How to land changes (version bumps, tags, style) is in the *Developing* section of [AGENTS.md](AGENTS.md).

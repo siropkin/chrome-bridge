@@ -239,6 +239,13 @@ node cli.mjs extreload   # 仅限解压安装,且 health 提示时才需要
 
 </details>
 
+## 卸载
+
+工具栏弹窗 → ⚙ → **Remove Chrome Bridge**:
+
+1. 点击 **Copy uninstall prompt**,把提示粘贴给你的 AI 智能体。它会运行 `node cli.mjs uninstall`,先列出将要删除的内容(本地服务、`~/.claude/skills` 里的智能体技能、桥接器文件夹及其日志和设置),你同意后再删除(`uninstall --yes`)。不会删除你的任何内容:有本地修改、未跟踪文件、stash、其他 worktree 或 origin 没有的提交(任何分支、标签或分离的 HEAD)的 git 仓库会保留并列出,位于其他 git 项目里或作为子模块的桥接器文件夹也会保留;没有 git 的下载版本会先把你保存的 `recipes/` 移到旁边。
+2. 点击 **Remove extension**:Chrome 会请你确认。这也会删除扩展保存的所有内容,包括 Cloud Bridge 的登录。
+
 ## 开发
 
 `node test/selftest.mjs` 用模拟扩展做端到端检查(不需要 Chrome)。CI 在每次 push 时运行它。如何提交变更(版本号、标签、风格)见 [AGENTS.md](AGENTS.md) 的 *Developing* 一节。

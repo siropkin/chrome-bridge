@@ -91,6 +91,7 @@
     entry('update', 'Local admin', L, 'update [--check]'),
     entry('start', 'Local admin', L, 'start'),
     entry('stop', 'Local admin', L, 'stop'),
+    entry('uninstall', 'Local admin', L, 'uninstall [--yes]'),
   ]);
   const BY_WORD = new Map();
   for (const e of REGISTRY) for (const w of [e.name, ...e.aliases]) BY_WORD.set(w, e);

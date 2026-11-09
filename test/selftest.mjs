@@ -1091,7 +1091,7 @@ try {
     );
     // CLI-local commands (no wire type), the nav→navigate alias, and probe
     // (a server-internal routing query — no CLI surface).
-    const CLI_LOCAL = ['batch', 'health', 'start', 'stop', 'update', 'watch', 'history', 'profiles', 'probe'];
+    const CLI_LOCAL = ['batch', 'health', 'start', 'stop', 'update', 'uninstall', 'watch', 'history', 'profiles', 'probe'];
     const usageWire = new Set([...usageCmds].filter((c) => !CLI_LOCAL.includes(c)).map((c) => (c === 'nav' ? 'navigate' : c)));
     assert(
       [...usageWire].sort().join() === [...handleTypes].filter((t) => t !== 'ping' && t !== 'probe').sort().join(),
@@ -1932,6 +1932,177 @@ try {
       await new Promise((r) => setTimeout(r, 100));
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+
+  // cli uninstall, on throwaway copies with their own HOME (never this checkout
+  // or the real ~/.claude): a dry run changes nothing; --yes removes the skill
+  // link and the folder; a checkout holding someone's work is kept; a server
+  // running from another folder (this selftest's) is left running.
+  {
+    const tmpU = fs.mkdtempSync(join(tmpdir(), 'cb-uninstall-'));
+    const home = join(tmpU, 'home');
+    const bridgeCopy = (dir) => {
+      fs.mkdirSync(join(dir, 'extension'), { recursive: true });
+      for (const f of ['cli.mjs', 'drift.mjs', 'extension/commands.js']) fs.copyFileSync(join(ROOT, f), join(dir, f));
+      fs.writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'chrome-bridge', version: '1.0.0', type: 'module' }));
+    };
+    const runU = (dir, ...a) => spawnSync(process.execPath, [join(dir, 'cli.mjs'), 'uninstall', ...a], { encoding: 'utf8', env: { ...env, HOME: home, USERPROFILE: home } });
+    try {
+      const plain = join(tmpU, 'chrome-bridge');
+      bridgeCopy(plain);
+      fs.mkdirSync(join(home, '.claude', 'skills'), { recursive: true });
+      fs.symlinkSync(plain, join(home, '.claude', 'skills', 'chrome-bridge'));
+      const dry = runU(plain);
+      assert(
+        dry.status === 0 && dry.stdout.includes('uninstall would:') && dry.stdout.includes('remove the agent skill link') && dry.stdout.includes(`delete ${fs.realpathSync(plain)}`) &&
+          dry.stdout.includes('belongs to another folder') && dry.stdout.includes('uninstall --yes') && dry.stdout.includes('Remove Chrome Bridge') &&
+          fs.existsSync(plain) && fs.lstatSync(join(home, '.claude', 'skills', 'chrome-bridge')).isSymbolicLink(),
+        'uninstall (dry run): lists the skill link and the folder, leaves a foreign server running, names the next steps, changes nothing',
+        dry.stdout + dry.stderr
+      );
+      const real = runU(plain, '--yes');
+      let linkGone = false;
+      try {
+        fs.lstatSync(join(home, '.claude', 'skills', 'chrome-bridge'));
+      } catch {
+        linkGone = true;
+      }
+      assert(real.status === 0 && real.stdout.includes('done:') && linkGone && !fs.existsSync(plain), 'uninstall --yes: removes the skill link and deletes the folder', real.stdout + real.stderr);
+      const health = await cli('health');
+      assert(JSON.parse(health.stdout).ok === true, 'uninstall --yes left the server of another folder running', health.stdout + health.stderr);
+
+      const work = join(tmpU, 'work');
+      bridgeCopy(work);
+      spawnSync('git', ['-C', work, 'init', '-q']);
+      spawnSync('git', ['-C', work, 'add', '-A']);
+      spawnSync('git', ['-C', work, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'local']);
+      const keep = runU(work, '--yes');
+      assert(keep.status === 0 && /commit\(s\) not on origin .*— left as is/.test(keep.stdout) && fs.existsSync(join(work, 'cli.mjs')), 'uninstall --yes never deletes a checkout with local commits', keep.stdout + keep.stderr);
+      fs.writeFileSync(join(work, 'my-recipe.md'), 'mine');
+      const keep2 = runU(work, '--yes');
+      assert(keep2.stdout.includes('local edits or untracked files — left as is') && fs.existsSync(join(work, 'my-recipe.md')), 'uninstall --yes never deletes a checkout with untracked files', keep2.stdout + keep2.stderr);
+      const notOurs = join(tmpU, 'other');
+      bridgeCopy(notOurs);
+      fs.writeFileSync(join(notOurs, 'package.json'), JSON.stringify({ name: 'something-else', type: 'module' }));
+      const keep3 = runU(notOurs, '--yes');
+      assert(keep3.stdout.includes("doesn't look like a chrome-bridge folder") && fs.existsSync(notOurs), 'uninstall refuses a folder that is not chrome-bridge', keep3.stdout + keep3.stderr);
+      // Review findings (data loss): every branch, stashes, git failures,
+      // a folder inside another repo, and a download's saved recipes.
+      const G = (dir, ...a) => spawnSync('git', ['-C', dir, '-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { encoding: 'utf8' });
+      const seed = join(tmpU, 'seed');
+      bridgeCopy(seed);
+      G(seed, 'init', '-q', '-b', 'main');
+      G(seed, 'add', '-A');
+      G(seed, 'commit', '-qm', 'v1');
+      spawnSync('git', ['clone', '-q', '--bare', seed, join(tmpU, 'origin.git')]);
+      const cloneOf = (name) => {
+        const d = join(tmpU, name);
+        spawnSync('git', ['clone', '-q', join(tmpU, 'origin.git'), d]);
+        return d;
+      };
+      const clean = cloneOf('clean');
+      const ok1 = runU(clean, '--yes');
+      assert(ok1.status === 0 && !fs.existsSync(clean), 'uninstall --yes deletes a clean, fully pushed clone', ok1.stdout + ok1.stderr);
+      const branchy = cloneOf('branchy');
+      G(branchy, 'checkout', '-qb', 'parked');
+      fs.writeFileSync(join(branchy, 'wip.md'), 'wip');
+      G(branchy, 'add', '-A');
+      G(branchy, 'commit', '-qm', 'parked work');
+      G(branchy, 'checkout', '-q', 'main');
+      const k1 = runU(branchy, '--yes');
+      assert(/commit\(s\) not on origin \(a branch, a tag or a detached HEAD\) — left as is/.test(k1.stdout) && fs.existsSync(branchy), 'uninstall --yes keeps a checkout whose OTHER branch has unpushed commits (review finding)', k1.stdout + k1.stderr);
+      const stashy = cloneOf('stashy');
+      fs.appendFileSync(join(stashy, 'package.json'), ' ');
+      G(stashy, 'stash', '-q');
+      const k2 = runU(stashy, '--yes');
+      assert(k2.stdout.includes('has stashed changes') && fs.existsSync(stashy), 'uninstall --yes keeps a checkout with a stash (review finding)', k2.stdout + k2.stderr);
+      const hidden = cloneOf('hidden');
+      G(hidden, 'config', 'status.showUntrackedFiles', 'no');
+      fs.writeFileSync(join(hidden, 'my-recipe.md'), 'mine');
+      const k3 = runU(hidden, '--yes');
+      assert(k3.stdout.includes('local edits or untracked files') && fs.existsSync(join(hidden, 'my-recipe.md')), 'uninstall --yes sees untracked files even when git is set to hide them (review finding)', k3.stdout + k3.stderr);
+      const broken = join(tmpU, 'broken');
+      bridgeCopy(broken);
+      fs.writeFileSync(join(broken, '.git'), 'gitdir: /nonexistent/worktree\n');
+      const k4 = runU(broken, '--yes');
+      assert(k4.stdout.includes("git can't read") && fs.existsSync(broken), 'uninstall --yes keeps a checkout git fails to read (review finding)', k4.stdout + k4.stderr);
+      const corrupt = cloneOf('corrupt');
+      fs.writeFileSync(join(corrupt, '.git', 'index'), 'garbage');
+      const k6 = runU(corrupt, '--yes');
+      assert(k6.stdout.includes("couldn't check it for local work") && fs.existsSync(corrupt), 'uninstall --yes keeps a checkout when a git check fails (corrupt index — review finding)', k6.stdout + k6.stderr);
+      // Second review (data loss): detached HEAD, local-only tag, worktrees,
+      // submodules — and the store install pinned to a release tag still goes.
+      const detached = cloneOf('detached');
+      G(detached, 'checkout', '-q', '--detach');
+      fs.writeFileSync(join(detached, 'mine.md'), 'mine');
+      G(detached, 'add', '-A');
+      G(detached, 'commit', '-qm', 'detached work');
+      const k7 = runU(detached, '--yes');
+      assert(k7.stdout.includes('not on origin (a branch, a tag or a detached HEAD)') && fs.existsSync(detached), 'uninstall --yes keeps a commit made on a detached HEAD (review finding)', k7.stdout + k7.stderr);
+      const tagged = cloneOf('tagged');
+      fs.writeFileSync(join(tagged, 'mine.md'), 'mine');
+      G(tagged, 'add', '-A');
+      G(tagged, 'commit', '-qm', 'tagged work');
+      G(tagged, 'tag', 'before-experiment');
+      G(tagged, 'reset', '-q', '--hard', 'origin/main');
+      const k8 = runU(tagged, '--yes');
+      assert(k8.stdout.includes('not on origin') && fs.existsSync(tagged), 'uninstall --yes keeps a commit only a local tag holds (review finding)', k8.stdout + k8.stderr);
+      const main = cloneOf('main-with-worktree');
+      G(main, 'worktree', 'add', '-q', '--detach', join(tmpU, 'side-worktree'));
+      const k9 = runU(main, '--yes');
+      assert(k9.stdout.includes('other git worktrees') && fs.existsSync(join(main, '.git')), 'uninstall --yes keeps a checkout with linked worktrees (review finding)', k9.stdout + k9.stderr);
+      const project = join(tmpU, 'project');
+      fs.mkdirSync(project);
+      G(project, 'init', '-q');
+      G(project, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', join(tmpU, 'origin.git'), 'vendor/chrome-bridge');
+      const sub = join(project, 'vendor', 'chrome-bridge');
+      const k10 = runU(sub, '--yes');
+      assert(k10.stdout.includes('is a submodule of another git repository') && fs.existsSync(join(sub, 'cli.mjs')), 'uninstall --yes keeps a chrome-bridge submodule (review finding)', k10.stdout + k10.stderr);
+      // The common store install: a shallow clone pinned to a release tag (what
+      // `update` does). Its commit is only on the tag — origin confirms the tag.
+      G(seed, 'tag', '-a', 'v1.0.0', '-m', 'v1.0.0');
+      fs.writeFileSync(join(seed, 'later.md'), 'later');
+      G(seed, 'add', '-A');
+      G(seed, 'commit', '-qm', 'v1.0.1');
+      spawnSync('git', ['-C', seed, 'push', '-q', '--tags', join(tmpU, 'origin.git'), 'main']);
+      const pinned = join(tmpU, 'pinned');
+      spawnSync('git', ['clone', '-q', '--depth', '1', 'file://' + join(tmpU, 'origin.git'), pinned]);
+      G(pinned, 'fetch', '-q', '--depth', '1', 'origin', 'refs/tags/v1.0.0:refs/tags/v1.0.0');
+      G(pinned, 'reset', '-q', '--keep', 'v1.0.0');
+      const ok2 = runU(pinned, '--yes');
+      assert(ok2.status === 0 && !fs.existsSync(pinned), 'uninstall --yes deletes a store install pinned to a release tag origin has', ok2.stdout + ok2.stderr);
+      const outer = join(tmpU, 'outer');
+      fs.mkdirSync(outer);
+      G(outer, 'init', '-q');
+      const vendored = join(outer, 'vendor', 'chrome-bridge');
+      bridgeCopy(vendored);
+      const k5 = runU(vendored, '--yes');
+      assert(k5.stdout.includes('is inside another git repository') && fs.existsSync(vendored), 'uninstall --yes keeps a bridge folder vendored inside another repo (review finding)', k5.stdout + k5.stderr);
+      const badParent = join(tmpU, 'badparent');
+      fs.mkdirSync(badParent);
+      G(badParent, 'init', '-q');
+      fs.appendFileSync(join(badParent, '.git', 'config'), '\n[broken\n');
+      const vendored2 = join(badParent, 'tools', 'chrome-bridge');
+      bridgeCopy(vendored2);
+      const k11 = runU(vendored2, '--yes');
+      assert(k11.stdout.includes("git couldn't read the folders around it") && fs.existsSync(vendored2), 'uninstall --yes keeps a folder whose enclosing repo git fails to read (review finding)', k11.stdout + k11.stderr);
+      const download = join(tmpU, 'dl', 'chrome-bridge');
+      bridgeCopy(download);
+      fs.mkdirSync(join(download, 'recipes'));
+      fs.writeFileSync(join(download, 'recipes', 'mysite.com.md'), 'my recipe');
+      const dryDl = runU(download);
+      assert(dryDl.stdout.includes('chrome-bridge-recipes (your saved site recipes stay)') && fs.existsSync(join(download, 'recipes', 'mysite.com.md')), 'uninstall (dry run) on a download names where the recipes will go', dryDl.stdout + dryDl.stderr);
+      const dl = runU(download, '--yes');
+      assert(
+        dl.status === 0 && !fs.existsSync(download) && fs.readFileSync(join(tmpU, 'dl', 'chrome-bridge-recipes', 'mysite.com.md'), 'utf8') === 'my recipe',
+        'uninstall --yes on a download (no git) moves recipes/ next to it before deleting (review finding)',
+        dl.stdout + dl.stderr
+      );
+      const bad = runU(notOurs, '--force');
+      assert(bad.status !== 0 && bad.stderr.includes('usage: uninstall [--yes]'), 'uninstall rejects unknown flags', bad.stdout + bad.stderr);
+    } finally {
+      fs.rmSync(tmpU, { recursive: true, force: true });
     }
   }
 

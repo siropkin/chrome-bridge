@@ -270,7 +270,7 @@ test('popup setup restarts fetched code and reloads stale extensions', () => {
   assert.match(prompt, /Preserve existing diagnostic logs and settings/);
 });
 
-function popupHarness(sendMessage, { tab, health = { ok: true, extension: true }, healthDown = false, manifestVersion, clipboard } = {}) {
+function popupHarness(sendMessage, { tab, health = { ok: true, extension: true }, healthDown = false, manifestVersion, clipboard, management } = {}) {
   const elements = new Map();
   const element = (id) => {
     if (!elements.has(id)) elements.set(id, { value: '', checked: false, hidden: true, handlers: {}, addEventListener(type, handler) { this.handlers[type] = handler; } });
@@ -282,7 +282,7 @@ function popupHarness(sendMessage, { tab, health = { ok: true, extension: true }
     fetch: async () => { if (healthDown) throw new Error('connection refused'); return { json: async () => health }; },
     AbortSignal,
     ...(clipboard ? { navigator: { clipboard } } : {}),
-    chrome: { tabs: { query: async () => tab ? [tab] : [] }, runtime: { sendMessage, ...(manifestVersion ? { getManifest: () => ({ version: manifestVersion }) } : {}) } },
+    chrome: { tabs: { query: async () => tab ? [tab] : [] }, runtime: { sendMessage, ...(manifestVersion ? { getManifest: () => ({ version: manifestVersion }) } : {}) }, ...(management ? { management } : {}) },
   });
   const settle = () => new Promise((resolve) => setImmediate(resolve));
   // ⚙ opens the Settings view (it reloads the logging status); ‹ Back leaves it.
@@ -700,4 +700,28 @@ test('popup Cloud Bridge: an older worker without cloud state leaves the section
   const { element, settle } = popupHarness(async (message) => (message.type === 'bridge-state' ? { count: 0, active: false, connected: true } : {}), { tab: { id: 7 } });
   await settle();
   assert.equal(element('cloud-status').textContent, undefined, 'no claim about a link the worker did not describe');
+});
+
+test('popup Remove Chrome Bridge: the uninstall prompt names this checkout; the extension removes itself with Chrome\'s confirm', async () => {
+  let copied = '';
+  const { element, settle } = popupHarness(async (m) => (m.type === 'bridge-state' ? { count: 0, active: false, connected: true, profile: 'poplar' } : {}), {
+    tab: { id: 7 }, health: { ok: true, extension: true, repo: '/home/u/chrome-bridge/' }, clipboard: { writeText: async (t) => { copied = t; } },
+  });
+  await settle();
+  await element('copy-uninstall').handlers.click();
+  await settle();
+  assert.match(copied, /^Uninstall chrome-bridge from this computer\. Run node "\/home\/u\/chrome-bridge\/cli\.mjs" uninstall and show me what it lists\. Once I agree, run it again with --yes/);
+  assert.equal(element('remove-status').textContent, 'Copied ✓ — paste it into your AI agent');
+  element('remove-extension').handlers.click();
+  assert.equal(element('remove-status').textContent, 'Open chrome://extensions and click Remove on Chrome Bridge.', 'no management API in this harness: the fallback names the manual step');
+});
+
+test('popup Remove extension asks Chrome to uninstall it with its own confirm dialog', async () => {
+  const calls = [];
+  const { element, settle } = popupHarness(async () => ({ count: 0, active: false, connected: true }), { tab: { id: 7 }, management: { uninstallSelf: async (o) => { calls.push(o); throw new Error('user cancelled'); } } });
+  await settle();
+  element('remove-extension').handlers.click();
+  await settle();
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [{ showConfirmDialog: true }]);
+  assert.equal(element('remove-status').textContent, undefined, 'Cancel in Chrome\'s dialog: nothing to report');
 });

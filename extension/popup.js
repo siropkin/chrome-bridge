@@ -321,6 +321,24 @@ $('cloud-copy-mcp').addEventListener('click', () => {
   );
 });
 
+// Remove Chrome Bridge: the agent removes the local side (cli.mjs uninstall —
+// it lists first and never deletes someone's work), then the extension removes
+// itself (uninstallSelf needs no permission; Chrome shows its own confirm).
+$('copy-uninstall').addEventListener('click', () => {
+  const cli = bridgeHealth?.repo ? `node "${String(bridgeHealth.repo).replace(/[\\/]$/, '')}/cli.mjs"` : 'node ~/chrome-bridge/cli.mjs (or ~/.chrome-bridge/cli.mjs if it was installed with npm)';
+  const prompt = `Uninstall chrome-bridge from this computer. Run ${cli} uninstall and show me what it lists. Once I agree, run it again with --yes, do the steps it prints for you (such as removing a line about chrome-bridge you added to your instructions file), and tell me what is left. I'll remove the Chrome extension myself.`;
+  copyTo(prompt, 'remove-status', 'Copied ✓ — paste it into your AI agent');
+});
+$('remove-extension').addEventListener('click', () => {
+  const m = chrome.management;
+  if (!m?.uninstallSelf) {
+    $('remove-status').textContent = 'Open chrome://extensions and click Remove on Chrome Bridge.';
+    return;
+  }
+  // Rejects when the person clicks Cancel in Chrome's dialog: nothing to say.
+  Promise.resolve(m.uninstallSelf({ showConfirmDialog: true })).catch(() => {});
+});
+
 // Diagnostic logs: the switch saves at once; while logging is on, the size
 // limit (saves on change) and the folder show under it. Delete shows whenever
 // records exist — also after logging was turned off.

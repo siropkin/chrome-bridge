@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve as resolvePath, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Script } from 'node:vm';
 import { updateTarget } from './drift.mjs';
@@ -394,6 +394,15 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
                                     commands. --check prints the plan, changes nothing
   start                             start the server (detached) if it's down
   stop                              stop the server
+  uninstall [--yes]                 remove chrome-bridge from this computer: stop the server,
+                                    remove the agent skill (~/.claude/skills/chrome-bridge)
+                                    and delete this bridge folder. Without --yes it only lists
+                                    what it would remove. Never deletes someone's work: a git
+                                    checkout with local edits, untracked files, a stash, other
+                                    worktrees or commits origin doesn't have (any branch, tag or
+                                    detached HEAD) is kept, so is a folder inside another git
+                                    repo or a submodule; a download's recipes/ moves next to it
+                                    first. The Chrome extension is removed from its popup
 
 <match> is a substring of the tab URL or title. It must identify exactly one tab in the
 selected profile; ambiguous matches are refused before anything runs — re-run with a
@@ -665,6 +674,165 @@ async function runCommand(cmdName, args) {
       // Health on the NEW code: whatever is still out of step (an unpacked
       // build to extreload, a copied skill) prints its own fix.
       process.stderr.write(runCli('health').stderr || '');
+      break;
+    }
+
+    case 'uninstall': {
+      // One step for a person (via their agent): list what goes, then — with
+      // --yes — remove it. Never deletes someone's work: a git checkout with
+      // local edits, untracked files or local commits stays, named (the same
+      // line update holds). What a CLI can't do (an instructions line the agent
+      // added, the Chrome extension) ends the output as next steps.
+      if (args.some((a) => a !== '--yes')) fail('usage: uninstall [--yes]');
+      const yes = args.includes('--yes');
+      const repo = fileURLToPath(new URL('.', import.meta.url)).replace(/[\\/]$/, '');
+      const actions = [];
+      const kept = [];
+      // The server — only one running from THIS folder (another checkout's
+      // server is someone else's install).
+      const h = await fetch(`${BASE}/health`).then((r) => r.json()).catch(() => null);
+      const samePath = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
+      if (h?.ok && (!h.repo || samePath(String(h.repo).replace(/[\\/]$/, ''), repo)))
+        actions.push(['stop the bridge server', () => fetch(`${BASE}/stop`, { method: 'POST' }).catch(() => null)]);
+      else if (h?.ok) kept.push(`the running bridge server belongs to another folder (${h.repo}) — left running`);
+      // The agent skill: our symlink, or a copy of our skill.
+      const skill = join(homedir(), '.claude', 'skills', 'chrome-bridge');
+      let st = null;
+      try {
+        st = fs.lstatSync(skill);
+      } catch {}
+      if (st?.isSymbolicLink()) {
+        // Real paths on both sides: /var vs /private/var (macOS), a symlinked home…
+        const real = (p) => {
+          try {
+            return fs.realpathSync(p);
+          } catch {
+            return p;
+          }
+        };
+        const target = real(resolvePath(dirname(skill), fs.readlinkSync(skill)));
+        const repoReal = real(repo);
+        if (samePath(target, repoReal) || target.startsWith(repoReal + sep)) actions.push([`remove the agent skill link ${skill}`, () => fs.unlinkSync(skill)]);
+        else kept.push(`${skill} points to another folder (${target}) — left as is`);
+      } else if (st?.isDirectory()) {
+        let md = '';
+        try {
+          md = fs.readFileSync(join(skill, 'SKILL.md'), 'utf8');
+        } catch {}
+        if (/^name:\s*chrome-bridge\s*$/m.test(md)) actions.push([`remove the agent skill copy ${skill}`, () => fs.rmSync(skill, { recursive: true, force: true })]);
+        else kept.push(`${skill} is not a chrome-bridge skill — left as is`);
+      }
+      // The bridge folder itself, only when it is really ours and holds nothing
+      // of anyone's. Every doubt keeps it: a git checkout must be clean (all
+      // untracked files shown), with no stash and no commit on ANY local branch
+      // that isn't on a remote or a tag, and every git call must succeed. A
+      // folder inside another git repo (vendored) is that repo's business. A
+      // download (no git) can't be checked file by file, so its recipes/ — where
+      // people save their own — moves next to it first.
+      let pkgName = null;
+      try {
+        pkgName = JSON.parse(fs.readFileSync(join(repo, 'package.json'), 'utf8')).name;
+      } catch {}
+      const home = homedir();
+      let keepRepo = null;
+      let saveRecipes = null;
+      const git = (...a) => spawnSync('git', ['-C', repo, ...a], { encoding: 'utf8' });
+      const hasGit = !git('--version').error;
+      const top = hasGit ? git('rev-parse', '--show-toplevel') : null;
+      const inRepo = top && top.status === 0;
+      if (pkgName !== 'chrome-bridge' || samePath(repo, home) || repo === dirname(repo)) keepRepo = `${repo} doesn't look like a chrome-bridge folder — left as is`;
+      else if (fs.existsSync(join(repo, '.git')) && !hasGit) keepRepo = `${repo} is a git checkout and git isn't available to check it for local work — left as is`;
+      else if (fs.existsSync(join(repo, '.git')) && !inRepo) keepRepo = `${repo} is a git checkout git can't read (${(top?.stderr || '').trim().split('\n')[0] || 'unknown error'}) — left as is`;
+      else if (inRepo && !samePath(fs.realpathSync(top.stdout.trim()), fs.realpathSync(repo))) keepRepo = `${repo} is inside another git repository (${top.stdout.trim()}) — left as is`;
+      else if (hasGit && !inRepo && !/not a git repository/i.test(top.stderr || '')) keepRepo = `${repo}: git couldn't read the folders around it (${(top.stderr || '').trim().split('\n')[0] || 'unknown error'}) — left as is`;
+      else if (inRepo && git('rev-parse', '--show-superproject-working-tree').stdout.trim()) keepRepo = `${repo} is a submodule of another git repository — left as is`;
+      else if (inRepo) {
+        const status = git('status', '--porcelain', '--untracked-files=all');
+        const stash = git('stash', 'list');
+        const worktrees = git('worktree', 'list', '--porcelain');
+        // Protected: HEAD (a detached one too), every branch, every tag. Safe:
+        // what the remotes' branches hold, plus tags the remote confirms it has
+        // (a store install sits on a release tag fetched from origin). A remote
+        // that can't be reached confirms nothing — its tags stay protected.
+        const remoteTags = spawnSync('git', ['-C', repo, 'ls-remote', '--tags', 'origin'], { encoding: 'utf8', timeout: 15000 });
+        const confirmed = remoteTags.status === 0 ? [...new Set(remoteTags.stdout.split('\n').map((l) => l.split('\t')[0]).filter((x) => /^[0-9a-f]{40}$/.test(x)))] : [];
+        const known = confirmed.filter((sha) => git('cat-file', '-e', `${sha}^{commit}`).status === 0);
+        const local = git('rev-list', '--count', 'HEAD', '--branches', '--tags', '--not', '--remotes', ...known);
+        if ([status, stash, worktrees, local].some((r) => r.status !== 0 || r.error)) keepRepo = `${repo}: couldn't check it for local work — left as is`;
+        else if (status.stdout.trim()) keepRepo = `${repo} has local edits or untracked files — left as is (delete it yourself once you've saved what you need)`;
+        else if (stash.stdout.trim()) keepRepo = `${repo} has stashed changes — left as is`;
+        else if ((worktrees.stdout.match(/^worktree /gm) || []).length > 1) keepRepo = `${repo} has other git worktrees using it (git worktree list) — left as is`;
+        else if (Number(local.stdout.trim()))
+          keepRepo = `${repo} has ${Number(local.stdout.trim())} commit(s) not on origin (a branch, a tag or a detached HEAD${remoteTags.status === 0 ? '' : '; origin could not be reached to confirm its tags'}) — left as is`;
+      } else {
+        const recipes = join(repo, 'recipes');
+        let hasRecipes = false;
+        try {
+          hasRecipes = fs.readdirSync(recipes).length > 0;
+        } catch {}
+        if (hasRecipes) {
+          let dest = join(dirname(repo), 'chrome-bridge-recipes');
+          for (let i = 2; fs.existsSync(dest); i++) dest = join(dirname(repo), `chrome-bridge-recipes-${i}`);
+          saveRecipes = dest;
+        }
+      }
+      if (keepRepo) kept.push(keepRepo);
+      else {
+        if (saveRecipes) actions.push([`move ${join(repo, 'recipes')} to ${saveRecipes} (your saved site recipes stay)`, () => fs.renameSync(join(repo, 'recipes'), saveRecipes)]);
+        actions.push([
+          `delete ${repo} (the bridge, its logs and settings)`,
+          () => {
+            // Step out first: a folder that is the current directory can't be removed on Windows.
+            process.chdir(dirname(repo));
+            beforeDelete = fs.readdirSync(repo);
+            fs.rmSync(repo, { recursive: true, force: true, maxRetries: 3 });
+          },
+        ]);
+      }
+      const next = [
+        'If you (the agent) added a line about chrome-bridge to an instructions file (AGENTS.md, CLAUDE.md, .cursorrules, …), remove it.',
+        'Last step, in Chrome: toolbar popup → ⚙ → Remove Chrome Bridge (or chrome://extensions → Remove). It also signs that browser out of Cloud Bridge.',
+      ];
+      const lines = (xs) => xs.map((x) => '  - ' + x).join('\n');
+      if (!yes) {
+        const out = [actions.length ? `uninstall would:\n${lines(actions.map((a) => a[0]))}` : 'nothing to remove on this computer'];
+        if (kept.length) out.push(`kept:\n${lines(kept)}`);
+        if (actions.length) out.push(`Nothing changed yet. Show this to the user; once they agree: node ${join(repo, 'cli.mjs')} uninstall --yes`);
+        out.push(`Then:\n${lines(next)}`);
+        print(out.join('\n\n'));
+        break;
+      }
+      const done = [];
+      const problems = [];
+      let beforeDelete = null;
+      for (const [what, run] of actions) {
+        // A failed step before the delete (moving the recipes) cancels the delete.
+        if (what.startsWith('delete') && problems.length) {
+          kept.push(`${repo} — left as is because an earlier step failed`);
+          continue;
+        }
+        try {
+          await run();
+          done.push(what.replace(/^stop/, 'stopped').replace(/^remove/, 'removed').replace(/^delete/, 'deleted').replace(/^move/, 'moved'));
+        } catch (e) {
+          // rmSync deletes contents first, in no promised order: compare what the
+          // folder held before with what is left to say "untouched" or "partly".
+          if (what.startsWith('delete')) {
+            let left = [];
+            try {
+              left = fs.readdirSync(repo);
+            } catch {}
+            const untouched = beforeDelete && beforeDelete.every((n) => left.includes(n)) && fs.existsSync(join(repo, '.git')) === beforeDelete.includes('.git');
+            problems.push(untouched ? `could not delete ${repo} (${e.message}) — it is still there` : `partly deleted ${repo} (${e.message}) — remove what's left of it by hand`);
+          }
+          else problems.push(`could not ${what}: ${e.message}`);
+        }
+      }
+      const out = [done.length ? `done:\n${lines(done)}` : 'nothing was removed'];
+      if (problems.length) out.push(`problems:\n${lines(problems)}`);
+      if (kept.length) out.push(`kept:\n${lines(kept)}`);
+      out.push(`Next:\n${lines(next)}`);
+      print(out.join('\n\n'));
       break;
     }
 
