@@ -30,7 +30,7 @@ test('loads as a classic script with no Node globals and publishes one frozen AP
   assert.ok(Object.isFrozen(C) && Object.isFrozen(C.REGISTRY) && C.REGISTRY.every((e) => Object.isFrozen(e)));
   // splitDashDash stays internal (A1b): fill/type/paste use it, but nothing
   // outside commands.js needs it anymore now that paste moved in.
-  for (const k of ['GROUPS', 'REGISTRY', 'lookup', 'tokenize', 'splitLine', 'parse', 'render', 'replyWarnings']) assert.ok(k in C, k);
+  for (const k of ['GROUPS', 'REGISTRY', 'lookup', 'tokenize', 'splitLine', 'parse', 'render', 'replyWarnings', 'TOOLS', 'toolArgv']) assert.ok(k in C, k);
   assert.ok(!('splitDashDash' in C), 'splitDashDash is not exported — nothing outside the module calls it');
   assert.doesNotThrow(() => vm.runInContext(source, context), 'a second load (worker restart path) does not collide with the first');
 });
@@ -171,4 +171,64 @@ test('fetch: match/url/flags parse into msg, outFile/keep/host ride in view for 
   assert.equal(json(p.msg), json({ type: 'fetch', urlMatch: 'm', url: 'https://a.test/x', headers: { X: '1' }, csrf: true }));
   assert.equal(json(p.view), json({ outFile: 'f.json', keep: true, host: 'a.test' }));
   await assert.rejects(() => parse('fetch m not-a-url'), /fetch needs a full http\(s\) URL/);
+});
+
+// --- MCP tools (Cloud Bridge) ---
+// readOnlyHint lets AI apps skip the per-call prompt, so it must never sit on
+// a tool that can change the page: registry-readOnly commands only, plus wait
+// without --js and release (they move only the bridge's own hand-off/marker).
+const READONLY_EXTRA = ['wait', 'release'];
+test('MCP tools: readOnlyHint only on tools that cannot change the page; every tool well-formed', () => {
+  const tools = JSON.parse(json(C.TOOLS));
+  assert.equal(new Set(tools.map((t) => t.name)).size, tools.length, 'unique names');
+  for (const t of tools) {
+    assert.match(t.name, /^chrome(_[a-z]+)?$/, t.name);
+    assert.ok(t.title && t.description && t.annotations, t.name);
+    assert.equal(t.inputSchema.type, 'object', t.name);
+    for (const r of t.inputSchema.required) assert.ok(r in t.inputSchema.properties, `${t.name} requires ${r}, which it doesn't describe`);
+    for (const h of ['readOnlyHint', 'destructiveHint', 'openWorldHint']) assert.equal(typeof t.annotations[h], 'boolean', `${t.name}.${h}`);
+    if (t.command === null) {
+      assert.deepEqual([t.annotations.readOnlyHint, t.annotations.destructiveHint], [false, true], 'chrome/chrome_batch run anything');
+      continue;
+    }
+    const e = C.lookup(t.command);
+    assert.ok(e && e.scope === 'browser', `${t.name} → ${t.command} is a browser command`);
+    if (t.annotations.readOnlyHint) assert.ok(e.readOnly || READONLY_EXTRA.includes(e.name), `${t.name} claims readOnlyHint but ${e.name} can change the page`);
+    assert.equal(t.annotations.destructiveHint, e.destructive, `${t.name}'s destructiveHint follows the registry`);
+    assert.ok(!e.pageCode || t.command === 'wait', `${t.name} must not carry page code`);
+  }
+  assert.ok(!tools.some((t) => /--js|\bjs\b/.test(JSON.stringify(t.inputSchema.properties)) && t.annotations.readOnlyHint), 'no read-only tool takes page code');
+  assert.deepEqual(tools.filter((t) => t.annotations.readOnlyHint).map((t) => t.name), ['chrome_tabs', 'chrome_snap', 'chrome_shot', 'chrome_measure', 'chrome_wait', 'chrome_release']);
+});
+
+test('MCP tools: typed arguments build argv that the real grammar parses', async () => {
+  const io = { resolveFile: async (f) => ({ token: f }) };
+  const cases = [
+    ['chrome_tabs', {}, { type: 'tabs' }],
+    ['chrome_tabs', { match: 'git hub' }, { type: 'tabs' }, { match: 'git hub' }],
+    ['chrome_snap', { tab: 'gh', scope: '@e3', diff: true, find: 'the --recursive flag' }, { type: 'snap', urlMatch: 'gh', scope: '@e3', diff: true, href: false, find: 'the --recursive flag' }],
+    ['chrome_shot', { tab: 'gh', max: 0, format: 'jpeg', crop: '0,0,10,10' }, { type: 'shot', urlMatch: 'gh', max: 0, format: 'jpeg', crop: [0, 0, 10, 10] }],
+    ['chrome_measure', { tab: 'gh', target: '.a b' }, { type: 'measure', urlMatch: 'gh', selector: '.a b' }],
+    ['chrome_wait', { tab: 'gh', human: true }, { type: 'wait', urlMatch: 'gh', selector: null, text: null, timeout: 120000, human: true }],
+    ['chrome_release', { tab: 'id:7' }, { type: 'release', urlMatch: 'id:7' }],
+    ['chrome_open', { url: 'https://a.test' }, { type: 'open', url: 'https://a.test' }],
+    ['chrome_nav', { tab: 'gh', url: 'https://a.test' }, { type: 'navigate', urlMatch: 'gh', url: 'https://a.test' }],
+    ['chrome_click', { tab: 'gh', target: '@e1', double: true }, { type: 'click', urlMatch: 'gh', target: '@e1', dbl: true, diff: true }],
+    ['chrome_fill', { tab: 'gh', target: '@e1', value: '' }, { type: 'fill', urlMatch: 'gh', target: '@e1', value: '', diff: true }],
+    ['chrome_fill', { tab: 'gh', target: '@e1', value: '--x  y' }, { type: 'fill', urlMatch: 'gh', target: '@e1', value: '--x  y', diff: true }],
+    ['chrome_press', { tab: 'gh', key: 'Control+k' }, { type: 'press', urlMatch: 'gh', key: 'Control+k', target: null, diff: true }],
+    ['chrome_upload', { tab: 'gh', target: '#f', files: ['https://a.test/x.pdf', { url: 'https://a.test/y' }, { name: 'r é.txt', base64: 'aGk=' }] }, { type: 'upload', urlMatch: 'gh', target: '#f', files: [{ token: 'https://a.test/x.pdf' }, { token: 'https://a.test/y' }, { token: 'data:application/octet-stream;base64,aGk=#r%20%C3%A9.txt' }], diff: true }],
+    ['chrome_close', { tab: 'gh' }, { type: 'close', urlMatch: 'gh' }],
+  ];
+  for (const [name, args, msg, view] of cases) {
+    const parsed = JSON.parse(json(await C.parse(C.toolArgv(name, args), io)));
+    assert.deepEqual(parsed.msg, msg, name + ' ' + json(args));
+    if (view) assert.deepEqual(parsed.view, view, name + ' view');
+  }
+  const covered = new Set(cases.map(([n]) => n));
+  for (const t of C.TOOLS) if (t.command) assert.ok(covered.has(t.name), `${t.name} has a parse case`);
+  assert.equal(C.toolArgv('chrome', { command: 'tabs' }), null, 'line tools are not typed');
+  assert.throws(() => C.toolArgv('chrome_snap', {}), /^Error: chrome_snap needs tab: a URL or title substring that names ONE tab/);
+  assert.throws(() => C.toolArgv('chrome_fill', { tab: 'a', target: '@e1' }), /chrome_fill needs value/);
+  assert.throws(() => C.toolArgv('chrome_upload', { tab: 'a', target: '#f', files: [] }), /chrome_upload needs files/);
 });

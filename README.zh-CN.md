@@ -146,7 +146,7 @@ table "1. Playa Phone (playaphone.com) 122 poin… hide | 41 comments" @e14
 Cloud Bridge 让云端 AI 应用(Claude.ai、ChatGPT 和其他远程 MCP 客户端)通过你登录的中转站(hub)驱动这个 Chrome,本地智能体照常工作。配对某个配置文件之前,它一直是关闭的:
 
 1. 工具栏弹窗 → ⚙ → 打开 **Cloud AI apps** → **Connect**(已预填公共 Cloud Bridge;如果你自己运行 hub,点 **Use another Cloud Bridge address**)。hub 会在新标签页打开:用 GitHub 登录,点击 **Connect**(等待期间,页面上的验证码前 4 位也会显示在 chrome-bridge 工具栏图标上)。
-2. 确认后的页面会显示 **Now add Cloud Bridge to your AI app**:复制链接,点击 **Open Claude** 或 **Open ChatGPT**,按下面两三行步骤操作。之后,弹窗的 **Add to Claude** / **Add to ChatGPT**(⚙ Settings 中 Cloud AI apps 下方)会复制链接并打开同样的步骤。Claude 每次操作前都会询问;对信任的操作选择 **Always allow**。
+2. 确认后的页面会显示 **Now add Cloud Bridge to your AI app**:复制链接,点击 **Open Claude** 或 **Open ChatGPT**,按下面两三行步骤操作。之后,弹窗的 **Add to Claude** / **Add to ChatGPT**(⚙ Settings 中 Cloud AI apps 下方)会复制链接并打开同样的步骤。Claude 每次操作前都会询问;读取类工具(列出标签页、读取页面、截图)可以一次允许、长期有效,其他信任的操作可选择 **Always allow**。
 
 关闭 **Cloud AI apps** 会立即让这个浏览器退出 Cloud Bridge:浏览器丢弃令牌,hub 也删除这个配置的记录,AI 应用不再列出它。再次打开会重新连接。在连接任何 Chrome 之前就添加的连接器已经带有 Chrome 工具;在 Chrome 连接之前,它们会回复如何连接。公共 hub(`https://cloud-bridge.ivan-seredkin.workers.dev`,[siropkin/cloud-bridge](https://github.com/siropkin/cloud-bridge) 的预览版)由 chrome-bridge 的开发者运行;它保存哪些数据见 [PRIVACY.md](PRIVACY.md)。你也可以自己部署(见其 README)。
 
@@ -154,7 +154,7 @@ Cloud Bridge 让云端 AI 应用(Claude.ai、ChatGPT 和其他远程 MCP 客户�
 
 - **每条连接拥有它驱动的标签页。** 另一条连接驱动的标签页,对你只读(`snap`、`shot`、`measure`、`console`、`ask`、`perf`、`net`)。在上面执行操作会被拒绝,并给出下一步:打开你自己的标签页。
 - **`tabs`** 会给另一条连接驱动的标签页标上 `"link":"Cloud Bridge"`(或 `"link":"local"`)。**`close --all`** 只关闭你这条连接的标签页,其余的以 `skipped` 和 `note` 报告。
-- **云端 AI 应用获得两个工具**:`chrome {command}` 接受任意浏览器命令行,语法与 CLI 相同;`chrome_batch {lines}` 一次往返执行多条。`shot` 直接返回图片。涉及你的磁盘、剪贴板或本地安装的命令(`upload`、不带文本的 `paste`、`fetch --out`、`net --har`、`start`、`extreload`…)会被拒绝,并说明替代做法。
+- **云端 AI 应用每一步有一个工具,另有两个通用工具**:`chrome_tabs`、`chrome_snap`、`chrome_shot`、`chrome_measure`、`chrome_wait`、`chrome_release`(标记为只读,可以一次允许,不必每次确认),以及 `chrome_open`、`chrome_nav`、`chrome_click`、`chrome_fill`、`chrome_press`、`chrome_upload`、`chrome_close`(仍会询问,除非你选择 **Always allow**)。`chrome {command}` 接受任意浏览器命令行,语法与 CLI 相同;`chrome_batch {lines}` 一次往返执行多条。`shot` 直接返回图片(无需文件名)。`upload` 接受公开的 `https://` 链接或文件字节(base64 或 `data:` URL),最大 10 MB;链接由 Cloud Bridge 自己下载(只访问公网地址,不会触及你的内网),也不会读取你的磁盘。涉及你的磁盘、剪贴板或本地安装的命令(不带文本的 `paste`、`fetch --out`、`net --har`、`start`、`extreload`…)会被拒绝,并说明替代做法。连接了多个配置文件时,每个工具都接受 `profile`。
 
 ## 对比一览
 

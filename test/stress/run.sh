@@ -219,8 +219,13 @@ s_interact() {
   assert_grep "upload visible input" "$OUT/03-upload.log" 'uploaded 1 file\(s\) to #plain'
   "${CLI[@]}" upload upload.html '#hidden' "$OUT/up.txt" --diff >>"$OUT/03-upload.log" 2>&1
   assert_grep "upload hidden input" "$OUT/03-upload.log" 'uploaded 1 file\(s\) to #hidden'
+  # Cloud Bridge's form (no disk on that side): bytes, set in the page as real
+  # Files through a DataTransfer. Raw /cmd, since the CLI only sends paths.
+  curl -sS -m 30 -H 'Content-Type: application/json' --data "{\"type\":\"upload\",\"urlMatch\":\"upload.html\",\"target\":\"#plain\",\"profile\":\"$P1\",\"files\":[{\"name\":\"bytes.txt\",\"mimeType\":\"text/plain\",\"data\":\"Ynl0ZXMgZnJvbSB0aGUgY2xvdWQ=\"}]}" "http://127.0.0.1:${BRIDGE_PORT:-9333}/cmd" >>"$OUT/03-upload.log" 2>&1
+  assert_grep "upload byte files (Cloud Bridge form)" "$OUT/03-upload.log" 'uploaded 1 file\(s\) to #plain: bytes.txt'
   "${CLI[@]}" eval upload.html "document.getElementById('out').textContent" >>"$OUT/03-upload.log"
   assert_grep "page saw both files" "$OUT/03-upload.log" 'hidden change'
+  assert_grep "page saw the byte file whole" "$OUT/03-upload.log" 'plain change: bytes.txt 20B'
   "${CLI[@]}" close upload.html --profile "$P1" >/dev/null 2>&1
 }
 

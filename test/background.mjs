@@ -263,7 +263,7 @@ test('queued action checks again after baseline and never retroactively cancels 
 });
 
 const trustedInputSource = source.slice(source.indexOf('async function trustedInput('), source.indexOf('// Key press on the focused element'));
-const uploadSource = source.slice(source.indexOf('async function cmdUpload('), source.indexOf('const shotFallbackQ ='));
+const uploadSource = source.slice(source.indexOf('// Files are local paths (the CLI)'), source.indexOf('const shotFallbackQ ='));
 const trustedRouteSource = source.slice(source.indexOf("  if (msg.trusted && ['click', 'press', 'type', 'hover', 'drag'].includes(msg.type))"), source.indexOf("  if (['click', 'fill', 'clear', 'type', 'press', 'hover'].includes(msg.type))"));
 
 function cdpActionHarness({ pause = 'queue' } = {}) {
@@ -289,6 +289,7 @@ function cdpActionHarness({ pause = 'queue' } = {}) {
     if (method === 'Input.dispatchMouseEvent') {
       context.chooserWaiters.get(7)?.resolve({ backendNodeId: 3, mode: 'selectSingle' });
     }
+    if (method === 'DOM.resolveNode') return { object: { objectId: 'obj-' + (params.nodeId ?? 'b' + params.backendNodeId) } };
     return {};
   };
   Object.assign(context, {
@@ -330,7 +331,7 @@ function cdpActionHarness({ pause = 'queue' } = {}) {
   vm.runInContext(trustedInputSource + '\n' + uploadSource + '\nasync function routeTrusted(msg) {\n' + trustedRouteSource + '\n}', context);
   return {
     context, entered, gate, commands, resolutions, state,
-    mutations: () => commands.filter(({ method }) => method.startsWith('Input.') || method === 'DOM.setFileInputFiles'),
+    mutations: () => commands.filter(({ method }) => method.startsWith('Input.') || method === 'DOM.setFileInputFiles' || method === 'Runtime.callFunctionOn'),
   };
 }
 
@@ -433,6 +434,46 @@ for (const action of cdpActions) {
     assertCdpCleanup(harness);
   });
 }
+
+// Cloud Bridge has no disk: its upload files arrive as bytes and are set
+// through a DataTransfer on the same node setFileInputFiles would have used.
+for (const action of ['upload', 'chooser']) {
+  test(`${action} with byte files sets them in the page on the resolved input, never via paths`, async () => {
+    const harness = cdpActionHarness({ pause: 'none' });
+    const msg = { ...cdpActionMessage(action, false), files: [{ name: 'a.txt', mimeType: 'text/plain', data: 'aGk=' }] };
+    assert.equal(await runCdpAction(harness.context, msg), action === 'chooser' ? 'uploaded 1 file(s) via the file chooser on #target: a.txt' : 'uploaded 1 file(s) to #target: a.txt');
+    const methods = harness.commands.map((c) => c.method);
+    assert.ok(!methods.includes('DOM.setFileInputFiles'), 'byte files never go through the path API');
+    const resolve = harness.commands.find((c) => c.method === 'DOM.resolveNode');
+    assert.deepEqual(plain(resolve.params), action === 'chooser' ? { backendNodeId: 3 } : { nodeId: 2 });
+    const call = harness.commands.find((c) => c.method === 'Runtime.callFunctionOn');
+    assert.equal(call.params.objectId, action === 'chooser' ? 'obj-b3' : 'obj-2');
+    assert.deepEqual(plain(call.params.arguments), [{ value: [{ name: 'a.txt', mimeType: 'text/plain', data: 'aGk=' }] }]);
+    assert.match(call.params.functionDeclaration, /new DataTransfer\(\)[\s\S]*this\.files = dt\.files[\s\S]*new Event\('change'/);
+    assert.ok(methods.includes('Runtime.releaseObject'));
+    assertCdpCleanup(harness);
+  });
+}
+
+test('upload refuses a mix of paths and byte files, and the page function builds real Files', async () => {
+  const harness = cdpActionHarness({ pause: 'none' });
+  const msg = { ...cdpActionMessage('upload', false), files: ['/tmp/a.txt', { name: 'b.txt', data: 'aGk=' }] };
+  await assert.rejects(runCdpAction(harness.context, msg), /must all be paths, or all \{ name, mimeType, data/);
+  assertCdpCleanup(harness);
+  // The page-side function, run against a fake input in a vm with the browser's File/DataTransfer shapes.
+  const fnSrc = source.slice(source.indexOf('const SET_FILE_BYTES = `') + 'const SET_FILE_BYTES = `'.length, source.indexOf('}`;', source.indexOf('const SET_FILE_BYTES')) + 1);
+  const events = [];
+  const page = vm.createContext({
+    atob: (s) => Buffer.from(s, 'base64').toString('latin1'), Uint8Array,
+    File: class { constructor(parts, name, o) { this.name = name; this.type = o.type; this.size = parts[0].length; this.text = Buffer.from(parts[0]).toString(); } },
+    DataTransfer: class { constructor() { const list = []; this.items = { add: (f) => list.push(f) }; this.files = list; } },
+    Event: class { constructor(type, o) { this.type = type; this.bubbles = o.bubbles; } },
+  });
+  const input = { dispatchEvent: (e) => events.push(e.type) };
+  vm.runInContext('(' + fnSrc + ')', page).call(input, [{ name: 'hi.txt', mimeType: 'text/plain', data: 'aGVsbG8=' }]);
+  assert.deepEqual(input.files.map((f) => [f.name, f.type, f.size, f.text]), [['hi.txt', 'text/plain', 5, 'hello']]);
+  assert.deepEqual(events, ['input', 'change']);
+});
 
 test('dispatch deadline is server-owned and retains the actual timeout budget', async () => {
   const server = fs.readFileSync(new URL('../server.mjs', import.meta.url), 'utf8');
@@ -917,7 +958,7 @@ function linksHarness({ owners = new Map(), driven = [], idReady = Promise.resol
     idReady, installReady: Promise.resolve(), WebSocket: FakeWS, crypto: { randomUUID: () => 'req-1' },
     setTimeout: (fn, ms) => timers.push({ fn, ms }), clearTimeout() {},
     setInterval: (fn, ms) => intervals.push({ fn, ms }) && intervals.length, clearInterval() {},
-    URL, fetch: fetchImpl, AbortSignal,
+    URL, fetch: fetchImpl, AbortSignal, btoa, TextEncoder,
     chrome: {
       runtime: { getManifest: () => ({ version: '9.9.9' }) }, alarms: { create() {}, onAlarm: { addListener: (fn) => { alarm = fn; } } },
       storage: { local: { get: async (k) => (k === 'localAgents' && localRead ? { localAgents: await localRead } : { [k]: storage[k] }), set: async (o) => Object.assign(storage, structuredClone(o)) } },
@@ -1221,14 +1262,106 @@ test('cloud: a paired profile dials /arm with its token as a subprotocol, says h
   assert.equal(ws.sent.at(-1), 'ping');
 });
 
-test('cloud: tools/list offers chrome and chrome_batch, with the browser commands named', async () => {
+test('cloud: tools/list offers chrome, chrome_batch and the typed tools, minus the ones turned Off', async () => {
   const { ws, flush } = await cloudArm();
   await ws.recv({ jsonrpc: '2.0', id: 'l1', method: 'tools/list' });
   await flush();
   const tools = ws.sent.find((m) => m.id === 'l1').result.tools;
-  assert.deepEqual(tools.map((t) => t.name), ['chrome', 'chrome_batch']);
+  assert.deepEqual(tools.map((t) => t.name), ['chrome', 'chrome_batch', 'chrome_tabs', 'chrome_snap', 'chrome_shot', 'chrome_measure', 'chrome_wait', 'chrome_release', 'chrome_open', 'chrome_nav', 'chrome_click', 'chrome_fill', 'chrome_press', 'chrome_upload', 'chrome_close']);
   assert.match(tools[0].description, /Commands: .*\bsnap\b.*\bclick\b/);
   assert.doesNotMatch(tools[0].description, /\bextreload\b|\bstart\b/, 'local-only commands are not advertised');
+  assert.ok(tools.every((t) => !('command' in t) && t.annotations && t.inputSchema.type === 'object'), 'the registry link (command) stays internal; every tool is annotated');
+  await ws.recv({ jsonrpc: '2.0', method: 'arm/policy', params: { commands: { click: 'off', eval: 'off' } } });
+  await ws.recv({ jsonrpc: '2.0', id: 'l2', method: 'tools/list' });
+  await flush();
+  const names = ws.sent.find((m) => m.id === 'l2').result.tools.map((t) => t.name);
+  assert.ok(!names.includes('chrome_click') && names.includes('chrome') && names.includes('chrome_fill'), 'an Off command loses its typed tool; chrome stays');
+});
+
+test('cloud: typed tools build the command line and run it through the same grammar and policy', async () => {
+  const { call, handled, text, ws, flush } = await cloudArm();
+  assert.equal(text(await call('chrome_snap', { tab: 'github', skeleton: true, find: 'the search box' })), 'ok');
+  assert.deepEqual(plain(handled.at(-1)), { type: 'snap', urlMatch: 'github', scope: null, diff: false, href: false, skeleton: true, find: 'the search box', _link: 'cloud' });
+  await call('chrome_fill', { tab: 'github', target: '@e5', value: '--not a flag' });
+  assert.deepEqual([handled.at(-1).type, handled.at(-1).value, handled.at(-1).diff], ['fill', '--not a flag', true], 'the value rides after --, actions observe with --diff');
+  await call('chrome_press', { tab: 'github', key: 'Enter', target: '@e5' });
+  assert.deepEqual([handled.at(-1).key, handled.at(-1).target], ['Enter', '@e5']);
+  await call('chrome_wait', { tab: 'github', text: 'Saved changes', timeout: 5000 });
+  assert.deepEqual([handled.at(-1).text, handled.at(-1).timeout], ['Saved changes', 5000]);
+  const missing = await call('chrome_click', { tab: 'github' });
+  assert.equal(missing.isError, true);
+  assert.equal(text(missing), 'chrome_click needs target: an @eN ref from chrome_snap (e.g. "@e12"), or a CSS selector.');
+  assert.match(text(await call('chrome_shot', { tab: 'x', max: 'big' })), /^chrome_shot's max must be a number$/);
+  assert.match(text(await call('chrome_nope', {})), /^Unknown tool chrome_nope: this Chrome offers chrome, chrome_batch, chrome_tabs, .*Call tools\/list to refresh\.$/);
+  await ws.recv({ jsonrpc: '2.0', method: 'arm/policy', params: { commands: { fill: 'off' } } });
+  await flush();
+  const n = handled.length;
+  assert.match(text(await call('chrome_fill', { tab: 'github', target: '@e5', value: 'x' })), /^fill is turned off for Cloud Bridge/, 'a cached typed tool is still refused');
+  assert.equal(handled.length, n);
+});
+
+test('cloud: shot needs no file name, and its typed tool returns the image', async () => {
+  const { call, handled } = await cloudArm({ handle: () => 'data:image/jpeg;base64,/9j/' });
+  for (const r of [await call('chrome', { command: 'shot github' }), await call('chrome', { command: 'shot github --max 800' }), await call('chrome_shot', { tab: 'github', max: 800, format: 'jpeg' })])
+    assert.deepEqual(plain(r), { content: [{ type: 'image', data: '/9j/', mimeType: 'image/jpeg' }], isError: false });
+  assert.deepEqual(handled.map((m) => [m.type, m.max, m.format]), [['shot', undefined, undefined], ['shot', 800, undefined], ['shot', 800, 'jpeg']]);
+});
+
+test('cloud: upload takes data: URLs, and public URLs downloaded by the hub — never the browser, never the disk', async () => {
+  const fetched = [];
+  const fetchImpl = async (url) => fetched.push(url); // the browser must not download anything (review: LAN reachable from here)
+  const h = await cloudArm({ fetchImpl });
+  const { call, handled, text, ws } = h;
+  const asked = [];
+  const send = ws.send.bind(ws);
+  ws.send = (data) => {
+    send(data);
+    const m = typeof data === 'string' && data !== 'ping' ? JSON.parse(data) : null;
+    if (m?.method !== 'arm/download') return;
+    asked.push(m.params.url);
+    const answers = {
+      'https://files.test/docs/report%201.pdf': { result: { name: 'report 1.pdf', mimeType: 'application/pdf', data: 'JVBERg==' } },
+      'https://files.test/huge': { result: { name: 'h', mimeType: 'x', data: 'A'.repeat(15 * 1048576) } },
+      'http://localhost./x': { error: { code: -32000, message: 'localhost. is a private-network address; Cloud Bridge only downloads upload files from public addresses — send the file as base64 instead' } },
+      'https://old.hub/x': { error: { code: -32601, message: 'Method not found: arm/download' } },
+    };
+    if (m.params.url === 'https://never.answers/x') return;
+    setImmediate(() => ws.recv({ jsonrpc: '2.0', id: m.id, ...answers[m.params.url] }));
+  };
+  await call('chrome', { command: 'upload github @e3 https://files.test/docs/report%201.pdf data:text/plain,hi%20there#notes.txt' });
+  assert.deepEqual(plain(handled.at(-1).files), [
+    { name: 'report 1.pdf', mimeType: 'application/pdf', data: 'JVBERg==' },
+    { name: 'notes.txt', mimeType: 'text/plain', data: 'aGkgdGhlcmU=' },
+  ]);
+  assert.deepEqual(asked, ['https://files.test/docs/report%201.pdf'], 'the hub downloads the URL');
+  await call('chrome_upload', { tab: 'github', target: '#file', files: [{ name: 'a.png', base64: 'iVBORw0KGgo=', mimeType: 'image/png' }], chooser: true });
+  assert.deepEqual(plain(handled.at(-1)), { type: 'upload', urlMatch: 'github', target: '#file', files: [{ name: 'a.png', mimeType: 'image/png', data: 'iVBORw0KGgo=' }], chooser: true, diff: true, _link: 'cloud' });
+  const n = handled.length;
+  const refusals = [
+    ['upload github @e1 a.png', /^a\.png is not a URL\. Cloud Bridge can't read files on the user's computer: give a public http\(s\) URL/],
+    ['upload github @e1 /Users/me/a.png', /is not a URL/],
+    ['upload github @e1 file:///etc/passwd', /is not a URL/],
+    ['upload github @e1 http://localhost./x', /^localhost\. is a private-network address/],
+    ['upload github @e1 https://files.test/huge', /11\.3 MB — Cloud Bridge uploads take up to 10 MB/],
+    ['upload github @e1 https://old.hub/x', /^this Cloud Bridge can't download files for uploads yet \(an older hub\) — send the file as base64 instead$/],
+    ['upload github @e1 data:text/plain;base64,a-b_#x', /base64 for x has characters/],
+    ['upload github @e1 data:text/plain,%E0%A4%A#x', /broken %-escape/],
+  ];
+  for (const [command, want] of refusals) {
+    const r = await call('chrome', { command });
+    assert.equal(r.isError, true, command + " → " + text(r).slice(0, 200));
+    assert.match(text(r), want, command + " → " + text(r).slice(0, 200));
+  }
+  assert.equal(handled.length, n, 'nothing ran for a refused file');
+  assert.deepEqual(fetched, [], 'the browser never fetched a URL itself');
+  assert.match(text(await call('chrome_upload', { tab: 'github', target: '#f', files: [{ name: 'x' }] })), /files\[0\] must be \{url\} or \{name, base64, mimeType\}/);
+  // The link drops while the hub downloads: the call fails with the reason instead of hanging.
+  const pending = ws.recv({ jsonrpc: '2.0', id: 'up', method: 'tools/call', params: { name: 'chrome', arguments: { command: 'upload github @e1 https://never.answers/x' } } });
+  await h.flush();
+  ws.drop();
+  await pending;
+  await h.flush();
+  assert.match(ws.sent.find((m) => m.id === 'up').result.content[0].text, /^the connection to Cloud Bridge dropped before it answered$/);
 });
 
 test('cloud: a command line runs through the CLI grammar, tagged with the cloud link', async () => {
@@ -1246,7 +1379,7 @@ test('cloud: refusals name the next step and run nothing', async () => {
   assert.match(text(await call('chrome', { command: 'start' })), /^start manages the user's local chrome-bridge install; it isn't available through Cloud Bridge\.$/);
   assert.match(text(await call('chrome', { command: 'frobnicate x' })), /^Unknown command: frobnicate\. Commands: tabs, /);
   assert.match(text(await call('chrome', { command: '--profile elm tabs' })), /--profile elm is not this Chrome \("oak"\)/);
-  assert.match(text(await call('chrome', { command: 'upload github @e1 a.png' })), /file uploads are not available here/);
+  assert.match(text(await call('chrome', { command: '--profile --x tabs' })), /^--profile needs an id or name: pick the Chrome with the tool's profile argument instead$/, 'no cli.mjs in cloud errors');
   assert.match(text(await call('chrome', { command: 'fetch github https://github.com/x --out f.json' })), /fetch --out writes a file on the user's machine/);
   await ws.recv({ jsonrpc: '2.0', method: 'arm/policy', params: { commands: { click: 'off', eval: 'ask' } } });
   await flush();
