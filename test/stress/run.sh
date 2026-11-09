@@ -499,6 +499,10 @@ s_marks() {
 s_misc() {
   SECTION=misc
   local M="static.html?x=marks"
+  # The marks section opens this tab; run on its own (run.sh misc), misc
+  # opened nothing and failed 10 checks as "no tab matching" — a regression
+  # look-alike. Open it when it's missing.
+  "${CLI[@]}" tabs "$M" | grep -q '"id"' || "${CLI[@]}" open "$FX/$M" --profile "$P1" >/dev/null
   "${CLI[@]}" snap "$M" >/dev/null 2>&1
   # grid toggle
   "${CLI[@]}" grid "$M" >/dev/null 2>&1
