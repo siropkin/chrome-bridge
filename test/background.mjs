@@ -1372,6 +1372,15 @@ test('cloud: the open/close/release the arm runs itself obey the policy too (rev
   assert.deepEqual(handled.map((m) => m.type), ['fetch', 'doctor'], 'no open, no release ran');
 });
 
+test('cloud: an empty address never falls back to the stored hub (review finding)', async () => {
+  const calls = [];
+  const h = linksHarness({ cloud: { hub: 'https://cloud-bridge.ivan-seredkin.workers.dev', token: '', enabled: false, pairing: null, notice: '' }, fetchImpl: async (url) => { calls.push(url); return { status: 200, json: async () => ({}) }; } });
+  await h.flush();
+  assert.equal((await h.context.cloudPair('')).ok, false);
+  assert.deepEqual(calls, [], 'no /pair/start to a hub the user didn\'t type');
+  assert.equal(h.created.length, 0, 'no confirm tab');
+});
+
 test('cloud: a failed re-pair keeps the paired hub (review finding)', async () => {
   const fetchImpl = async () => { throw new TypeError('Failed to fetch'); };
   const h = linksHarness({ cloud: PAIRED, fetchImpl });

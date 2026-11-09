@@ -4,7 +4,7 @@ chrome-bridge lets an AI agent or CLI on **your own machine** drive the Chrome b
 
 ## The short version
 
-**The bridge connection is local unless you opt in to Cloud Bridge, and local is not necessarily the entire workflow.** The extension talks over a WebSocket to a server that binds to `127.0.0.1` on the same computer. Chrome Bridge requires no developer-operated account or cloud relay and does not send browsing data or telemetry to the developer. The optional Cloud Bridge link (off by default, see below) sends commands and their results through a hub you choose and sign in to.
+**The bridge connection is local unless you opt in to Cloud Bridge, and local is not necessarily the entire workflow.** The extension talks over a WebSocket to a server that binds to `127.0.0.1` on the same computer. The local link needs no account and sends no browsing data or telemetry to the developer. The optional Cloud Bridge link (off until you connect it, see below) sends commands and their results through a hub you sign in to: by default the public hub the developer runs, which passes them through without storing them, or a hub you run yourself.
 
 The connected AI agent receives page content and may send it to its model provider or other services according to its configuration and policies. Browser actions such as form submissions, uploads and page requests can send data to the websites involved. Use only data and accounts you are authorized to expose to your chosen agent and those destinations.
 
@@ -18,11 +18,12 @@ The connected AI agent receives page content and may send it to its model provid
 
 ## Cloud Bridge (optional, off by default)
 
-Turning on **Cloud AI apps** in the popup's ⚙ Settings and connecting a profile opens a second WebSocket, from your browser to the hub URL you enter, so cloud AI apps you authorize at that hub (Claude.ai, ChatGPT…) can drive this profile. While it is paired and switched on:
+Turning on **Cloud AI apps** in the popup's ⚙ Settings and connecting a profile opens a second WebSocket, from your browser to a Cloud Bridge hub, so cloud AI apps you authorize at that hub (Claude.ai, ChatGPT…) can drive this profile. By default that is the public hub at `https://cloud-bridge.ivan-seredkin.workers.dev`, run by the chrome-bridge developer on Cloudflare Workers; **Use another Cloud Bridge address** connects to a hub you run yourself instead. While it is paired and switched on:
 
 - Commands arrive from the hub, and their results go back to it: page structure and text, screenshots, console and network lines, fetched bodies — whatever the command returns. The hub passes them to the AI app that called, which may send them to its model provider.
 - There is no end-to-end encryption: MCP ends at the hub, so the hub's operator can technically read what passes through it. The connection is TLS on a hosted hub. The reference hub ([siropkin/cloud-bridge](https://github.com/siropkin/cloud-bridge)) stores call metadata only for 30 days: time, AI app, profile, tool name (`chrome`, `chrome_batch`), success, duration, and the hub's own error message (an error the extension returns is stored as a fixed marker, since its text can echo the command). Not arguments, not results.
 - Commands that would read your disk or clipboard, or manage the local install, are refused over this link. Turning the Cloud AI apps switch off cuts the link immediately and deletes the token from the browser.
+- What the public hub keeps besides that call metadata: your GitHub account id and username (sign-in; the GitHub token is used once and not kept), the profiles you paired (name, extension version, last seen, the tool list, and the profile's token as a hash once pairing completes — while you confirm a pairing the hub holds the token for at most 10 minutes, until your browser collects it), and the AI apps you allowed. Cloudflare keeps the hub's error logs (time, method, path, error message) for 3 days; per-request logs are off. Your browser keeps a 7-day sign-in cookie for the hub. Self-service deletion isn't built yet: to delete your data from the public hub, open an issue at [siropkin/cloud-bridge](https://github.com/siropkin/cloud-bridge/issues).
 
 ## Permissions, and why
 

@@ -522,7 +522,7 @@ test('clearing or disabling invalidates in-flight records; storage failures do n
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
-test('popup Cloud access (Settings): unpaired, the switch opens the address form; pairing shows the code', async () => {
+test('popup Cloud access (Settings): unpaired, the switch opens a one-click Connect to the public hub; pairing shows the code', async () => {
   const sent = [];
   let cloud = { paired: false, enabled: false, connected: false, hub: '', profile: 'poplar', pairing: null, notice: '' };
   const { element, settle } = popupHarness(async (message) => {
@@ -530,7 +530,7 @@ test('popup Cloud access (Settings): unpaired, the switch opens the address form
     if (message.type === 'bridge-state') return { count: 0, active: false, connected: true, profile: 'poplar', cloud };
     if (message.type === 'cloud-pair') {
       if (!message.hub) return { ok: false, error: 'Enter the Cloud Bridge hub URL, e.g. https://cloud-bridge.<you>.workers.dev', ...cloud };
-      cloud = { ...cloud, hub: 'http://localhost:8787', pairing: { code: 'ABCD-EFGH', verificationUri: 'http://localhost:8787/pair?code=ABCD-EFGH' } };
+      cloud = { ...cloud, hub: message.hub, pairing: { code: 'ABCD-EFGH', verificationUri: message.hub + '/pair?code=ABCD-EFGH' } };
     }
     return { ok: true, ...cloud };
   }, { tab: { id: 7 } });
@@ -542,12 +542,29 @@ test('popup Cloud access (Settings): unpaired, the switch opens the address form
   element('cloud-enabled').checked = true;
   element('cloud-enabled').handlers.change();
   assert.equal(element('cloud-pair-row').hidden, false);
+  assert.equal(element('cloud-hub').hidden, true, 'no address to type: the public hub is prefilled');
+  assert.equal(element('cloud-other').textContent, 'Use another Cloud Bridge address');
+  assert.equal(element('cloud-hub').value, 'https://cloud-bridge.ivan-seredkin.workers.dev');
   assert.equal(sent.filter((m) => m.type.startsWith('cloud-')).length, 0, 'switching on unpaired only opens the form');
   await element('cloud-pair').handlers.click();
-  assert.match(element('cloud-status').textContent, /^Enter the Cloud Bridge hub URL/, 'the worker\'s next step is shown');
+  assert.deepEqual(JSON.parse(JSON.stringify(sent.at(-1))), { type: 'cloud-pair', hub: 'https://cloud-bridge.ivan-seredkin.workers.dev' }, 'Connect goes to the public hub');
+  assert.equal(element('cloud-code-text').textContent, 'Your code: ABCD-EFGH. Check it matches, then click Connect on that page.');
+  // Someone who runs their own hub: "Use another Cloud Bridge address".
+  cloud = { ...cloud, pairing: null };
+  element('cloud-other').handlers.click();
+  assert.equal(element('cloud-hub').hidden, false);
+  assert.equal(element('cloud-hub').value, '', 'starts empty: a paste must not land after the public URL (review finding)');
+  assert.equal(element('cloud-other').textContent, 'Use the public Cloud Bridge');
+  const before = sent.length;
+  await element('cloud-pair').handlers.click();
+  assert.equal(sent.length, before, 'an empty address sends nothing (review finding)');
+  assert.equal(element('cloud-status').textContent, 'Enter your Cloud Bridge address, or use the public one');
   element('cloud-hub').value = ' http://localhost:8787 ';
   await element('cloud-pair').handlers.click();
   assert.deepEqual(JSON.parse(JSON.stringify(sent.at(-1))), { type: 'cloud-pair', hub: 'http://localhost:8787' });
+  element('cloud-other').handlers.click();
+  assert.equal(element('cloud-hub').hidden, true, 'and back to the public hub');
+  assert.equal(element('cloud-hub').value, 'https://cloud-bridge.ivan-seredkin.workers.dev');
   assert.equal(element('cloud-code').hidden, false);
   assert.equal(element('cloud-code-text').textContent, 'Your code: ABCD-EFGH. Check it matches, then click Connect on that page.');
   assert.equal(element('cloud-pair-row').hidden, true, 'waiting for the code: the address form gives way to the code');
@@ -583,11 +600,16 @@ test('popup Cloud AI apps (Settings): connected shows how to add it to Claude or
   assert.equal(element('cloud-enabled').checked, false);
   assert.equal(element('cloud-pair-row').hidden, true);
   assert.equal(element('cloud-paired').hidden, true);
-  // On again: the address form, prefilled with the last address.
+  // On again: last paired to another hub (here a dev one), the form shows that address.
   element('cloud-enabled').checked = true;
   await element('cloud-enabled').handlers.change();
   assert.equal(element('cloud-pair-row').hidden, false);
   assert.equal(element('cloud-hub').value, 'http://localhost:8787');
+  assert.equal(element('cloud-hub').hidden, false, 'not the public hub: the address shows');
+  assert.equal(element('cloud-other').textContent, 'Use the public Cloud Bridge', 'a way back to the public hub (review finding)');
+  element('cloud-other').handlers.click();
+  assert.equal(element('cloud-hub').value, 'https://cloud-bridge.ivan-seredkin.workers.dev');
+  assert.equal(element('cloud-hub').hidden, true);
 });
 
 test('popup Cloud AI apps: a profile paused by an older version reconnects with its token when switched on', async () => {
@@ -661,15 +683,31 @@ test('popup: Settings says local agents are connected only when this profile rea
   }
 });
 
+test('popup Cloud access: Connect before any state arrived still goes to the public hub, never an empty address (review finding)', async () => {
+  const sent = [];
+  const { element, settle } = popupHarness(async (m) => {
+    sent.push(m);
+    if (m.type === 'bridge-state') throw new Error('worker busy');
+    return { ok: true, paired: false, enabled: false, connected: false, hub: m.hub, pairing: null, notice: '' };
+  }, { tab: { id: 7 } });
+  await settle();
+  element('cloud-enabled').checked = true;
+  element('cloud-enabled').handlers.change();
+  await element('cloud-pair').handlers.click();
+  assert.deepEqual(JSON.parse(JSON.stringify(sent.find((m) => m.type === 'cloud-pair'))), { type: 'cloud-pair', hub: 'https://cloud-bridge.ivan-seredkin.workers.dev' });
+});
+
 test('popup Cloud access: a failed Connect keeps the address form open (review finding)', async () => {
   const cloud = { paired: false, enabled: false, connected: false, hub: '', profile: 'poplar', pairing: null, notice: '' };
   const { element, settle } = popupHarness(async (m) => (m.type === 'bridge-state' ? { count: 0, active: false, connected: true, profile: 'poplar', cloud } : { ok: false, error: 'Could not reach the hub: Failed to fetch', ...cloud }), { tab: { id: 7 } });
   await settle();
   element('cloud-enabled').checked = true;
   element('cloud-enabled').handlers.change();
+  element('cloud-other').handlers.click();
   element('cloud-hub').value = 'http://typo.example';
   await element('cloud-pair').handlers.click();
   assert.equal(element('cloud-pair-row').hidden, false, 'fix the typo and press Connect again');
+  assert.equal(element('cloud-hub').hidden, false, 'the typed address stays visible to fix');
   assert.equal(element('cloud-enabled').checked, true);
   assert.match(element('cloud-status').textContent, /^Could not reach the hub/);
 });

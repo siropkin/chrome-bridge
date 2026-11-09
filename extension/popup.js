@@ -271,8 +271,25 @@ $('close-settings').addEventListener('click', () => {
 // link and the pairing poll; its state rides on bridge-state, which every
 // popup open asks for. Opening the confirmation tab closes the popup —
 // reopening it shows the result, so no timers and no refresh here.
+// The public hub, prefilled so connecting is one click (Ivan, 2026-11-09);
+// someone who runs their own hub types its address after "Use another".
+const DEFAULT_HUB = 'https://cloud-bridge.ivan-seredkin.workers.dev';
 let cloudState = null;
 let cloudFormOpen = false; // the switch went on while unpaired: keep the form, even through a failed Connect
+// The address: hidden with the public hub in it, or shown for a hub of your
+// own. null until decided — the first state follows the hub this profile last
+// paired with; after that the link switches between the two.
+let cloudCustom = null;
+function setHubMode(custom, value) {
+  cloudCustom = custom;
+  $('cloud-hub').value = value;
+  $('cloud-hub').hidden = !custom;
+  $('cloud-other').textContent = custom ? 'Use the public Cloud Bridge' : 'Use another Cloud Bridge address';
+}
+// In place before any state arrives: Connect must never send an empty address
+// (found by review: switching on before bridge-state answered sent hub '').
+setHubMode(false, DEFAULT_HUB);
+cloudCustom = null;
 function renderCloud(state, error) {
   if (state && typeof state.paired === 'boolean') cloudState = state;
   const s = cloudState;
@@ -284,7 +301,9 @@ function renderCloud(state, error) {
   try {
     host = s.hub ? new URL(s.hub).host : '';
   } catch {}
-  $('cloud-hub').value = $('cloud-hub').value || s.hub || '';
+  // Last paired with another hub (self-hosted, dev): show that address, with
+  // a way back to the public one.
+  if (cloudCustom === null && s.hub && s.hub !== DEFAULT_HUB) setHubMode(true, s.hub);
   // Unpaired, the switch is the way in: turning it on shows the address form.
   if (s.paired) cloudFormOpen = false;
   // Waiting for the code: the switch is on, the address form gives way to the code.
@@ -326,7 +345,23 @@ async function cloudRequest(msg) {
   $('cloud-pair').disabled = $('cloud-enabled').disabled = false;
   renderCloud(response, response?.ok === false ? response.error || 'Request failed' : '');
 }
-$('cloud-pair').addEventListener('click', () => cloudRequest({ type: 'cloud-pair', hub: $('cloud-hub').value.trim() }));
+$('cloud-pair').addEventListener('click', () => {
+  const hub = $('cloud-hub').value.trim();
+  if (!hub) {
+    $('cloud-status').textContent = 'Enter your Cloud Bridge address, or use the public one';
+    return;
+  }
+  return cloudRequest({ type: 'cloud-pair', hub });
+});
+$('cloud-other').addEventListener('click', () => {
+  // Another address starts EMPTY: a paste after the public URL would make
+  // "…workers.devhttps://…", a valid URL to a host that doesn't exist (review).
+  if (cloudCustom) setHubMode(false, DEFAULT_HUB);
+  else {
+    setHubMode(true, '');
+    $('cloud-hub').focus?.();
+  }
+});
 $('cloud-enabled').addEventListener('change', () => {
   const on = $('cloud-enabled').checked;
   cloudFormOpen = false;
@@ -337,7 +372,7 @@ $('cloud-enabled').addEventListener('change', () => {
     return;
   }
   // On: a profile paused by an older version reconnects with its token;
-  // otherwise the address form opens (prefilled with the last address).
+  // otherwise the form opens: Connect, to the public hub or the last address.
   if (cloudState?.paired) return cloudRequest({ type: 'cloud-toggle', enabled: true });
   cloudFormOpen = true;
   $('cloud-pair-row').hidden = false;

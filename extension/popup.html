@@ -56,6 +56,7 @@
   input[type=checkbox].switch:checked::after { left: 16px; }
   input[type=checkbox].switch:disabled { opacity: 0.5; cursor: default; }
   .field { display: block; width: 100%; box-sizing: border-box; font: 12px ui-monospace, monospace; padding: 7px; border: 1px solid #c4b5fd; border-radius: 6px; margin: 8px 0; }
+  .field[hidden] { display: none; } /* display:block would beat the hidden attribute */
   #cloud-code { margin-top: 8px; font-size: 12px; line-height: 1.5; background: #ede9fe; color: #3f3555; border-radius: 6px; padding: 8px 10px; }
   #cloud-code b { font: 600 13px ui-monospace, monospace; color: #5b21b6; }
   #cloud-open-page { display: block; margin-top: 4px; color: #7c3aed; font-weight: 600; text-decoration: none; }
@@ -124,10 +125,13 @@
 
   <div class="setting">
     <label class="row" for="cloud-enabled"><span><b>Cloud AI apps</b><span id="cloud-status" class="sub">Let Claude.ai or ChatGPT use this browser</span></span><input id="cloud-enabled" class="switch" type="checkbox"></label>
+    <!-- The public Cloud Bridge is prefilled: one click to connect. The address
+         shows only for a hub you run yourself. -->
     <div id="cloud-pair-row" hidden>
-      <div class="hint">Paste your Cloud Bridge address. A page opens where you sign in and confirm.</div>
-      <input id="cloud-hub" class="field" type="url" placeholder="https://cloud-bridge.you.workers.dev" aria-label="Cloud Bridge address">
+      <div class="hint">Connect opens a page where you sign in with GitHub and confirm.</div>
+      <input id="cloud-hub" class="field" type="url" placeholder="https://cloud-bridge.you.workers.dev" aria-label="Cloud Bridge address" hidden>
       <button id="cloud-pair">Connect</button>
+      <button id="cloud-other" class="quiet">Use another Cloud Bridge address</button>
     </div>
     <div id="cloud-code" hidden><span id="cloud-code-text"></span> <a id="cloud-open-page" href="#" target="_blank" rel="noopener">Page didn't open? Open it</a></div>
     <div id="cloud-paired" hidden>

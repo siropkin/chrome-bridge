@@ -147,10 +147,10 @@ A real run, checked live on GitHub: [recipes/github.com.md](recipes/github.com.m
 
 Cloud Bridge lets cloud AI apps (Claude.ai, ChatGPT, other remote-MCP clients) drive this Chrome through a hub you sign in to, while your local agent keeps working. It's off until you pair a profile:
 
-1. Toolbar popup → ⚙ → turn on **Cloud AI apps**, paste your Cloud Bridge address → **Connect**. A tab opens on the hub: sign in with GitHub, check the code matches the popup, click **Connect**.
+1. Toolbar popup → ⚙ → turn on **Cloud AI apps** → **Connect** (the public Cloud Bridge is filled in; **Use another Cloud Bridge address** if you run your own hub). A tab opens on the hub: sign in with GitHub, check the code matches the popup, click **Connect**.
 2. Reopen the popup's ⚙ Settings. Cloud AI apps reads *Connected*. **Add to Claude or ChatGPT** shows the steps: copy the connector link, paste it as a custom connector in the app, then sign in and allow.
 
-Turning **Cloud AI apps** off signs this browser out of Cloud Bridge at once (it forgets the token); turning it on again connects anew. A preview of the hub ([siropkin/cloud-bridge](https://github.com/siropkin/cloud-bridge)) runs at `https://cloud-bridge.ivan-seredkin.workers.dev`, or you can deploy your own (its README shows how).
+Turning **Cloud AI apps** off signs this browser out of Cloud Bridge at once (it forgets the token); turning it on again connects anew. The public hub (`https://cloud-bridge.ivan-seredkin.workers.dev`, a preview of [siropkin/cloud-bridge](https://github.com/siropkin/cloud-bridge)) is run by the chrome-bridge developer; [PRIVACY.md](PRIVACY.md) says what it keeps. You can deploy your own instead (its README shows how).
 
 What agents see while two links are on:
 

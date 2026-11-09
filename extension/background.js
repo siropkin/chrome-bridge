@@ -707,7 +707,9 @@ async function hubPost(hub, path, body) {
 async function cloudPair(hubInput) {
   let hub;
   try {
-    hub = new URL(String(hubInput || cloudCfg.hub));
+    // No fallback to the stored hub: an empty address must not pair with a
+    // hub the user just chose not to use (found by review).
+    hub = new URL(String(hubInput || ''));
     if (!/^https?:$/.test(hub.protocol)) throw new Error('scheme');
   } catch {
     return { ok: false, error: 'Enter the Cloud Bridge hub URL, e.g. https://cloud-bridge.<you>.workers.dev' };
