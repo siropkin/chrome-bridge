@@ -16,7 +16,7 @@
 
 需要 macOS 或 Linux(Windows 上用 Git Bash)、Chrome ≥ 117 和 Node ≥ 18。
 
-**Chrome 应用商店(最简单)。** 安装扩展,点击工具栏按钮,选择 **Copy setup prompt**,把这段提示粘贴给你的智能体(Claude Code、Cursor……)。智能体会下载桥接器、启动服务、检查连接并向你汇报。完成后弹窗会显示 ● Ready。
+**Chrome 应用商店(最简单)。** 安装扩展,点击工具栏按钮,选择 **Copy setup prompt**,把这段提示粘贴给你的智能体(Claude Code、Cursor……)。智能体会下载桥接器、启动服务、检查连接并向你汇报。完成后弹窗会显示 ● Ready for your AI agent。
 
 **从源码安装。** 告诉你的智能体:
 
@@ -91,7 +91,7 @@ git clone https://github.com/siropkin/chrome-bridge && cd chrome-bridge && ./ins
 
 按上面的方法加载 `extension/` 文件夹,然后按 `install.sh` 的提示连接智能体:链接 skill(Claude Code、VS Code 中的 Copilot),或让其他智能体去读 [SKILL.md](.claude/skills/chrome-bridge/SKILL.md)——操作手册。
 
-验证:`node cli.mjs health` 应输出 `{"ok":true,"extension":true}`。在智能体发出第一条命令之前,Chrome 里不会有任何变化,这是正常的。想让智能体操作某个确定的标签页,在工具栏弹窗里点 **Copy tab ID for my agent**,把得到的内容(`id:… --profile <名称>`)粘贴给它。弹窗的 ⚙ Settings → **This Chrome profile** 显示智能体对当前 Chrome 配置文件使用的名称——智能体问你用哪个配置文件时,看这里即可。
+验证:`node cli.mjs health` 应输出 `{"ok":true,"extension":true}`。在智能体发出第一条命令之前,Chrome 里不会有任何变化,这是正常的。想让智能体操作某个确定的标签页,在工具栏弹窗里点 **Copy tab ID for my agent**,把得到的内容(`id:… --profile <名称>`)粘贴给它。弹窗顶部(*Chrome Bridge · poplar profile*)显示智能体对当前 Chrome 配置文件使用的名称——智能体问你用哪个配置文件时,看这里即可。
 
 如果 chrome-bridge 对你有用,请在 [Chrome 应用商店留个 ★ 评价](https://chromewebstore.google.com/detail/chrome-bridge/kmhjlnokjigmnimgjjmiahlinjbcebkg),帮助更多人找到它。
 
@@ -135,7 +135,7 @@ table "1. Playa Phone (playaphone.com) 122 poin… hide | 41 comments" @e14
 
 - **智能体触碰的每个标签页都戴 🟣 小标签**,只读的标签页也不例外。小标签显示当前正在做什么(`🟣 taking screenshot…`),并保留历史操作记录。被驱动的标签页还会加入 🟣 标签页分组,页面无法伪造它。
 - **小标签上的 ⏏ 会断开智能体对该标签页的控制。** 桥接会拒绝后续命令,直到显式执行 `mark`;智能体的操作说明要求重新接管前先征得你的同意。已经开始的操作仍可能完成。这是工作流控制,不是防范恶意本地智能体的安全边界。
-- **工具栏弹窗一键停止智能体**:⚙ 旁边的红色停止按钮一次交还所有智能体标签页,*Stop the agent in this tab* 只交还当前标签页。
+- **工具栏弹窗一键停止智能体**:智能体工作时,**Stop all** 一次交还所有智能体标签页,**Stop this tab** 只交还当前标签页。
 - **`node cli.mjs watch`** 在终端里实时显示每条命令。
 
 ![本地测试会话中的真实操作历史和释放控件,已放大展示](docs/store/screenshot-5-controls.png)
@@ -145,9 +145,9 @@ table "1. Playa Phone (playaphone.com) 122 poin… hide | 41 comments" @e14
 Cloud Bridge 让云端 AI 应用(Claude.ai、ChatGPT 和其他远程 MCP 客户端)通过你登录的中转站(hub)驱动这个 Chrome,本地智能体照常工作。配对某个配置文件之前,它一直是关闭的:
 
 1. 工具栏弹窗 → ⚙ → 打开 **Cloud AI apps**,粘贴 Cloud Bridge 的地址 → **Connect**。hub 会在新标签页打开:用 GitHub 登录,核对验证码与弹窗一致,点击 **Connect**。
-2. 重新打开弹窗的 ⚙ Settings,Cloud AI apps 显示 *Claude.ai and ChatGPT can use this browser*。点击 **Add to Claude or ChatGPT** 查看步骤:复制连接器链接,在 AI 应用里添加为自定义连接器,然后登录并允许。
+2. 重新打开弹窗的 ⚙ Settings,Cloud AI apps 显示 *Connected*。点击 **Add to Claude or ChatGPT** 查看步骤:复制连接器链接,在 AI 应用里添加为自定义连接器,然后登录并允许。
 
-Cloud AI apps 开关可以立即暂停云端连接,**Sign out of Cloud Bridge** 会丢弃 hub 发的令牌。hub([siropkin/cloud-bridge](https://github.com/siropkin/cloud-bridge))目前还没有公开托管,暂时需要你自己运行。
+关闭 **Cloud AI apps** 会立即让这个浏览器退出 Cloud Bridge(丢弃令牌);再次打开会重新连接。hub([siropkin/cloud-bridge](https://github.com/siropkin/cloud-bridge))目前还没有公开托管,暂时需要你自己运行。
 
 两条连接同时开启时,智能体会看到:
 
@@ -205,7 +205,7 @@ CI 中可重复执行的回归测试可考虑 [Playwright Test](https://playwrig
 
 `eval` 出现语法错误时,CLI 会在可用时补充本地检查的行号和列号,但不回显代码。重试前请修正 JavaScript 或 shell 引号;复杂代码可通过 `eval <match> -` 从标准输入传入。检查只在 Chrome 报告语法错误之后运行,不会因 Node 版本较旧而阻止浏览器支持的新语法。
 
-需要日后分析失败、重复重试或缺失功能时,在扩展弹窗的 ⚙ Settings 中打开 **Diagnostic logs**。默认关闭,仅保存在本机,设置适用于所有已连接的 Chrome 配置。滚动日志上限可设为 1-100 MiB,默认 10 MiB;Details 里可以修改上限(自动保存)并删除日志。
+需要日后分析失败、重复重试或缺失功能时,在扩展弹窗的 ⚙ Settings 中打开 **Diagnostic logs**。默认关闭,仅保存在本机,设置适用于所有已连接的 Chrome 配置。滚动日志上限可设为 1-100 MiB,默认 10 MiB;开启后会直接显示上限(修改即保存)和日志文件夹,也可以删除日志。
 
 `.diagnostics/` 中的 JSONL 文件记录关联的命令结果、耗时、错误类别和保护隐私的指纹,不保存原始页面内容、输入值或 eval 代码。`watch`/`history` 仍保留在内存中;新的命令活动不再写入 `server.log`。详见[采集、隐私与后续分析](docs/diagnostics.md)。
 

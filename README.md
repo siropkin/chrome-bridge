@@ -18,7 +18,7 @@ Use it to inspect a page, check a user flow, fill a form, or investigate network
 
 Needs macOS or Linux (Git Bash on Windows), Chrome ≥ 117 and Node ≥ 18.
 
-**Chrome Web Store (easiest).** Install the extension, click its toolbar button, choose **Copy setup prompt**, and paste the prompt to your agent (Claude Code, Cursor, …). The agent downloads the bridge, starts it, checks the connection and reports back. The popup shows ● Ready when it's done.
+**Chrome Web Store (easiest).** Install the extension, click its toolbar button, choose **Copy setup prompt**, and paste the prompt to your agent (Claude Code, Cursor, …). The agent downloads the bridge, starts it, checks the connection and reports back. The popup shows ● Ready for your AI agent when it's done.
 
 **From source.** Tell your agent:
 
@@ -93,7 +93,7 @@ git clone https://github.com/siropkin/chrome-bridge && cd chrome-bridge && ./ins
 
 Load the `extension/` folder as described above, then connect your agent the way `install.sh` prints: link the skill (Claude Code, Copilot in VS Code), or point any other agent at [SKILL.md](.claude/skills/chrome-bridge/SKILL.md), the operating manual.
 
-Check that it worked: `node cli.mjs health` should print `{"ok":true,"extension":true}`. You won't see anything in Chrome until the agent sends its first command; that's normal. To point the agent at one exact tab, use **Copy tab ID for my agent** in the toolbar popup and paste what it gives you (`id:… --profile <name>`). The popup's ⚙ Settings → **This Chrome profile** shows the name the agent uses for the profile you're in, so you can answer when it asks which profile to use.
+Check that it worked: `node cli.mjs health` should print `{"ok":true,"extension":true}`. You won't see anything in Chrome until the agent sends its first command; that's normal. To point the agent at one exact tab, use **Copy tab ID for my agent** in the toolbar popup and paste what it gives you (`id:… --profile <name>`). The popup's header (*Chrome Bridge · poplar profile*) shows the name the agent uses for the profile you're in, so you can answer when it asks which profile to use.
 
 If chrome-bridge works for you, a [★ rating on the Chrome Web Store](https://chromewebstore.google.com/detail/chrome-bridge/kmhjlnokjigmnimgjjmiahlinjbcebkg) helps other people find it.
 
@@ -137,7 +137,7 @@ A real run, checked live on GitHub: [recipes/github.com.md](recipes/github.com.m
 
 - **Every tab the agent touches wears a 🟣 pill**, including tabs it only reads. The pill shows what's happening right now (`🟣 taking screenshot…`) and keeps a history of past actions. Driven tabs also join a 🟣 tab group, which a page can't fake.
 - **⏏ on the pill disconnects the agent from that tab.** The bridge refuses subsequent commands until an explicit `mark`; the agent is instructed to ask you before reclaiming it. An action already running may still finish. This is a workflow control, not a security boundary against a malicious local agent.
-- **The toolbar popup stops the agent in one click**: the red stop button beside ⚙ hands every agent tab back at once, and *Stop the agent in this tab* just the current one.
+- **The toolbar popup stops the agent in one click**: while it works, **Stop all** hands every agent tab back at once, and **Stop this tab** just the current one.
 - **`node cli.mjs watch`** prints every command live in your terminal.
 
 ![Actual on-page action history and release control, enlarged from a local test session](docs/store/screenshot-5-controls.png)
@@ -147,9 +147,9 @@ A real run, checked live on GitHub: [recipes/github.com.md](recipes/github.com.m
 Cloud Bridge lets cloud AI apps (Claude.ai, ChatGPT, other remote-MCP clients) drive this Chrome through a hub you sign in to, while your local agent keeps working. It's off until you pair a profile:
 
 1. Toolbar popup → ⚙ → turn on **Cloud AI apps**, paste your Cloud Bridge address → **Connect**. A tab opens on the hub: sign in with GitHub, check the code matches the popup, click **Connect**.
-2. Reopen the popup's ⚙ Settings. Cloud AI apps reads *Claude.ai and ChatGPT can use this browser*. **Add to Claude or ChatGPT** shows the steps: copy the connector link, paste it as a custom connector in the app, then sign in and allow.
+2. Reopen the popup's ⚙ Settings. Cloud AI apps reads *Connected*. **Add to Claude or ChatGPT** shows the steps: copy the connector link, paste it as a custom connector in the app, then sign in and allow.
 
-The Cloud AI apps switch pauses the cloud link at once, and **Sign out of Cloud Bridge** drops the hub's token. The hub ([siropkin/cloud-bridge](https://github.com/siropkin/cloud-bridge)) isn't publicly hosted yet, so for now you run your own.
+Turning **Cloud AI apps** off signs this browser out of Cloud Bridge at once (it forgets the token); turning it on again connects anew. The hub ([siropkin/cloud-bridge](https://github.com/siropkin/cloud-bridge)) isn't publicly hosted yet, so for now you run your own.
 
 What agents see while two links are on:
 

@@ -15,7 +15,7 @@ Set up chrome-bridge so you can drive this Chrome browser yourself. Work through
    - Any other agent (Cursor, …): append this line to the instructions file you read at session start (AGENTS.md, CLAUDE.md, .cursorrules, …) unless it's already there; if you can't edit it, print the line and ask me to paste it: To drive my Chrome browser (real logged-in tabs), read ~/chrome-bridge/.claude/skills/chrome-bridge/SKILL.md and run `node ~/chrome-bridge/cli.mjs <command>`. If the health check fails, run `node ~/chrome-bridge/cli.mjs start`; if the extension stays disconnected, tell me to reload it.
 7. Dry run, leaving no trace:
    a. node ~/chrome-bridge/cli.mjs tabs — list my open tabs.
-   b. node ~/chrome-bridge/cli.mjs open https://example.com — the reply includes the new tab's id. (Several Chrome profiles connected? It asks for --profile <name>; ask me which profile is mine if unsure — I can read its name on the Profile line of the extension's toolbar popup.)
+   b. node ~/chrome-bridge/cli.mjs open https://example.com — the reply includes the new tab's id. (Several Chrome profiles connected? It asks for --profile <name>; ask me which profile is mine if unsure — I can read its name in the header of the extension's toolbar popup: "Chrome Bridge · <name> profile".)
    c. node ~/chrome-bridge/cli.mjs snap id:<that id> — read the page (use the id: reference exactly as shown, it targets that one tab).
    d. node ~/chrome-bridge/cli.mjs close id:<that id> — close the tab you opened (only ever close tabs you opened yourself).
 8. node ~/chrome-bridge/cli.mjs doctor — expect [] (this proves the dry run left no markers behind).
