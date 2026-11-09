@@ -142,6 +142,21 @@ A real run, checked live on GitHub: [recipes/github.com.md](recipes/github.com.m
 
 ![Actual on-page action history and release control, enlarged from a local test session](docs/store/screenshot-5-controls.png)
 
+## Cloud Bridge (preview)
+
+Cloud Bridge lets cloud AI apps (Claude.ai, ChatGPT, other remote-MCP clients) drive this Chrome through a hub you sign in to, while your local agent keeps working. It's off until you pair a profile:
+
+1. Toolbar popup → **Cloud Bridge** → enter your hub's URL → **Pair this profile**. A tab opens on the hub: sign in with GitHub, check the code matches the popup, click **Connect**.
+2. Reopen the popup. It reads *On · connected to … as &lt;profile&gt;*. **Copy MCP URL for your AI app** and add it as a custom connector there.
+
+The popup's switch turns the cloud link off at once, and **Unpair** drops the hub's token. The hub ([siropkin/cloud-bridge](https://github.com/siropkin/cloud-bridge)) isn't publicly hosted yet, so for now you run your own.
+
+What agents see while two links are on:
+
+- **Each link owns the tabs it drives.** A tab driven through the other link is read-only from yours (`snap`, `shot`, `measure`, `console`, `ask`, `perf`, `net`). Actions on it are refused with the next step: open your own tab.
+- **`tabs`** marks a tab another link drives with `"link":"Cloud Bridge"` (or `"link":"local"`). **`close --all`** closes only your link's tabs and reports the rest as `skipped` with a `note`.
+- **Cloud AI apps get two tools**: `chrome {command}` takes any browser command line, in the same syntax as the CLI, and `chrome_batch {lines}` runs several in one round trip. `shot` returns the image. Commands that touch your disk, clipboard or the local install (`upload`, `paste` without text, `fetch --out`, `net --har`, `start`, `extreload`…) are refused with what to do instead.
+
 ## How it compares
 
 Based on the linked official documentation, checked 2026-11-05. These are workflow trade-offs, not a ranking or a benchmark.

@@ -1,10 +1,11 @@
-// chrome-bridge popup — three jobs: copy the active tab's id:<tabId> reference
+// chrome-bridge popup — four jobs: copy the active tab's id:<tabId> reference
 // (the exact <match> every cli command understands — see findTab), hand a
 // first-time user the self-contained setup prompt for their agent, and the
 // human's release controls — the one reclaim path that works even when a
 // driven tab can't show the pill (chrome://, Web Store, PDF). Pure popup for
 // tabs (extension pages have the tabs permission too); release rides the
-// service worker via runtime messaging.
+// service worker via runtime messaging. Fourth: Cloud Bridge pairing and its
+// on/off switch (also through the worker, which owns the link).
 // Bridge status comes from GET /health — a GET, so the server's drive-by
 // guards don't apply, and <all_urls> host permission covers 127.0.0.1.
 // NOTE: 9333 is hardcoded in FOUR places — server.mjs, cli.mjs,
@@ -115,6 +116,7 @@ chrome.tabs.query({ active: true, currentWindow: true }).then(async ([tab]) => {
     const state = await chrome.runtime.sendMessage({ type: 'bridge-state', tabId: tab.id });
     if (state?.error || !Number.isInteger(state?.count) || state.count < 0 || typeof state.active !== 'boolean') throw new Error(state?.error || 'Tab state unavailable');
     bridgeState = state;
+    if (state.cloud) renderCloud(state.cloud);
     if (typeof state.profile === 'string' && /^[a-z]+$/.test(state.profile)) {
       ref = `id:${tab.id} --profile ${state.profile}`;
       $('ref').textContent = ref;
@@ -243,4 +245,66 @@ $('logging-cancel').addEventListener('click', () => {
 $('logging-confirm').addEventListener('click', async () => {
   await loggingRequest('clear');
   $('logging-confirmation').hidden = true;
+});
+
+// Cloud Bridge: pair this profile with a hub (device code approved in a tab),
+// switch the link on/off, unpair. The worker owns the link and the pairing
+// poll; the popup only shows its state. Opening the approval tab closes the
+// popup — reopening it shows the result, so no timers here.
+let cloudState = null;
+function renderCloud(state, error) {
+  if (state && typeof state.paired === 'boolean') cloudState = state;
+  const s = cloudState;
+  if (!s) {
+    $('cloud-status').textContent = error || 'Cloud Bridge state unavailable — reopen the popup.';
+    return;
+  }
+  let host = '';
+  try {
+    host = s.hub ? new URL(s.hub).host : '';
+  } catch {}
+  $('cloud-hub').value = $('cloud-hub').value || s.hub || '';
+  $('cloud-enabled').disabled = !s.paired;
+  $('cloud-enabled').checked = s.paired && s.enabled;
+  $('cloud-unpair').hidden = !s.paired;
+  $('cloud-copy-mcp').hidden = !s.paired;
+  $('cloud-pair').textContent = s.paired || s.pairing ? 'Pair again' : 'Pair this profile';
+  $('cloud-code').hidden = !s.pairing;
+  if (s.pairing) $('cloud-code').textContent = `Code ${s.pairing.code} — approve it in the tab that opened (${s.pairing.verificationUri})`;
+  $('cloud-badge').textContent = s.paired && s.enabled ? ' · on' : '';
+  let line;
+  if (s.pairing) line = 'Waiting for you to approve the code at the hub…';
+  else if (!s.paired) line = 'Off · not paired. Enter your hub URL, then pair.';
+  else if (!s.enabled) line = `Off · paired with ${host}`;
+  else if (s.connected) line = `On · connected to ${host} as ${s.profile}`;
+  else line = `On · connecting to ${host}…`;
+  $('cloud-status').textContent = [error, s.notice, line].filter(Boolean).join(' · ');
+}
+async function cloudRequest(msg) {
+  for (const id of ['cloud-pair', 'cloud-enabled', 'cloud-unpair']) $(id).disabled = true;
+  let response;
+  try {
+    response = await chrome.runtime.sendMessage(msg);
+  } catch (error) {
+    response = { ok: false, error: String(error) };
+  }
+  $('cloud-pair').disabled = $('cloud-unpair').disabled = false;
+  renderCloud(response, response?.ok === false ? response.error || 'Request failed' : '');
+}
+$('cloud').addEventListener('toggle', () => {
+  if ($('cloud').open) cloudRequest({ type: 'cloud-state' });
+});
+$('cloud-pair').addEventListener('click', () => cloudRequest({ type: 'cloud-pair', hub: $('cloud-hub').value.trim() }));
+$('cloud-enabled').addEventListener('change', () => cloudRequest({ type: 'cloud-toggle', enabled: $('cloud-enabled').checked }));
+$('cloud-unpair').addEventListener('click', () => cloudRequest({ type: 'cloud-unpair' }));
+$('cloud-copy-mcp').addEventListener('click', () => {
+  const url = new URL('/mcp', cloudState.hub).href;
+  navigator.clipboard.writeText(url).then(
+    () => {
+      $('cloud-status').textContent = `Copied ${url} ✓ — add it as a custom connector in your AI app`;
+    },
+    (e) => {
+      $('cloud-status').textContent = 'Copy failed: ' + e;
+    }
+  );
 });

@@ -264,6 +264,7 @@ function popupHarness(sendMessage, { tab, health = { ok: true, extension: true }
   };
   vm.runInNewContext(fs.readFileSync(new URL('../extension/popup.js', import.meta.url), 'utf8'), {
     document: { getElementById: element },
+    URL, // a real popup has it; the Cloud section reads the hub's host with it
     fetch: async () => { if (healthDown) throw new Error('connection refused'); return { json: async () => health }; },
     AbortSignal,
     ...(clipboard ? { navigator: { clipboard } } : {}),
@@ -478,4 +479,52 @@ test('clearing or disabling invalidates in-flight records; storage failures do n
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
+});
+test('popup Cloud Bridge: state from bridge-state, pairing shows the code, toggle and unpair go to the worker', async () => {
+  const sent = [];
+  let cloud = { paired: false, enabled: false, connected: false, hub: '', profile: 'poplar', pairing: null, notice: '' };
+  const { element, settle } = popupHarness(async (message) => {
+    sent.push(message);
+    if (message.type === 'bridge-state') return { count: 0, active: false, connected: true, profile: 'poplar', cloud };
+    if (message.type === 'cloud-pair') {
+      if (!message.hub) return { ok: false, error: 'Enter the Cloud Bridge hub URL, e.g. https://cloud-bridge.<you>.workers.dev', ...cloud };
+      cloud = { ...cloud, hub: 'http://localhost:8787', pairing: { code: 'ABCD-EFGH', verificationUri: 'http://localhost:8787/pair?code=ABCD-EFGH' } };
+    }
+    if (message.type === 'cloud-state') cloud = { ...cloud, paired: true, enabled: true, connected: true, pairing: null };
+    if (message.type === 'cloud-toggle') cloud = { ...cloud, enabled: message.enabled, connected: false };
+    if (message.type === 'cloud-unpair') cloud = { ...cloud, paired: false, enabled: false };
+    return { ok: true, ...cloud };
+  }, { tab: { id: 7 } });
+  await settle();
+  assert.equal(element('cloud-status').textContent, 'Off · not paired. Enter your hub URL, then pair.');
+  assert.equal(element('cloud-enabled').disabled, true, 'nothing to switch on before pairing');
+  assert.equal(element('cloud-unpair').hidden, true);
+  await element('cloud-pair').handlers.click();
+  assert.match(element('cloud-status').textContent, /^Enter the Cloud Bridge hub URL/, 'the worker\'s next step is shown');
+  element('cloud-hub').value = ' http://localhost:8787 ';
+  await element('cloud-pair').handlers.click();
+  assert.deepEqual(JSON.parse(JSON.stringify(sent.at(-1))), { type: 'cloud-pair', hub: 'http://localhost:8787' });
+  assert.equal(element('cloud-code').hidden, false);
+  assert.match(element('cloud-code').textContent, /^Code ABCD-EFGH — approve it in the tab that opened/);
+  assert.equal(element('cloud-status').textContent, 'Waiting for you to approve the code at the hub…');
+  // Reopening the section after approving refreshes from the worker.
+  element('cloud').open = true;
+  await element('cloud').handlers.toggle();
+  await settle();
+  assert.equal(element('cloud-status').textContent, 'On · connected to localhost:8787 as poplar');
+  assert.equal(element('cloud-badge').textContent, ' · on');
+  assert.equal(element('cloud-enabled').checked, true);
+  assert.equal(element('cloud-copy-mcp').hidden, false);
+  element('cloud-enabled').checked = false;
+  await element('cloud-enabled').handlers.change();
+  assert.deepEqual(JSON.parse(JSON.stringify(sent.at(-1))), { type: 'cloud-toggle', enabled: false });
+  assert.equal(element('cloud-status').textContent, 'Off · paired with localhost:8787');
+  await element('cloud-unpair').handlers.click();
+  assert.equal(element('cloud-status').textContent, 'Off · not paired. Enter your hub URL, then pair.');
+});
+
+test('popup Cloud Bridge: an older worker without cloud state leaves the section untouched', async () => {
+  const { element, settle } = popupHarness(async (message) => (message.type === 'bridge-state' ? { count: 0, active: false, connected: true } : {}), { tab: { id: 7 } });
+  await settle();
+  assert.equal(element('cloud-status').textContent, undefined, 'no claim about a link the worker did not describe');
 });

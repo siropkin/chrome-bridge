@@ -40,6 +40,10 @@
   #log-folder { display: block; width: 100%; box-sizing: border-box; font: 11px ui-monospace, monospace; margin: 6px 0; }
   #logging-delete, #logging-cancel { margin-top: 6px; background: #fff; color: #7c3aed; border: 1px solid #7c3aed; }
   #logging-confirm { margin-top: 6px; background: #b91c1c; }
+  #cloud-hub { display: block; width: 100%; box-sizing: border-box; font: 12px ui-monospace, monospace; padding: 5px; margin: 6px 0; }
+  #cloud-unpair, #cloud-copy-mcp { margin-top: 6px; background: #fff; color: #7c3aed; border: 1px solid #7c3aed; }
+  #cloud-code { margin-top: 6px; font: 12px ui-monospace, monospace; background: #ede9fe; color: #5b21b6; border-radius: 6px; padding: 6px 8px; }
+  #cloud-status { overflow-wrap: anywhere; }
 </style>
 <div id="bridge-status" role="status"><span class="dot"></span><span id="status-text">checking…</span></div>
 <div id="update" hidden>
@@ -58,6 +62,20 @@
   <button id="release-tab" hidden>⏏ Release this tab</button>
   <button id="release-all">⏏ Release all agent tabs</button>
 </div>
+<div class="divider"></div>
+<!-- Cloud Bridge: a second, opt-in link to a hub that cloud AIs (Claude.ai,
+     ChatGPT…) reach. Local keeps working beside it. popup.js fills it. -->
+<details id="cloud">
+  <summary>Cloud Bridge<span id="cloud-badge"></span></summary>
+  <div id="cloud-status" class="hint" role="status">Loading…</div>
+  <label class="setting-row" for="cloud-enabled">Let Cloud Bridge drive this profile <input id="cloud-enabled" type="checkbox" disabled></label>
+  <input id="cloud-hub" type="url" placeholder="https://cloud-bridge.you.workers.dev" aria-label="Cloud Bridge hub URL">
+  <button id="cloud-pair">Pair this profile</button>
+  <div id="cloud-code" hidden></div>
+  <button id="cloud-copy-mcp" hidden>Copy MCP URL for your AI app</button>
+  <button id="cloud-unpair" hidden>Unpair this profile</button>
+  <div class="hint">AI apps you allow at the hub can then use this Chrome. Local agents keep working.</div>
+</details>
 <div class="divider"></div>
 <!-- Collapsed once the bridge runs (setting up another agent is occasional);
      popup.js opens it when the bridge is down — then it's the next step. -->

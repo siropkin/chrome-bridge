@@ -140,6 +140,21 @@ table "1. Playa Phone (playaphone.com) 122 poin… hide | 41 comments" @e14
 
 ![本地测试会话中的真实操作历史和释放控件,已放大展示](docs/store/screenshot-5-controls.png)
 
+## Cloud Bridge(预览)
+
+Cloud Bridge 让云端 AI 应用(Claude.ai、ChatGPT 和其他远程 MCP 客户端)通过你登录的中转站(hub)驱动这个 Chrome,本地智能体照常工作。配对某个配置文件之前,它一直是关闭的:
+
+1. 工具栏弹窗 → **Cloud Bridge** → 输入 hub 的地址 → **Pair this profile**。hub 会在新标签页打开:用 GitHub 登录,核对验证码与弹窗一致,点击 **Connect**。
+2. 重新打开弹窗,显示 *On · connected to … as &lt;配置文件&gt;*。点击 **Copy MCP URL for your AI app**,在 AI 应用里把它添加为自定义连接器。
+
+弹窗里的开关可以立即关闭云端连接,**Unpair** 会丢弃 hub 发的令牌。hub([siropkin/cloud-bridge](https://github.com/siropkin/cloud-bridge))目前还没有公开托管,暂时需要你自己运行。
+
+两条连接同时开启时,智能体会看到:
+
+- **每条连接拥有它驱动的标签页。** 另一条连接驱动的标签页,对你只读(`snap`、`shot`、`measure`、`console`、`ask`、`perf`、`net`)。在上面执行操作会被拒绝,并给出下一步:打开你自己的标签页。
+- **`tabs`** 会给另一条连接驱动的标签页标上 `"link":"Cloud Bridge"`(或 `"link":"local"`)。**`close --all`** 只关闭你这条连接的标签页,其余的以 `skipped` 和 `note` 报告。
+- **云端 AI 应用获得两个工具**:`chrome {command}` 接受任意浏览器命令行,语法与 CLI 相同;`chrome_batch {lines}` 一次往返执行多条。`shot` 直接返回图片。涉及你的磁盘、剪贴板或本地安装的命令(`upload`、不带文本的 `paste`、`fetch --out`、`net --har`、`start`、`extreload`…)会被拒绝,并说明替代做法。
+
 ## 对比一览
 
 依据下方链接的官方文档核对于 2026-11-05。这是工作流取舍,不是排名或性能基准。

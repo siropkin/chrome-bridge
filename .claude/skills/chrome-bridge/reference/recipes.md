@@ -34,6 +34,14 @@ Parallel work across profiles is fine: two agent sessions can drive two profiles
 
 TWO BRIDGE BUILDS IN ONE CHROME (e.g. the Web Store build + an unpacked repo build in the same profile) are not two profiles: each mints its own profile id, so both seats see and can drive THE SAME tabs — and the human's ⏏/reclaim gate covers only the install whose pill was clicked. `tabs` flags it (a warning row when two seats report the same tab id+url) and routing refuses with the cause — the fix is unloading one build at `chrome://extensions`, not `--profile`.
 
+## Cloud Bridge: local and cloud at once
+
+A profile can also be paired with a Cloud Bridge hub (popup → Cloud Bridge), so cloud AI apps (Claude.ai, ChatGPT) drive it while local agents keep using the CLI. Each command source is a **link** (`local`, `Cloud Bridge`) and owns the tabs it drives:
+
+- From your link, a tab driven through the other one is read-only: `snap`, `shot`, `measure`, `console`, `ask`, `perf`, `net` work; anything else is refused before it runs (`⚠ this tab is driven through the Cloud Bridge link …`). Open your own tab rather than asking for the other one.
+- `tabs` tags such tabs `"link":"<label>"`; `close --all` skips them (`skipped` + `note`); `release` and `doctor --fix` touch only your link's tabs. The popup's "Release all" covers every link.
+- Through the cloud, the AI app sees two MCP tools: `chrome {command}` (one command line in this CLI's syntax) and `chrome_batch {lines}` (stops at the first failure). `shot <match> x.png` returns the image. Disk, clipboard and local-install forms (`upload`, `paste` without `-- text`, `fetch --out`, `net --har`, `start`, `extreload`, …) are refused with the alternative, and so is anything the user turned Off at the hub (`wait --js` follows `eval`'s rule).
+
 ## Minimize focus changes
 
 Start in the background. `activate` explicitly selects the tab AND focuses its browser window; do not prepend it to every command. DOM element focus (`type`, `press`, `paste`) is not browser-window activation. Debugger attachment is also not activation, though Chrome shows an infobar.

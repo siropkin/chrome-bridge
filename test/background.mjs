@@ -33,7 +33,7 @@ function popupListener({ failedTab, ready = Promise.resolve(), owners = new Map(
   const sender = { id: 'bridge', url: 'chrome-extension://bridge/popup.html' };
   vm.runInNewContext(listenerSource, {
     chrome: { runtime: { id: 'bridge', getURL: (path) => 'chrome-extension://bridge/' + path, onMessage: { addListener: (handler) => { listener = handler; } } } },
-    ready, idReady: Promise.resolve(), PROFILE_NAME: 'poplar', drivenTabs, humanReclaimed,
+    ready, idReady: Promise.resolve(), cloudReady: Promise.resolve(), cloudState: () => ({ paired: false }), PROFILE_NAME: 'poplar', drivenTabs, humanReclaimed,
     linkOpen: (id) => id === 'local',
     linkSend: (id, data) => { events.push([id, JSON.parse(data)]); return true; },
     ownerOf: (tabId) => (drivenTabs.has(tabId) ? owners.get(tabId) || 'local' : null),
