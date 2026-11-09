@@ -510,6 +510,7 @@ function cloudOpen(link, s) {
     kind: 'chrome', name: PROFILE_NAME, version, selector: 'profile',
     offlineHint: `Ask the user to open Chrome (the profile chrome-bridge calls "${PROFILE_NAME}") and check that Cloud AI apps is on in the chrome-bridge popup's ⚙ Settings`,
   } }));
+  s._lastPong = Date.now();
   s._ping = setInterval(() => {
     try {
       s.send('ping');
@@ -562,7 +563,10 @@ function policyRefusal(link, name) {
 const errMsg = (err) => String(err?.message ?? err).replace(/^(Error:\s*)+/, '');
 
 async function cloudMessage(link, s, data) {
-  if (data === 'pong') return;
+  if (data === 'pong') {
+    s._lastPong = Date.now();
+    return;
+  }
   let msg;
   try {
     msg = JSON.parse(data);
@@ -743,6 +747,18 @@ async function cloudRevokePending() {
     cloudRevoking = false;
   }
 }
+// The hub answers every 20s "ping" with "pong". None for 70s: the socket is dead
+// without having closed (calls on it hung until the hub's 120s timeout — found
+// live with ChatGPT). Close it so onclose redials.
+const CLOUD_PONG_STALE_MS = 70000;
+function cloudHeartbeatCheck(now = Date.now()) {
+  const s = links.get('cloud')?.socket;
+  if (!s || s.readyState !== WebSocket.OPEN || !s._lastPong || now - s._lastPong <= CLOUD_PONG_STALE_MS) return;
+  logLine('cloud: no heartbeat from the hub for ' + Math.round((now - s._lastPong) / 1000) + 's — reconnecting');
+  try {
+    s.close();
+  } catch {}
+}
 // Detach before closing: the hub's own 4401 for this socket must not read as
 // "the hub forgot this profile" (cloudUnpaired) while we're the ones leaving.
 function cloudDrop() {
@@ -846,6 +862,7 @@ Promise.race([
 // for 0.5 outright.
 chrome.alarms.create('keepalive', { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener(() => {
+  cloudHeartbeatCheck();
   for (const link of links.values()) if (!linkOpen(link.id)) connect(link);
   cloudPollPairing();
   cloudRevokePending();

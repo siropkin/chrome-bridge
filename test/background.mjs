@@ -932,7 +932,7 @@ function linksHarness({ owners = new Map(), driven = [], idReady = Promise.resol
     pageErrorsFor: async () => null, currentActivity: () => false,
   });
   vm.runInContext(commandsSource, context); // the worker's importScripts('commands.js')
-  vm.runInContext(linksSource + '\nthis.links = links; this.linkOpen = linkOpen; this.cloudState = cloudState; this.cloudPair = cloudPair; this.cloudSignOut = cloudSignOut; this.connect = connect; this.setLocal = (on) => { localOn = on; };', context);
+  vm.runInContext(linksSource + '\nthis.links = links; this.linkOpen = linkOpen; this.cloudState = cloudState; this.cloudPair = cloudPair; this.cloudSignOut = cloudSignOut; this.cloudHeartbeatCheck = cloudHeartbeatCheck; this.connect = connect; this.setLocal = (on) => { localOn = on; };', context);
   const flush = () => new Promise((r) => setImmediate(r));
   const fire = (ms) => timers.splice(0).filter((t) => t.ms === ms || (timers.push(t), false)).forEach((t) => t.fn());
   return { context, sockets, timers, handled, painted, logs, flush, fire, alarm: () => alarm(), storage, created, intervals, badge };
@@ -1476,4 +1476,23 @@ test('cloud: a token signed out while a retry pass is in flight is kept for the 
   release();
   for (let i = 0; i < 4; i++) await flush();
   assert.deepEqual(plain(storage.cloud.unrevoked).map((t) => t.token), [OLD.token, PAIRED.token]);
+});
+
+test('cloud: no pong for 70s closes the socket so it redials; pongs keep it (a dead-but-open socket hung calls 120s, found live)', async () => {
+  const { context, ws, logs, flush, sockets } = await cloudArm();
+  const t0 = ws._lastPong;
+  assert.ok(t0, 'the clock starts at open');
+  context.cloudHeartbeatCheck(t0 + 60000);
+  assert.equal(ws.readyState, 1, 'within the window: stays');
+  ws._lastPong = t0 - 1e6; // long silent…
+  await ws.recv('pong'); // …until a pong
+  assert.ok(ws._lastPong >= t0, 'a pong restarts the window');
+  context.cloudHeartbeatCheck(ws._lastPong + 60000);
+  assert.equal(ws.readyState, 1);
+  context.cloudHeartbeatCheck(ws._lastPong + 71000);
+  assert.equal(ws.readyState, 3);
+  assert.ok(logs.some((l) => /no heartbeat from the hub for 71s — reconnecting/.test(l)));
+  await flush();
+  await flush();
+  assert.equal(sockets.filter((s) => s.url.includes('/arm')).length, 1, 'onclose schedules the redial (backoff timer)');
 });
