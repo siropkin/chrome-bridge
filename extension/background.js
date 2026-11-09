@@ -458,7 +458,7 @@ function cloudOpen(link, s) {
   const version = chrome.runtime.getManifest().version;
   s.send(JSON.stringify({ jsonrpc: '2.0', method: 'arm/hello', params: {
     kind: 'chrome', name: PROFILE_NAME, version, selector: 'profile',
-    offlineHint: `Ask the user to open Chrome (the profile chrome-bridge calls "${PROFILE_NAME}") and check that Cloud is on in the chrome-bridge toolbar popup`,
+    offlineHint: `Ask the user to open Chrome (the profile chrome-bridge calls "${PROFILE_NAME}") and check that Cloud access is on in the chrome-bridge popup's ⚙ Settings`,
   } }));
   s._ping = setInterval(() => {
     try {
@@ -1626,7 +1626,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .then(async () => {
         if (msg.type === 'cloud-pair') return cloudPair(msg.hub);
         if (msg.type === 'cloud-toggle') {
-          if (!cloudCfg.token) return { ok: false, error: 'Pair this profile first.', ...cloudState() };
+          if (!cloudCfg.token) return { ok: false, error: 'Connect this profile first: paste your Cloud Bridge address, then Connect.', ...cloudState() };
           await saveCloud({ enabled: !!msg.enabled, notice: '' });
           if (msg.enabled) connect(cloud);
           else cloud.socket?.close();
@@ -1676,7 +1676,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // tab can't show the pill (chrome://, Web Store, PDF). Popup-originated
   // messages have no sender.tab; extension pages are the trusted context.
   if (msg?.type === 'bridge-state') {
-    // connected: THIS profile's own local socket — the popup's "bridge ready"
+    // connected: THIS profile's own local socket — the popup's "Ready"
     // must not ride /health's any-seat flag (another profile's live seat says
     // nothing about this one).
     // profile: the popup shows it and puts it in the copied tab reference —

@@ -1,10 +1,10 @@
 # Local Diagnostic Logging
 
-Open the extension popup, expand **Settings**, enable **Diagnostic logging**, choose a **Log limit (MiB)**, and click **Save settings**. Logging is off by default. The setting belongs to the local server and applies to every connected Chrome profile; it survives restarts. Both the server and extension must be updated.
+Open the extension popup, click ⚙ and turn on **Diagnostic logs** (it saves at once). The size limit lives under **Details** (**Size limit (MiB)**, then **Save**). Logging is off by default. The setting belongs to the local server and applies to every connected Chrome profile; it survives restarts. Both the server and extension must be updated.
 
 The default limit is 10 MiB; allowed values are whole numbers from 1 to 100. The limit covers the combined size of `events.1.jsonl` and `events.jsonl`, not the small settings file or operational `server.log`. Each event file uses at most half the limit. The oldest file is replaced when the current one fills, so retained history can be shorter than a week. Lowering the limit discards files that exceed the new half-limit.
 
-**Delete diagnostic logs** requires confirmation and removes both event files. It does not change the enabled setting: new commands immediately start a fresh log. Turn logging off and save first to stop collecting. Turning it off alone preserves existing files. Commands in flight across a settings change or deletion do not write a late completion record.
+**Delete logs** (under Details) requires confirmation and removes both event files. It does not change the enabled setting: new commands immediately start a fresh log. Turn the switch off first to stop collecting. Turning it off alone preserves existing files. Commands in flight across a settings change or deletion do not write a late completion record.
 
 ## Files and Privacy
 

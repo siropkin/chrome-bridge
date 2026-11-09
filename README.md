@@ -18,7 +18,7 @@ Use it to inspect a page, check a user flow, fill a form, or investigate network
 
 Needs macOS or Linux (Git Bash on Windows), Chrome ≥ 117 and Node ≥ 18.
 
-**Chrome Web Store (easiest).** Install the extension, click its toolbar button, choose **Copy setup prompt for your AI agent**, and paste the prompt to your agent (Claude Code, Cursor, …). The agent downloads the bridge, starts it, checks the connection and reports back. The popup shows ● bridge ready when it's done.
+**Chrome Web Store (easiest).** Install the extension, click its toolbar button, choose **Copy setup prompt**, and paste the prompt to your agent (Claude Code, Cursor, …). The agent downloads the bridge, starts it, checks the connection and reports back. The popup shows ● Ready when it's done.
 
 **From source.** Tell your agent:
 
@@ -93,7 +93,7 @@ git clone https://github.com/siropkin/chrome-bridge && cd chrome-bridge && ./ins
 
 Load the `extension/` folder as described above, then connect your agent the way `install.sh` prints: link the skill (Claude Code, Copilot in VS Code), or point any other agent at [SKILL.md](.claude/skills/chrome-bridge/SKILL.md), the operating manual.
 
-Check that it worked: `node cli.mjs health` should print `{"ok":true,"extension":true}`. You won't see anything in Chrome until the agent sends its first command; that's normal. To point the agent at one exact tab, use **Copy tab reference** in the toolbar popup and paste what it gives you (`id:… --profile <name>`). The popup's **Profile:** line shows the name the agent uses for the Chrome profile you're in, so you can answer when it asks which profile to use.
+Check that it worked: `node cli.mjs health` should print `{"ok":true,"extension":true}`. You won't see anything in Chrome until the agent sends its first command; that's normal. To point the agent at one exact tab, use **Copy tab ID for my agent** in the toolbar popup and paste what it gives you (`id:… --profile <name>`). The popup's ⚙ Settings → **This Chrome profile** shows the name the agent uses for the profile you're in, so you can answer when it asks which profile to use.
 
 If chrome-bridge works for you, a [★ rating on the Chrome Web Store](https://chromewebstore.google.com/detail/chrome-bridge/kmhjlnokjigmnimgjjmiahlinjbcebkg) helps other people find it.
 
@@ -137,7 +137,7 @@ A real run, checked live on GitHub: [recipes/github.com.md](recipes/github.com.m
 
 - **Every tab the agent touches wears a 🟣 pill**, including tabs it only reads. The pill shows what's happening right now (`🟣 taking screenshot…`) and keeps a history of past actions. Driven tabs also join a 🟣 tab group, which a page can't fake.
 - **⏏ on the pill disconnects the agent from that tab.** The bridge refuses subsequent commands until an explicit `mark`; the agent is instructed to ask you before reclaiming it. An action already running may still finish. This is a workflow control, not a security boundary against a malicious local agent.
-- **The toolbar popup releases the current tab, or every agent tab at once.**
+- **The toolbar popup's red Release button hands every agent tab back at once** (or just the current one).
 - **`node cli.mjs watch`** prints every command live in your terminal.
 
 ![Actual on-page action history and release control, enlarged from a local test session](docs/store/screenshot-5-controls.png)
@@ -146,10 +146,10 @@ A real run, checked live on GitHub: [recipes/github.com.md](recipes/github.com.m
 
 Cloud Bridge lets cloud AI apps (Claude.ai, ChatGPT, other remote-MCP clients) drive this Chrome through a hub you sign in to, while your local agent keeps working. It's off until you pair a profile:
 
-1. Toolbar popup → **Settings** → **Cloud Bridge**: enter your hub's URL → **Pair this profile**. A tab opens on the hub: sign in with GitHub, check the code matches the popup, click **Connect**.
-2. Reopen the popup. It reads *On · connected to … as &lt;profile&gt;*. **Copy MCP URL** and add it as a custom connector there.
+1. Toolbar popup → ⚙ → turn on **Cloud access**, paste your hub's address → **Connect**. A tab opens on the hub: sign in with GitHub, check the code matches the popup, click **Connect**.
+2. Reopen the popup's ⚙ Settings. Cloud access reads *On · cloud AI apps can use “&lt;profile&gt;”*. **Copy link for Claude/ChatGPT** and add it as a custom connector there.
 
-The Cloud Bridge switch turns the cloud link off at once, and **Unpair** drops the hub's token. The hub ([siropkin/cloud-bridge](https://github.com/siropkin/cloud-bridge)) isn't publicly hosted yet, so for now you run your own.
+The Cloud access switch turns the cloud link off at once, and **Disconnect** drops the hub's token. The hub ([siropkin/cloud-bridge](https://github.com/siropkin/cloud-bridge)) isn't publicly hosted yet, so for now you run your own.
 
 What agents see while two links are on:
 
@@ -207,7 +207,7 @@ Safety checks cover bulk close and queued `--diff` actions: a human-reclaimed ta
 
 `eval` syntax failures now include a local line/column hint when available, without echoing your code. Fix the JavaScript or shell quoting before retrying; pass complex snippets through stdin with `eval <match> -`. The check runs only after Chrome reports a syntax error, so newer browser syntax is not blocked by your Node version.
 
-For a later review of failures, retry loops, and missing features, open the extension popup's **Settings** and enable **Diagnostic logging**. It is **off by default**, local only, and shared across connected profiles. Choose a rolling size limit (1-100 MiB, default 10 MiB); view usage or delete the logs in the same panel.
+For a later review of failures, retry loops, and missing features, open the extension popup's ⚙ Settings and turn on **Diagnostic logs**. It is **off by default**, local only, and shared across connected profiles. Choose a rolling size limit (1-100 MiB, default 10 MiB); view usage or delete the logs in the same panel.
 
 The JSONL files in `.diagnostics/` record correlated command outcomes, timings, error categories, and privacy-preserving fingerprints, not raw page content, input values, or eval code. The existing `watch`/`history` feed stays in memory; command activity is no longer written to `server.log`. See [collection, privacy, and week-later analysis](docs/diagnostics.md).
 

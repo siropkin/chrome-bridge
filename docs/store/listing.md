@@ -36,7 +36,7 @@ GETTING STARTED
 Requires Chrome 117 or newer, Node.js 18 or newer, and an AI agent that can run local shell commands. Documented setup supports macOS and Linux; Windows setup uses Git Bash.
 
 1. Install this extension.
-2. Click its toolbar button and press "Copy setup prompt for your AI agent" (under Install).
+2. Click its toolbar button and press "Copy setup prompt".
 3. Paste that text to your agent (Claude Code, Cursor, or any agent that can run shell commands).
 
 The agent downloads the bridge, starts the local server and checks the connection. Follow any permission or login prompts yourself. Setup time depends on your environment; the popup indicates when the bridge is connected.
