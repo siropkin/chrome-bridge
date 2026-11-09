@@ -15,9 +15,14 @@
        node. -->
   <div id="rewrite" contenteditable="true"></div>
 
-  <!-- #29: heavy framework pipeline — every input event costs ~1.2s of
-       synchronous work. 60 chars ≈ 74s > the old flat 70s command cap. -->
+  <!-- #32: a very slow editor — every input event costs ~1.2s of synchronous
+       work, so a short type stays in flight long enough to overlap. -->
   <div id="heavy" contenteditable="true"></div>
+
+  <!-- #29: a heavy-but-real framework pipeline (~80ms per keystroke): a long
+       payload outlasts the old flat 70s cap but fits the payload-scaled
+       budget (70s + 100ms/char) with room to spare. -->
+  <div id="steady" contenteditable="true"></div>
 
   <!-- #34: two editor-owned shapes. #owned preventDefaults beforeinput
        deletions (the editor wants deletions through its own model) — on this
@@ -46,10 +51,12 @@
         const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
       }, { once: true });
 
-      document.getElementById('heavy').addEventListener('input', () => {
-        const t0 = performance.now();
-        while (performance.now() - t0 < 1200); // the framework's per-keystroke bill
-      });
+      for (const [id, ms] of [['heavy', 1200], ['steady', 80]]) {
+        document.getElementById(id).addEventListener('input', () => {
+          const t0 = performance.now();
+          while (performance.now() - t0 < ms); // the framework's per-keystroke bill
+        });
+      }
 
       // #34 fixture logic: the editors own all deletions…
       for (const id of ['owned', 'hardowned']) {

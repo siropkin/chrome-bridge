@@ -720,10 +720,15 @@ s_type() {
   "${CLI[@]}" type "x=type" '#heavy' 'overlap' >"$OUT/type-guard.log" 2>&1 && bad "overlapping type must refuse" || true
   assert_grep "in-flight type guard names the lost-reply cause" "$OUT/type-guard.log" 'another type is still running'
   wait $bg 2>/dev/null
-  # #29: 60 chars at ~1.2s of framework work per keystroke ≈ 74s — over the old
-  # flat 70s cap; the payload-scaled budget must let it finish. (~75s here.)
-  "${CLI[@]}" type "x=type" '#heavy' "$(printf 'h%.0s' {1..60})" >"$OUT/type-heavy.log" 2>&1
-  assert_grep "heavy editor: long type survives past the old 70s cap" "$OUT/type-heavy.log" 'typed 60 chars'
+  # #29: 1000 chars × the editor's 80ms per keystroke ≥ 80s (measured ~81ms/key)
+  # — over the old flat 70s cap, inside the payload-scaled 170s budget. The old
+  # shape (60 chars × 1.2s ≈ 74s against a 76s budget) failed on a 2s wobble and
+  # read as a regression. The elapsed check keeps it testing the cap at all.
+  local t0=$SECONDS
+  "${CLI[@]}" type "x=type" '#steady' "$(printf 'h%.0s' {1..1000})" >"$OUT/type-heavy.log" 2>&1
+  local took=$((SECONDS - t0))
+  assert_grep "heavy editor: long type survives past the old 70s cap" "$OUT/type-heavy.log" 'typed 1000 chars'
+  if [ "$took" -gt 70 ]; then ok "heavy editor: the type really outlasted 70s (${took}s)"; else bad "heavy editor: the type took ${took}s — under 70s it no longer tests the cap; raise the payload or the fixture cost"; fi
   # #34: clear — the only programmatic emptying path. Plain CE and the
   # preventDefault-ing editor take the native Selection+execCommand delete;
   # the execCommand-blocking editor (the vc.ru symptom) forces the DOM-removal
