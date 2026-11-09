@@ -843,7 +843,9 @@ test('wait --js timeout names the last value or the last error', async () => {
 // --- Links (A2): the real Links section in a vm with a fake WebSocket.
 const linksSource = source.slice(source.indexOf('// --- Links ---'), source.indexOf('// --- Driven-tab marking'));
 
-function linksHarness({ owners = new Map(), driven = [], idReady = Promise.resolve() } = {}) {
+const commandsSource = fs.readFileSync(new URL('../extension/commands.js', import.meta.url), 'utf8');
+
+function linksHarness({ owners = new Map(), driven = [], idReady = Promise.resolve(), cloud, handle, fetchImpl } = {}) {
   const sockets = [];
   const logs = [];
   const timers = [];
@@ -852,30 +854,41 @@ function linksHarness({ owners = new Map(), driven = [], idReady = Promise.resol
   let alarm;
   class FakeWS {
     static OPEN = 1;
-    constructor(url) { this.url = url; this.readyState = 0; this.sent = []; sockets.push(this); }
-    send(data) { this.sent.push(JSON.parse(data)); }
+    constructor(url, protocols) { this.url = url; this.protocols = protocols; this.readyState = 0; this.sent = []; sockets.push(this); }
+    send(data) { this.sent.push(data === 'ping' ? data : JSON.parse(data)); }
     // A browser fires onclose asynchronously — by then connect() has moved link.socket on.
-    close() { this.readyState = 3; setImmediate(() => this.onclose?.()); }
+    close() { this.readyState = 3; setImmediate(() => this.onclose?.({ code: 1000, reason: '' })); }
     open() { this.readyState = 1; this.onopen(); }
-    drop() { this.readyState = 3; this.onclose(); }
-    recv(obj) { return this.onmessage({ data: JSON.stringify(obj) }); }
+    drop(code = 1006, reason = '') { this.readyState = 3; this.onclose({ code, reason }); }
+    recv(obj) { return this.onmessage({ data: typeof obj === 'string' ? obj : JSON.stringify(obj) }); }
   }
   const drivenTabs = new Set(driven);
+  const storage = { cloud };
+  const created = [];
+  const intervals = [];
   const context = vm.createContext({
     WS_URL: 'ws://127.0.0.1:9333/ws', BOOT_TS_P: Promise.resolve(123), PROFILE_ID: 'pid', PROFILE_NAME: 'oak', INSTALL_TYPE: 'dev',
     idReady, installReady: Promise.resolve(), WebSocket: FakeWS, crypto: { randomUUID: () => 'req-1' },
     setTimeout: (fn, ms) => timers.push({ fn, ms }), clearTimeout() {},
-    chrome: { runtime: { getManifest: () => ({ version: '9.9.9' }) }, alarms: { create() {}, onAlarm: { addListener: (fn) => { alarm = fn; } } } },
+    setInterval: (fn, ms) => intervals.push({ fn, ms }) && intervals.length, clearInterval() {},
+    URL, fetch: fetchImpl,
+    chrome: {
+      runtime: { getManifest: () => ({ version: '9.9.9' }) }, alarms: { create() {}, onAlarm: { addListener: (fn) => { alarm = fn; } } },
+      storage: { local: { get: async (k) => ({ [k]: storage[k] }), set: async (o) => Object.assign(storage, structuredClone(o)) } },
+      tabs: { create: async (o) => created.push(o) },
+    },
     logLine: (line) => logs.push(line), drivenTabs, ownerOf: (tabId) => (drivenTabs.has(tabId) ? owners.get(tabId) || 'local' : null),
     inflight: new Map(), pillBusy: new Map(), tabActivity: new Map(), idleLabel: () => 'AI idle',
     pillWrite: (tabId, [label]) => painted.push([tabId, label]),
-    handle: async (msg) => { handled.push({ ...msg }); return 'ok'; },
+    handle: async (msg) => { handled.push({ ...msg }); return handle ? handle(msg) : 'ok'; },
+    wrapErr: (e) => String(e?.message ?? e), errText: (e) => String(e?.message ?? e),
     pageErrorsFor: async () => null, currentActivity: () => false,
   });
-  vm.runInContext(linksSource + '\nthis.links = links; this.linkOpen = linkOpen;', context);
+  vm.runInContext(commandsSource, context); // the worker's importScripts('commands.js')
+  vm.runInContext(linksSource + '\nthis.links = links; this.linkOpen = linkOpen; this.cloudState = cloudState; this.cloudPair = cloudPair; this.connect = connect;', context);
   const flush = () => new Promise((r) => setImmediate(r));
   const fire = (ms) => timers.splice(0).filter((t) => t.ms === ms || (timers.push(t), false)).forEach((t) => t.fn());
-  return { context, sockets, timers, handled, painted, logs, flush, fire, alarm: () => alarm() };
+  return { context, sockets, timers, handled, painted, logs, flush, fire, alarm: () => alarm(), storage, created, intervals };
 }
 
 test('links: boot dials local with its handshake query, journal queues until open', async () => {
@@ -1044,4 +1057,213 @@ test('ownership: a foreign mark cannot launder the human\'s ⏏ reclaim', async 
   context.tabOwner.set(8, 'cloud');
   await assert.rejects(context.findTab({ type: 'mark', urlMatch: 'b.test', _link: 'local' }), /driven through the cloud link/);
   assert.equal(context.humanReclaimed.has(8), true);
+});
+
+// --- Cloud arm: the hub link speaks MCP over the same commands ---------------
+const plain = (v) => JSON.parse(JSON.stringify(v)); // vm-realm objects fail deepStrictEqual's prototype check
+const PAIRED = { hub: 'http://localhost:8787', token: 'cba_dGVzdA.' + 'x'.repeat(43), enabled: true };
+async function cloudArm(opts = {}) {
+  const h = linksHarness({ cloud: PAIRED, ...opts });
+  await h.flush();
+  const ws = h.sockets.find((s) => s.url.includes('/arm'));
+  ws.open();
+  let n = 0;
+  const call = async (name, args) => {
+    const id = ++n;
+    await ws.recv({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } });
+    await h.flush();
+    const reply = ws.sent.find((m) => m.id === id);
+    assert.ok(reply, 'tools/call must be answered');
+    return reply.result;
+  };
+  const text = (r) => r.content.filter((c) => c.type === 'text').map((c) => c.text).join('\n');
+  return { ...h, ws, call, text };
+}
+
+test('cloud: dormant until paired — no hub, no token, no dial (boot or alarm)', async () => {
+  const h = linksHarness();
+  await h.flush();
+  h.alarm();
+  await h.flush();
+  assert.equal(h.sockets.filter((s) => s.url.includes('/arm')).length, 0);
+  assert.equal(h.context.cloudState().paired, false);
+});
+
+test('cloud: a paired profile dials /arm with its token as a subprotocol, says hello and heartbeats', async () => {
+  const { ws, intervals } = await cloudArm();
+  assert.equal(ws.url, 'ws://localhost:8787/arm');
+  assert.deepEqual(plain(ws.protocols), ['cloud-bridge.v1', 'cbtoken.' + PAIRED.token]);
+  assert.equal(ws.sent[0].method, 'arm/hello');
+  assert.deepEqual({ ...ws.sent[0].params, offlineHint: undefined }, { kind: 'chrome', name: 'oak', version: '9.9.9', selector: 'profile', offlineHint: undefined });
+  assert.match(ws.sent[0].params.offlineHint, /profile chrome-bridge calls "oak".*Cloud is on/);
+  assert.equal(intervals[0].ms, 20000);
+  intervals[0].fn();
+  assert.equal(ws.sent.at(-1), 'ping');
+});
+
+test('cloud: tools/list offers chrome and chrome_batch, with the browser commands named', async () => {
+  const { ws, flush } = await cloudArm();
+  await ws.recv({ jsonrpc: '2.0', id: 'l1', method: 'tools/list' });
+  await flush();
+  const tools = ws.sent.find((m) => m.id === 'l1').result.tools;
+  assert.deepEqual(tools.map((t) => t.name), ['chrome', 'chrome_batch']);
+  assert.match(tools[0].description, /Commands: .*\bsnap\b.*\bclick\b/);
+  assert.doesNotMatch(tools[0].description, /\bextreload\b|\bstart\b/, 'local-only commands are not advertised');
+});
+
+test('cloud: a command line runs through the CLI grammar, tagged with the cloud link', async () => {
+  const { call, handled, text } = await cloudArm();
+  const r = await call('chrome', { command: 'snap github' });
+  assert.equal(r.isError, false);
+  assert.equal(text(r), 'ok');
+  assert.equal(handled[0].type, 'snap');
+  assert.equal(handled[0].urlMatch, 'github');
+  assert.equal(handled[0]._link, 'cloud');
+});
+
+test('cloud: refusals name the next step and run nothing', async () => {
+  const { call, handled, text, ws, flush } = await cloudArm();
+  assert.match(text(await call('chrome', { command: 'start' })), /^start manages the user's local chrome-bridge install; it isn't available through Cloud Bridge\.$/);
+  assert.match(text(await call('chrome', { command: 'frobnicate x' })), /^Unknown command: frobnicate\. Commands: tabs, /);
+  assert.match(text(await call('chrome', { command: '--profile elm tabs' })), /--profile elm is not this Chrome \("oak"\)/);
+  assert.match(text(await call('chrome', { command: 'upload github @e1 a.png' })), /file uploads are not available here/);
+  assert.match(text(await call('chrome', { command: 'fetch github https://github.com/x --out f.json' })), /fetch --out writes a file on the user's machine/);
+  await ws.recv({ jsonrpc: '2.0', method: 'arm/policy', params: { commands: { click: 'off', eval: 'ask' } } });
+  await flush();
+  const off = await call('chrome', { command: 'click github @e1' });
+  assert.equal(off.isError, true);
+  assert.match(text(off), /^click is turned off for Cloud Bridge in the user's settings, nothing ran\./);
+  assert.match(text(await call('chrome', { command: 'wait github --js "1"' })), /^eval needs the user's confirmation/, 'wait --js runs page code: eval\'s rule covers it');
+  assert.equal(text(await call('chrome', { command: 'wait github --text Saved' })), 'ok', 'wait without --js is not page code');
+  assert.deepEqual(handled.map((m) => m.type), ['wait']);
+});
+
+test('cloud: chrome_batch runs in order and stops at the first failure', async () => {
+  const { call, handled, text } = await cloudArm();
+  const r = await call('chrome_batch', { lines: ['tabs', '# a comment', 'start', 'tabs'] });
+  assert.equal(r.isError, true);
+  assert.deepEqual(handled.map((m) => m.type), ['tabs']);
+  assert.match(text(r), /^\$ tabs\nok\n\$ start\nstart manages .*\nstopped here: the 1 line\(s\) after it did not run$/s);
+});
+
+test('cloud: a failing command, an empty snap and a thrown handle come back as tool errors', async () => {
+  const { call, text } = await cloudArm({ handle: (msg) => { if (msg.type === 'click') throw new Error('no tab matching "x"'); return ''; } });
+  const failed = await call('chrome', { command: 'click x @e1' });
+  assert.equal(failed.isError, true);
+  assert.equal(text(failed), 'no tab matching "x"');
+  const empty = await call('chrome', { command: 'snap x' });
+  assert.equal(empty.isError, true);
+  assert.match(text(empty), /^empty tree — the page is likely still loading/);
+});
+
+test('cloud: shot comes back as MCP image content', async () => {
+  const { call } = await cloudArm({ handle: () => 'data:image/png;base64,iVBORw0KGgo=' });
+  const r = await call('chrome', { command: 'shot github page.png' });
+  assert.deepEqual(plain(r), { content: [{ type: 'image', data: 'iVBORw0KGgo=', mimeType: 'image/png' }], isError: false });
+});
+
+test('cloud: fetch with no matching tab rides a scratch tab on the target origin, then closes it (cli.mjs #35)', async () => {
+  let fetches = 0;
+  const handle = (msg) => {
+    if (msg.type === 'fetch' && fetches++ === 0) throw new Error('no tab matching "api.example.com"');
+    if (msg.type === 'open') return { id: 5 };
+    if (msg.type === 'fetch') return { status: 200, ct: 'application/json', body: '{"a":1}' };
+    return 'ok';
+  };
+  const { call, handled, text } = await cloudArm({ handle });
+  const r = await call('chrome', { command: 'fetch api.example.com https://api.example.com/v1' });
+  assert.deepEqual(handled.map((m) => [m.type, m.urlMatch ?? m.url]), [['fetch', 'api.example.com'], ['open', 'https://api.example.com/v1'], ['fetch', 'id:5'], ['close', 'id:5']]);
+  assert.equal(text(r), 'no tab matching "api.example.com" — opened a scratch tab on api.example.com for this fetch\n200 application/json\n{"a":1}');
+});
+
+test('cloud: pong and unreadable frames are ignored without dropping the link', async () => {
+  const { ws, flush, logs } = await cloudArm();
+  await ws.recv('pong');
+  await ws.recv('{not json');
+  await flush();
+  assert.equal(ws.readyState, 1);
+  assert.deepEqual(logs, ['cloud: unreadable hub frame ignored']);
+});
+
+test('cloud: a 4401 close unpairs the profile and stops redialing', async () => {
+  const { ws, storage, sockets, timers, flush, alarm, context } = await cloudArm();
+  ws.drop(4401, 'unknown or revoked arm token: pair this arm again');
+  await flush();
+  assert.equal(storage.cloud.token, '');
+  assert.equal(storage.cloud.enabled, false);
+  assert.match(storage.cloud.notice, /Pair it again/);
+  timers.splice(0).forEach((t) => t.fn());
+  alarm();
+  await flush();
+  assert.equal(sockets.filter((s) => s.url.includes('/arm')).length, 1, 'no redial after an unpair');
+  assert.equal(context.cloudState().paired, false);
+});
+
+test('cloud: pairing starts a device code, opens the approval tab, polls, then dials with the token', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    const path = new URL(url).pathname;
+    calls.push([path, JSON.parse(init.body)]);
+    const body = path === '/pair/start'
+      ? { code: 'ABCD-EFGH', pollToken: 'pt', verificationUri: 'http://localhost:8787/pair?code=ABCD-EFGH', interval: 3, expiresIn: 600 }
+      : calls.filter((c) => c[0] === '/pair/poll').length === 1 ? { status: 'pending' } : { status: 'approved', armToken: 'cba_new.' + 'y'.repeat(43), armUrl: 'ws://localhost:8787/arm' };
+    return { status: 200, json: async () => body };
+  };
+  const h = linksHarness({ fetchImpl });
+  await h.flush();
+  assert.deepEqual(plain(await h.context.cloudPair('ftp://nope')), { ok: false, error: 'Enter the Cloud Bridge hub URL, e.g. https://cloud-bridge.<you>.workers.dev' });
+  const started = await h.context.cloudPair('http://localhost:8787/some/path');
+  assert.equal(started.ok, true);
+  assert.deepEqual(started.pairing.code, 'ABCD-EFGH');
+  assert.deepEqual(calls[0], ['/pair/start', { kind: 'chrome', name: 'oak' }]);
+  assert.deepEqual(plain(h.created), [{ url: 'http://localhost:8787/pair?code=ABCD-EFGH' }]);
+  for (let i = 0; i < 2; i++) {
+    h.fire(3000);
+    await h.flush();
+    await h.flush();
+  }
+  assert.deepEqual(calls.slice(1).map((c) => c[1]), [{ code: 'ABCD-EFGH', pollToken: 'pt' }, { code: 'ABCD-EFGH', pollToken: 'pt' }]);
+  assert.equal(h.storage.cloud.hub, 'http://localhost:8787');
+  assert.equal(h.storage.cloud.enabled, true);
+  assert.equal(h.storage.cloud.pairing, null);
+  await h.flush();
+  const arm = h.sockets.find((s) => s.url.includes('/arm'));
+  assert.deepEqual(plain(arm?.protocols), ['cloud-bridge.v1', 'cbtoken.cba_new.' + 'y'.repeat(43)]);
+});
+
+test('cloud: doctor flattens the extension reply like server.mjs, and --fix releases residue (review finding)', async () => {
+  const handle = (msg) => (msg.type === 'doctor' ? { rows: [{ id: 3, url: 'https://a/', grouped: true }, { id: 4, url: 'https://b/', driven: true }], stale: [99] } : 'ok');
+  const { call, handled, text } = await cloudArm({ handle });
+  const r = await call('chrome', { command: 'doctor --fix' });
+  assert.equal(r.isError, false, text(r));
+  assert.deepEqual(handled.map((m) => [m.type, m.urlMatch]), [['doctor', undefined], ['release', 'id:3']]);
+  assert.deepEqual(JSON.parse(text(r)), [{ id: 3, url: 'https://a/', grouped: true, fixed: 'released' }, { staleMemory: [99], pruned: true }]);
+});
+
+test('cloud: the open/close/release the arm runs itself obey the policy too (review finding)', async () => {
+  const handle = (msg) => {
+    if (msg.type === 'fetch') throw new Error('no tab matching "zzz"');
+    if (msg.type === 'doctor') return { rows: [{ id: 3, url: 'https://a/', grouped: true }], stale: [] };
+    return 'ok';
+  };
+  const { call, handled, text, ws, flush } = await cloudArm({ handle });
+  await ws.recv({ jsonrpc: '2.0', method: 'arm/policy', params: { commands: { open: 'off', release: 'off' } } });
+  await flush();
+  const f = await call('chrome', { command: 'fetch zzz https://evil.example/x' });
+  assert.equal(f.isError, true);
+  assert.match(text(f), /^no tab matching "zzz"\nA scratch tab on evil\.example would need it: open is turned off/);
+  const d = await call('chrome', { command: 'doctor --fix' });
+  assert.match(text(d), /"fixed":"release failed: release is turned off/);
+  assert.deepEqual(handled.map((m) => m.type), ['fetch', 'doctor'], 'no open, no release ran');
+});
+
+test('cloud: a failed re-pair keeps the paired hub (review finding)', async () => {
+  const fetchImpl = async () => { throw new TypeError('Failed to fetch'); };
+  const h = linksHarness({ cloud: PAIRED, fetchImpl });
+  await h.flush();
+  await assert.rejects(h.context.cloudPair('http://typo.example'), /Failed to fetch/);
+  assert.equal(h.context.cloudState().hub, 'http://localhost:8787');
+  h.context.connect(h.context.links.get('cloud'));
+  await h.flush();
+  assert.equal(h.sockets.at(-1).url, 'ws://localhost:8787/arm', 'the token still goes to the hub that issued it');
 });
