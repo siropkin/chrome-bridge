@@ -1066,6 +1066,10 @@ try {
       '#61: shot rethrows the real error on a foreign debugger (a doomed fallback would steal the human\'s view) and on every permanent unscriptable wall (chrome://, Web Store — the masked fallback error missed #37\'s unmark and left a pill-less marked tab)'
     );
     assert(
+      bg.includes("couldn't check whether a modal dialog opened") && !bg.includes("modalNoteSrc(m0)).catch(() => '')"),
+      '#51: a trusted click whose modal check fails says so (and logs it) instead of reading as "no modal opened" — a full e2e once missed the note with no trace'
+    );
+    assert(
       bg.includes('/No tab with id: \\d|The frame was removed/.test(s)'),
       'wrapErr matches Chrome\'s raw dead-tab error case-SENSITIVELY — an /i version ate findTab\'s curated re-copy remedy (found by single-profile CI; two local profiles route through the server probe and mask it)'
     );

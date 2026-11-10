@@ -4310,7 +4310,12 @@ async function trustedInput(tab, msg, beforeDispatch = () => {}) {
         beforeDispatch();
         await cdpMouseClick(tab.id, p.cx, p.cy, msg.dbl);
         res = `clicked ${msg.target} (trusted${msg.dbl ? ', double' : ''})`;
-        res += await runEval(tab.id, modalNoteSrc(m0)).catch(() => '');
+        // A failed check is not "no modal opened": say so and leave a trace
+        // (a stress run once missed this note and nothing showed why).
+        res += await runEval(tab.id, modalNoteSrc(m0)).catch((e) => {
+          logLine('trusted click: modal check failed — ' + errText(e));
+          return " — couldn't check whether a modal dialog opened (" + errText(e) + '): snap before assuming the click completed';
+        });
       } else if (msg.type === 'hover') {
         const p = await point(msg.target, false, false);
         if (!p.inBanner) suppression = await removeBannerForCapture(tab.id);
