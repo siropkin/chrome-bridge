@@ -217,6 +217,7 @@ try {
       return respond({ echo: msg.code.length, world: msg.world, match: msg.urlMatch, label: msg.label || null });
     }
     if (msg.type === 'big') return respond('x'.repeat(3 * 1024 * 1024)); // 3 MB — exercises 64-bit frames
+    if (msg.type === 'echo-text') return respond(msg.text);
     if (msg.type === 'shot') {
       lastShot = msg;
       // --diff returns the {note, data} shape the CLI writes to the file
@@ -681,6 +682,11 @@ try {
   const evSyntax = await cli('eval', 'example.com', '(()=>{return ({probe:, fn:()=>.click()})})()');
   assert(evSyntax.status === 1 && /line 1, column \d+/.test(evSyntax.stderr) && evSyntax.stderr.includes('stdin') && evSyntax.stderr.includes('before retrying') && !evSyntax.stderr.includes('probe:,'), 'cli eval: malformed JavaScript gets a location and repair guidance without echoing code', evSyntax.stderr);
   const evMultilineSyntax = await cliStdin('const privateValue = "do-not-print";\n({probe:,})', 'eval', 'example.com', '-');
+  // stdin arrives in pipe-sized chunks; per-chunk decoding corrupted a
+  // multi-byte character that straddled two of them.
+  const wideCode = `'${'€я😀'.repeat(40_000)}'`;
+  const evWide = await cliStdin(wideCode, 'eval', 'example.com', '-');
+  assert(evWide.status === 0 && JSON.parse(evWide.stdout).echo === wideCode.length, 'cli: multi-byte stdin survives pipe chunk boundaries intact', evWide.stdout.slice(0, 200) + evWide.stderr);
   assert(evMultilineSyntax.status === 1 && evMultilineSyntax.stderr.includes('line 2, column') && !evMultilineSyntax.stderr.includes('do-not-print'), 'cli eval: stdin syntax hints locate multiline errors without echoing input', evMultilineSyntax.stderr);
   const evRuntimeSyntax = await cli('eval', 'example.com', 'JSON.parse("{")');
   assert(evRuntimeSyntax.status === 1 && evRuntimeSyntax.stderr.includes('SyntaxError') && !evRuntimeSyntax.stderr.includes('Local syntax check'), 'cli eval: runtime parsing errors are not mislabeled as malformed input', evRuntimeSyntax.stderr);
@@ -693,6 +699,13 @@ try {
   });
   const big = await bigRes.json();
   assert(big.ok && big.result.length === 3 * 1024 * 1024, 'server: 3MB frame round-trip');
+
+  // A command body arrives in several chunks; decoding each chunk on its own
+  // turned a multi-byte character split across a boundary into U+FFFD — a
+  // large paste/fill of non-ASCII text reached the page corrupted.
+  const wide = '€я😀'.repeat(40_000);
+  const wideRes = await (await fetch(`http://127.0.0.1:${PORT}/cmd`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'echo-text', text: wide }) })).json();
+  assert(wideRes.ok && wideRes.result === wide, 'server: a multi-byte command body survives chunk boundaries intact', wideRes.ok ? `${(wideRes.result.match(/\uFFFD/g) || []).length} U+FFFD` : wideRes.error);
 
   // Local requests are a control boundary too: reject an oversized command
   // before buffering/parsing it, then prove the live extension seat survived.

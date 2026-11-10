@@ -778,7 +778,7 @@ const server = http.createServer((req, res) => {
     // ECONNRESET on Node 18 CI, whose default agent sends Connection: close).
     // Drain-and-discard, then reject — one path for declared and chunked.
     const declared = Number(req.headers['content-length']);
-    let body = '';
+    const chunks = [];
     let bytes = 0;
     let tooLarge = Number.isFinite(declared) && declared > MAX_CMD_BYTES;
     req.on('data', (c) => {
@@ -787,7 +787,7 @@ const server = http.createServer((req, res) => {
       // Past the limit: keep draining but stop retaining chunks before an
       // oversized request can consume the server heap.
       if (tooLarge) return;
-      body += c;
+      chunks.push(c);
     });
     req.on('end', async () => {
       if (tooLarge) {
@@ -795,6 +795,8 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify({ ok: false, error: 'command request too large' }));
         return;
       }
+      // Decode once: a multi-byte character can straddle two chunks.
+      const body = Buffer.concat(chunks).toString('utf8');
       let msg, out;
       const t0 = Date.now();
       const meta = {

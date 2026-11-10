@@ -124,9 +124,10 @@ async function cmd(msg, soft) {
 }
 
 async function stdin() {
-  let s = '';
-  for await (const c of process.stdin) s += c;
-  return s.trim();
+  // Decode once: a multi-byte character can straddle two pipe chunks.
+  const chunks = [];
+  for await (const c of process.stdin) chunks.push(c);
+  return Buffer.concat(chunks).toString('utf8').trim();
 }
 
 // The OS clipboard read for `paste` (no explicit -- <text>). BRIDGE_CLIPBOARD
