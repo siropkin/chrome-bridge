@@ -24,6 +24,7 @@ test('diagnostics are opt-in, private, correlated, persistent, bounded, and dele
     logger.client({ type: secret, ok: false, error: 'SyntaxError: ' + secret });
     logger.client({ type: 'click', ok: false, error: 'element not found: @e5 — the page re-rendered since the snap (this node is gone or hidden, no navigation happened); run snap again for fresh refs' });
     logger.client({ type: 'click', ok: false, error: 'tab is hidden — trusted (CDP) input reaches only the foreground tab' });
+    logger.client({ type: 'snap', ok: false, error: 'no tab\'s URL or title contains "8", but a tab in beta has that id — an id goes as id:8 --profile beta; nothing ran' });
     const text = fs.readFileSync(join(directory, 'events.jsonl'), 'utf8');
     const events = text.trim().split('\n').map(JSON.parse);
     assert.equal(text.includes(secret), false);
@@ -32,6 +33,7 @@ test('diagnostics are opt-in, private, correlated, persistent, bounded, and dele
     assert.equal(events[3].outcome.errorCode, 'syntax_error');
     assert.equal(events[4].outcome.errorCode, 'target_stale');
     assert.equal(events[5].outcome.errorCode, 'tab_hidden');
+    assert.equal(events[6].outcome.errorCode, 'tab_missing', 'the bare-number id hint is still a missing tab');
     assert.equal(events[1].caller.test, true);
     assert.equal(fs.statSync(directory).mode & 0o777, 0o700);
     assert.equal(fs.statSync(join(directory, 'events.jsonl')).mode & 0o777, 0o600);

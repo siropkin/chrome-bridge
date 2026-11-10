@@ -438,6 +438,21 @@ async function route(msg, dispatch) {
           .join(', ')}) — usually a service-worker restart; retry the command, or name a profile: --profile <name or id> (see: cli.mjs profiles)`
       );
     if (!live.length) throw new Error('no profile answered — extensions disconnected?');
+    if (!matching.length && /^\d+$/.test(msg.urlMatch)) {
+      // A bare number is a URL/title substring, but it's usually an id copied
+      // from open/tabs output: "run tabs to find it" sent agents after a live tab.
+      const owners = (
+        await Promise.all(
+          live.map(async (p) => {
+            const reply = await ask(seats.get(p.pid), { type: 'probe', urlMatch: `id:${msg.urlMatch}` }, 5_000).catch(() => null);
+            return reply?.ok && reply.result?.length ? p.pid : null;
+          })
+        )
+      ).filter(Boolean);
+      // Ids are unique only inside one Chrome: never point at one profile of several.
+      if (owners.length === 1) throw new Error(`no tab's URL or title contains "${msg.urlMatch}", but a tab in ${seatTag(owners[0])} has that id — an id goes as id:${msg.urlMatch} --profile ${seatTag(owners[0])}; nothing ran`);
+      if (owners.length > 1) throw new Error(`no tab's URL or title contains "${msg.urlMatch}", but tabs in ${owners.map(seatTag).join(', ')} have that id — an id goes as id:${msg.urlMatch} --profile <the profile you got it from>; nothing ran`);
+    }
     if (!matching.length)
       throw new Error(
         /^id:\d+$/.test(msg.urlMatch || '')

@@ -1539,6 +1539,14 @@ test('ownership: a foreign mark cannot launder the human\'s ⏏ reclaim', async 
   assert.equal(context.humanReclaimed.has(8), true);
 });
 
+test('findTab: a bare number that is a live tab\'s id says to write id:<n> (it read "the tab may have navigated")', async () => {
+  const { context, marked } = ownershipHarness();
+  await assert.rejects(context.findTab({ type: 'snap', urlMatch: '8', _link: 'local' }), (e) => e.message === 'no tab\'s URL or title contains "8", but a tab has that id — an id goes as id:8; nothing ran');
+  await assert.rejects(context.findTab({ type: 'snap', urlMatch: '12345', _link: 'local' }), /^Error: no tab matching "12345" — the tab may have navigated/);
+  assert.equal((await context.findTab({ type: 'snap', urlMatch: 'id:8', _link: 'local' })).id, 8);
+  assert.deepEqual(marked, [8], 'only the id: form claimed a tab');
+});
+
 // --- Cloud arm: the hub link speaks MCP over the same commands ---------------
 const plain = (v) => JSON.parse(JSON.stringify(v)); // vm-realm objects fail deepStrictEqual's prototype check
 const PAIRED = { hub: 'http://localhost:8787', token: 'cba_dGVzdA.' + 'x'.repeat(43), enabled: true };

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 const COMMANDS = new Set('open navigate close mark release activate unemulate tabs doctor swlogs extreload snap click drag dialog fill clear type paste press hover scroll upload fetch ask wait eval shot net perf measure console grid note emulate resize swipe health profiles start stop watch history batch'.split(' '));
 const ERROR_CODES = [
-  ['tab_missing', /no tab with id:|no tab matching/],
+  ['tab_missing', /no tab with id:|no tab matching|no tab's URL or title contains/],
   ['tab_ambiguous', /tabs match|matches tabs in|multiple profiles|several profiles/],
   ['tab_hidden', /tab is hidden|occluded|foreground|minimized/],
   ['page_restricted', /off-limits|blocks cross-extension|cannot access/i],

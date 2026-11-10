@@ -5232,6 +5232,10 @@ async function findTab(msg) {
   if (!matches.length) {
     if (/^id:\d+$/.test(msg.urlMatch || ''))
       throw new Error(`no tab with ${msg.urlMatch} — tab ids die on browser restart and change on prerender; re-copy it from the toolbar popup`);
+    // A bare number is a URL/title substring, but it's usually an id copied
+    // from open/tabs output: "the tab may have navigated" sent agents to re-find a live tab.
+    if (/^\d+$/.test(msg.urlMatch || '') && tabs.some((t) => t.id === Number(msg.urlMatch)))
+      throw new Error(`no tab's URL or title contains "${msg.urlMatch}", but a tab has that id — an id goes as id:${msg.urlMatch}; nothing ran`);
     throw new Error(`no tab matching "${msg.urlMatch}" — the tab may have navigated (the match is a URL/title substring); run tabs to re-find it`);
   }
   // Never choose one tab from an ambiguous substring match. The old

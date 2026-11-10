@@ -231,7 +231,7 @@ try {
     if (msg.type === 'probe')
       return respond(
         [{ id: 1, url: 'https://example.com/', lastAccessed: 1 }, { id: 2, url: 'https://dupe.example/a', lastAccessed: 2 }].filter((t) =>
-          t.url.includes(msg.urlMatch)
+          /^id:\d+$/.test(msg.urlMatch) ? t.id === Number(msg.urlMatch.slice(3)) : t.url.includes(msg.urlMatch)
         )
       );
     if (msg.type === 'eval') {
@@ -1949,8 +1949,8 @@ try {
     if (msg.type === 'ping') return respond('pong');
     if (msg.type === 'probe')
       return respond(
-        [{ id: 9, url: 'https://sample.org/', lastAccessed: 1 }, { id: 10, url: 'https://dupe.example/b', lastAccessed: 2 }].filter((t) =>
-          t.url.includes(msg.urlMatch)
+        [{ id: 9, url: 'https://sample.org/', lastAccessed: 1 }, { id: 10, url: 'https://dupe.example/b', lastAccessed: 2 }, { id: 2, url: 'https://zz-other-chrome.invalid/', lastAccessed: 3 }].filter((t) =>
+          /^id:\d+$/.test(msg.urlMatch) ? t.id === Number(msg.urlMatch.slice(3)) : t.url.includes(msg.urlMatch)
         )
       );
     if (msg.type === 'tabs') return respond([{ id: 9, url: 'https://sample.org/', title: 'Sample B', driven: false }]);
@@ -1986,6 +1986,16 @@ try {
 
     const badProfile = await cli('--profile', 'nope', 'snap', 'example.com');
     assert(badProfile.status !== 0 && badProfile.stderr.includes("no connected profile matching 'nope'"), 'multi-seat: unknown --profile fails loudly', badProfile.stdout + badProfile.stderr);
+
+    // A bare number that is a live tab's id: the id form and its profile, not
+    // "run tabs to find it" (S2c run: `snap <id from open>` sent the agent hunting).
+    const bareId = await cli('snap', '9');
+    assert(bareId.status !== 0 && bareId.stderr.includes('no tab\'s URL or title contains "9", but a tab in beta has that id — an id goes as id:9 --profile beta; nothing ran'), 'multi-seat: a bare number that is a tab id names the id: form and its profile', bareId.stdout + bareId.stderr);
+    // Ids are unique only inside one Chrome: two profiles holding id 2 get both named, never one picked (review).
+    const bareTwo = await cli('snap', '2');
+    assert(bareTwo.status !== 0 && /but tabs in (alph, beta|beta, alph) have that id — an id goes as id:2 --profile <the profile you got it from>; nothing ran/.test(bareTwo.stderr), 'multi-seat: a bare id held by two profiles names both, picks neither', bareTwo.stdout + bareTwo.stderr);
+    const bareNone = await cli('snap', '424242');
+    assert(bareNone.status !== 0 && bareNone.stderr.includes('no tab matching "424242" in any connected profile'), 'multi-seat: a bare number that is no tab id keeps the plain no-match error', bareNone.stdout + bareNone.stderr);
 
     // open has no <match> to probe — needs --profile when several seats exist
     const openRefused = await cli('open', 'https://example.org/');
