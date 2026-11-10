@@ -1,7 +1,7 @@
 # Chrome Web Store listing — canonical copy
 
 Paste-ready text for the Chrome Web Store console (no API for these fields — copy by hand).
-Keep in sync with README.md's pitch sections. Last synced: 2026-11-07 for v1.30.6 (tab reference carries the profile name, setup prompt sits under Install, new STAYING UP TO DATE section for the update banner + `cli.mjs update`).
+Keep in sync with README.md's pitch sections. Last synced: 2026-11-10 for v1.34.5 (optional Cloud AI apps bullet; PRIVACY names the developer-operated Cloud Bridge hub — the v1.30.6 text said there was no developer-operated relay, which 1.34 makes untrue). The full outcome-first rewrite is cloud-bridge plan step F1.
 
 ## Title (= manifest `name`, ships with the extension — not a console field)
 
@@ -24,6 +24,7 @@ WHAT YOU CAN DO
 • Inspect network requests, console output, layout measurements and page-performance signals.
 • Use screenshots, mobile emulation and trusted input when a task needs them.
 • Work with a specific existing tab by copying its reference (id:… plus the Chrome profile name) from the extension popup.
+• Optionally let cloud AI apps such as Claude.ai or ChatGPT use this browser through Cloud Bridge (off until you connect it: popup → ⚙ Settings → Cloud AI apps). They reach public web pages only, and you can disconnect at any time.
 
 VISIBLE BROWSER FEEDBACK
 
