@@ -1578,6 +1578,21 @@ try {
   h = await cli('health');
   assert(JSON.parse(h.stdout).ok === true, 'server survives the rebound /stop attempt', h.stdout + h.stderr);
 
+  // /log is the local agent's command feed. A browser tab on 127.0.0.1:9333/log
+  // (an agent on the Cloud Bridge link opened one) read it as its own page (S1).
+  const logReq = (headers) =>
+    new Promise((resolve) => {
+      const r = http.request({ host: '127.0.0.1', port: PORT, path: '/log?since=0', headers: { Host: `127.0.0.1:${PORT}`, ...headers } }, (res) => {
+        res.resume();
+        resolve(res.statusCode);
+      });
+      r.on('error', () => resolve(0));
+      r.end();
+    });
+  assert((await logReq({ 'Sec-Fetch-Site': 'none', 'Sec-Fetch-Dest': 'document', 'Sec-Fetch-Mode': 'navigate' })) === 403, 'server: /log opened in a browser tab → 403');
+  assert((await logReq({ 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Dest': 'empty', 'Sec-Fetch-Mode': 'cors' })) === 403, 'server: /log fetched by a page on the bridge\'s own origin → 403');
+  assert((await logReq({ 'Sec-Fetch-Mode': 'cors' })) === 200, 'server: /log still answers the CLI (Node fetch sends only sec-fetch-mode)');
+
   const rebindWs = await new Promise((resolve) => {
     const s = net.connect(PORT, '127.0.0.1');
     let buf = '';

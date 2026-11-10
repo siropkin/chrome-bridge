@@ -849,7 +849,15 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url.startsWith('/log')) {
     // Read-only feed for `cli.mjs watch`; a page can't read the response
     // cross-origin (no CORS headers), and the Host guard above covers the
-    // DNS-rebinding route to reading it same-origin.
+    // DNS-rebinding route to reading it same-origin. A browser TAB on
+    // http://127.0.0.1:9333/log could still read it as its own page: an agent
+    // on another link (Cloud Bridge) driving such a tab read the local agent's
+    // commands (S1). The CLI's fetch sends neither header.
+    if (req.headers.origin || req.headers['sec-fetch-site'] || req.headers['sec-fetch-dest']) {
+      res.writeHead(403);
+      res.end();
+      return;
+    }
     const since = Number(new URL(req.url, 'http://x').searchParams.get('since') || 0);
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ boot: bootId, lines: activity.filter((a) => a.seq > since) }));
