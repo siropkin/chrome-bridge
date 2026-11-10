@@ -1719,6 +1719,45 @@ test('cloud: pairing starts a device code, opens the approval tab, polls, then d
   assert.deepEqual(plain(arm?.protocols), ['cloud-bridge.v1', 'cbtoken.cba_new.' + 'y'.repeat(43)]);
 });
 
+test('cloud: pairing keeps polling through a busy hub (429 slow_down: 5s slower) or a failing one (5xx) — either used to end it', async () => {
+  const polls = [];
+  const replies = [
+    { status: 429, body: { status: 'slow_down', error: 'slow_down', message: 'Too many polls from this network in the last minute: the code is still waiting; keep polling, 5 seconds slower.' } },
+    { status: 502, body: {} },
+    { status: 200, body: { status: 'pending' } },
+    { status: 200, body: { status: 'approved', armToken: 'cba_new.' + 'y'.repeat(43), armUrl: 'ws://localhost:8787/arm' } },
+  ];
+  const fetchImpl = async (url, init) => {
+    const path = new URL(url).pathname;
+    if (path === '/pair/start') return { status: 200, json: async () => ({ code: 'ABCD-EFGH', pollToken: 'pt', verificationUri: 'http://localhost:8787/pair?code=ABCD-EFGH', interval: 3, expiresIn: 600 }) };
+    if (path !== '/pair/poll') return { status: 200, json: async () => ({ ok: true }) };
+    const r = replies[polls.length];
+    polls.push(JSON.parse(init.body));
+    return { status: r.status, json: async () => r.body };
+  };
+  const h = linksHarness({ fetchImpl });
+  await h.flush();
+  assert.equal((await h.context.cloudPair('http://localhost:8787')).ok, true);
+  const step = async (ms) => {
+    h.fire(ms);
+    for (let i = 0; i < 4; i++) await h.flush();
+  };
+  await step(3000);
+  assert.equal(polls.length, 1);
+  assert.equal(h.storage.cloud.pairing?.code, 'ABCD-EFGH', 'slow_down keeps the code');
+  assert.equal(h.storage.cloud.pairing.interval, 8, 'and polls 5 seconds slower');
+  await step(8000);
+  assert.equal(polls.length, 2);
+  assert.equal(h.storage.cloud.pairing?.code, 'ABCD-EFGH', 'a 5xx keeps the code too');
+  assert.equal(h.storage.cloud.pairing.interval, 8);
+  await step(8000);
+  await step(8000);
+  assert.equal(polls.length, 4);
+  assert.equal(h.storage.cloud.pairing, null);
+  assert.equal(h.storage.cloud.enabled, true);
+  assert.equal(h.storage.cloud.notice, '');
+});
+
 test('cloud: doctor flattens the extension reply like server.mjs, and --fix releases residue (review finding)', async () => {
   const handle = (msg) => (msg.type === 'doctor' ? { rows: [{ id: 3, url: 'https://a/', grouped: true }, { id: 4, url: 'https://b/', driven: true }], stale: [99] } : 'ok');
   const { call, handled, text } = await cloudArm({ handle });

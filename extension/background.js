@@ -988,6 +988,14 @@ async function cloudPollPairing() {
       }
       if (cloudCfg.pairing !== p) return; // cancelled or restarted meanwhile
       if (reply.body.status === 'pending') continue;
+      // A busy or failing hub isn't an answer: the code is still waiting (a 429
+      // or a 5xx used to end the pairing). slow_down (RFC 8628; the hub's
+      // per-network limit) or any 429: poll 5 seconds slower, as the RFC says.
+      const slowDown = reply.body.status === 'slow_down' || reply.status === 429;
+      if (slowDown || reply.status >= 500) {
+        if (slowDown) await saveCloud({ pairing: { ...p, interval: Math.min((p.interval || 3) + 5, 60) } });
+        continue;
+      }
       if (reply.body.status === 'approved' && reply.body.armToken) {
         await saveCloud({ token: reply.body.armToken, enabled: true, pairing: null, notice: '' });
         logLine('cloud: paired with ' + cloudCfg.hub);
