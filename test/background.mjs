@@ -232,7 +232,10 @@ test('cloud links neither act on nor read a tab that ended up off-limits, whatev
   for (const type of ['snap', 'eval', 'shot', 'click', 'net', 'fetch', 'mark'])
     assert.throws(() => context.refuseOffLimitsTab(tabs.get(7), { type, _link: 'cloud' }), /^Error: this tab is on 192\.168\.1\.1, which is on this computer or its local network — .*nothing ran/, type);
   assert.throws(() => context.refuseOffLimitsTab(tabs.get(8), { type: 'snap', _link: 'cloud' }), /this tab is on localhost:8080/, 'a pending navigation counts');
-  for (const type of ['release', 'close', 'unemulate']) assert.doesNotThrow(() => context.refuseOffLimitsTab(tabs.get(7), { type, _link: 'cloud' }), type);
+  // Still showing the router while a public navigation pends: reads would run in the router page (review).
+  assert.throws(() => context.refuseOffLimitsTab({ id: 10, url: 'http://192.168.1.1/', pendingUrl: 'https://attacker.example/hang' }, { type: 'snap', _link: 'cloud' }), /this tab is on 192\.168\.1\.1/);
+  // Backing out stays possible: nav's own target is checked by refuseOffLimits.
+  for (const type of ['release', 'close', 'unemulate', 'navigate']) assert.doesNotThrow(() => context.refuseOffLimitsTab(tabs.get(7), { type, _link: 'cloud' }), type);
   assert.doesNotThrow(() => context.refuseOffLimitsTab(tabs.get(7), { type: 'snap', _link: 'local' }));
   // After an action navigated: a cloud-driven tab's snapshot is withheld; a local one's isn't.
   assert.match(await context.offLimitsLanding(7), /^192\.168\.1\.1 — on this computer or its local network, so Cloud AI apps get no snapshot of it\. Go back/);
@@ -246,6 +249,67 @@ test('cloud links neither act on nor read a tab that ended up off-limits, whatev
   assert.equal(landings.length, 3, 'the --diff verdict, nav --diff and wait --human check before reading the page');
   const fetchSrcCode = source.slice(source.indexOf('async function cmdFetch('), source.indexOf("Network.loadNetworkResource', {"));
   assert.match(fetchSrcCode, /offLimitsUrl\(landed\)[\s\S]*catch \(e\) \{\n\s*if \(e\?\.offLimits\) throw e;/, 'a redirect off-limits is refused, not retried through the browser-network fallback');
+});
+
+function netHarness({ tabUrl = 'https://example.com/' } = {}) {
+  const netSource = source.slice(source.indexOf('// --- Network capture (CDP)'), source.indexOf('// --- Page-side scripts'));
+  const offSource = source.slice(source.indexOf('function privateHost('), source.indexOf('// --- end off-limits'));
+  let listener;
+  const bodies = [];
+  const context = vm.createContext({
+    URL, setTimeout,
+    attachDbg: async () => {}, detachDbg: async () => {},
+    chrome: {
+      debugger: { onEvent: { addListener: (fn) => (listener = fn) }, sendCommand: async (_src, method, params) => { if (method === 'Network.getResponseBody') { bodies.push(params.requestId); return { body: 'BODY-' + params.requestId, base64Encoded: false }; } return {}; } },
+      tabs: { get: async () => ({ id: 7, url: tabUrl }) },
+      runtime: { getManifest: () => ({ version: 'test' }) },
+    },
+  });
+  vm.runInContext(offSource + '\n' + netSource, context);
+  const request = (id, url, type = 'XHR') => {
+    listener({ tabId: 7 }, 'Network.requestWillBeSent', { requestId: id, wallTime: 1, type, request: { url, method: 'GET', headers: {} }, initiator: { type: 'other' } });
+    listener({ tabId: 7 }, 'Network.responseReceived', { requestId: id, response: { status: 200, mimeType: 'application/json', headers: {} } });
+    listener({ tabId: 7 }, 'Network.loadingFinished', { requestId: id, encodedDataLength: 10 });
+  };
+  // Starts a capture, lets it attach, plays the requests, returns its result.
+  const capture = async (publicOnly, play) => {
+    const run = context.captureNetwork(7, 60, undefined, '/', true, false, publicOnly);
+    await new Promise((r) => setTimeout(r, 10));
+    play(request);
+    return run;
+  };
+  return { capture, bodies };
+}
+
+test('cloud net: requests to localhost/LAN are left out, bodies never fetched, and a page that went there withholds the capture (review)', async () => {
+  const lan = (request) => {
+    request('1', 'https://example.com/api/items');
+    request('2', 'http://192.168.1.1/cgi-bin/status.json');
+    request('3', 'http://localhost:9333/log');
+  };
+  {
+    const { capture, bodies } = netHarness();
+    const out = await capture(true, lan);
+    assert.match(out.lines, /GET 200 \/api\/items/);
+    assert.doesNotMatch(out.lines, /cgi-bin|9333|\/log/);
+    assert.deepEqual([...out.har.log.entries.map((e) => e.request.url)], ['https://example.com/api/items']);
+    assert.deepEqual(bodies, ['1'], 'no body is read from a LAN response');
+  }
+  {
+    // The local link sees everything, as before.
+    const { capture, bodies } = netHarness();
+    const out = await capture(false, lan);
+    assert.match(out.lines, /cgi-bin\/status\.json/);
+    assert.deepEqual(bodies, ['1', '2', '3']);
+  }
+  {
+    const { capture } = netHarness();
+    await assert.rejects(capture(true, (request) => { request('1', 'https://example.com/api/items'); request('9', 'http://192.168.1.1/', 'Document'); }), /^Error: the tab went to 192\.168\.1\.1 during the capture, which is on this computer or its local network — .*nothing from the capture comes back\./);
+  }
+  {
+    const { capture } = netHarness({ tabUrl: 'http://10.0.0.1/' });
+    await assert.rejects(capture(true, () => {}), /the tab went to 10\.0\.0\.1 during the capture/);
+  }
 });
 
 test('open: a URL that only downloads (Chrome closes its tab) says so, not "re-find it" (found live)', async () => {

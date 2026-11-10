@@ -155,7 +155,7 @@ Cloud Bridge 让云端 AI 应用(Claude.ai、ChatGPT 和其他远程 MCP 客户�
 - **每条连接拥有它驱动的标签页。** 另一条连接驱动的标签页,对你只读(`snap`、`shot`、`measure`、`console`、`ask`、`perf`、`net`)。在上面执行操作会被拒绝,并给出下一步:打开你自己的标签页。
 - **`tabs`** 会给另一条连接驱动的标签页标上 `"link":"Cloud Bridge"`(或 `"link":"local"`)。**`close --all`** 只关闭你这条连接的标签页,其余的以 `skipped` 和 `note` 报告。
 - **云端 AI 应用每一步有一个工具,另有两个通用工具**:`chrome_tabs`、`chrome_snap`、`chrome_shot`、`chrome_measure`、`chrome_wait`、`chrome_release`(标记为只读,可以一次允许,不必每次确认),以及 `chrome_open`、`chrome_nav`、`chrome_click`、`chrome_fill`、`chrome_press`、`chrome_upload`、`chrome_close`(仍会询问,除非你选择 **Always allow**)。`chrome {command}` 接受任意浏览器命令行,语法与 CLI 相同;`chrome_batch {lines}` 一次往返执行多条。`shot` 直接返回图片(无需文件名)。`upload` 接受公开的 `https://` 链接或文件字节(base64 或 `data:` URL),最大 10 MB;链接由 Cloud Bridge 自己下载(只访问公网地址,不会触及你的内网),也不会读取你的磁盘。`fetch --out <name>` 和 `net --har <name>` 不写入你的磁盘,而是把文件保存在 Cloud Bridge 上,并返回一个下载链接:有效期一小时,只有登录 Cloud Bridge 的你本人能打开(AI 应用也可以通过它的连接读回该文件)。读取你的磁盘或剪贴板、或管理本地安装的命令(不带文本的 `paste`、`start`、`extreload`…)会被拒绝,并说明替代做法。连接了多个配置文件时,每个工具都接受 `profile`。
-- **云端 AI 应用只能访问公共网页**:通过 Cloud Bridge 时,`open`、`nav` 和 `fetch` 会在执行前拒绝 `localhost`、私有和链路本地地址(你的路由器、NAS、本桥接自己的端口)、`*.local` 名称以及 `file:` / `data:` / `view-source:` 页面。即使标签页之后还是到了这类地址(页面自行跳转、点击链接、重定向),云端也无法读取或操作它,只能释放或关闭。本地智能体不受影响。指向你内网的公共域名不会被拦下。
+- **云端 AI 应用只能访问公共网页**:通过 Cloud Bridge 时,`open`、`nav` 和 `fetch` 会在执行前拒绝 `localhost`、私有和链路本地地址(你的路由器、NAS、本桥接自己的端口)、`*.local` 名称以及 `file:` / `data:` / `view-source:` 页面。即使标签页之后还是到了这类地址(页面自行跳转、点击链接、重定向),云端也无法读取或操作它,只能导航回公共页面、释放或关闭(`net` 也会略去发往这类地址的请求)。本地智能体不受影响。指向你内网的公共域名不会被拦下。
 
 ## 对比一览
 

@@ -2478,7 +2478,7 @@ chrome.debugger.onEvent.addListener((src, method, params) => {
     else if (i.type && i.type !== 'other') init = ' ⟵ ' + i.type;
     // req/wallTime/initiator ride the entry for the HAR export (--har) — the
     // payloads are already in this event, keeping them costs nothing.
-    c.set(params.requestId, { t: Date.now(), wall: params.wallTime, method: params.request.method, url: params.request.url, init, req: params.request, initObj: params.initiator });
+    c.set(params.requestId, { t: Date.now(), wall: params.wallTime, method: params.request.method, url: params.request.url, type: params.type, init, req: params.request, initObj: params.initiator });
   } else if (method === 'Network.responseReceived') {
     const r = c.get(params.requestId);
     if (r) { r.status = params.response.status; r.mime = params.response.mimeType; r.res = params.response; }
@@ -2492,7 +2492,7 @@ chrome.debugger.onEvent.addListener((src, method, params) => {
       const textish = /json|text|xml|javascript/.test(r.mime || '');
       const forLine = !!(c.bodyFilter && (c.bodyCount || 0) < 8 && r.url.includes(c.bodyFilter));
       const forHar = !!(c.har && (c.bodyCount || 0) < 50);
-      if (textish && (forLine || forHar)) {
+      if (textish && (forLine || forHar) && !(c.publicOnly && netOffLimits(r.url))) {
         c.bodyCount = (c.bodyCount || 0) + 1;
         r.lineBody = forLine;
         r.bodyP = chrome.debugger.sendCommand(src, 'Network.getResponseBody', { requestId: params.requestId }).catch(() => null);
@@ -2504,9 +2504,11 @@ chrome.debugger.onEvent.addListener((src, method, params) => {
   }
 });
 
-async function captureNetwork(tabId, duration, filter, bodyFilter, har, ws) {
+// publicOnly: the caller is a cloud link (see refuseOffLimitsTab).
+async function captureNetwork(tabId, duration, filter, bodyFilter, har, ws, publicOnly = false) {
   await attachDbg(tabId);
   const c = new Map();
+  c.publicOnly = publicOnly;
   c.bodyFilter = bodyFilter;
   c.har = har;
   c.ws = ws;
@@ -2549,6 +2551,15 @@ async function captureNetwork(tabId, duration, filter, bodyFilter, har, ws) {
   } finally {
     netCollectors.delete(tabId);
     await detachDbg(tabId);
+  }
+  if (publicOnly) {
+    // The page itself went there during the window: everything it loaded is its.
+    const landed = [...c.values()].find((r) => r.type === 'Document' && offLimitsUrl(r.url));
+    const now = await chrome.tabs.get(tabId).catch(() => null);
+    const where = (landed && offLimitsUrl(landed.url)) || (now && tabOffLimits(now));
+    if (where) throw offLimitsError(`the tab went to ${where} during the capture, which`, 'nothing from the capture comes back');
+    for (const [id, r] of c) if (netOffLimits(r.url)) c.delete(id);
+    c.wsFrames = c.wsFrames.filter((f) => !netOffLimits(f.url));
   }
   const lines = [];
   for (const r of c.values()) {
@@ -5230,7 +5241,7 @@ async function cmdFetch(tab, msg) {
     // public name pointing into the LAN: that stays out of reach of this check.)
     const { url: landed, ...reply } = out || {};
     const where = cloudLink(msg._link) && landed ? offLimitsUrl(landed) : null;
-    if (where) throw offLimitsError('the request was redirected to ' + where + ', which');
+    if (where) throw offLimitsError(`the request was redirected to ${where}, which`, 'its answer is withheld');
     return out ? reply : out;
   } catch (e) {
     if (e?.offLimits) throw e;
@@ -5676,9 +5687,10 @@ function offLimitsUrl(raw) {
 
 const cloudLink = (link) => !!link && link !== 'local';
 
-function offLimitsError(where, tab) {
+// subject: the address, or a phrase ending in one ("this tab is on 10.0.0.1, which").
+function offLimitsError(subject, outcome = 'nothing ran') {
   const err = new Error(
-    `${tab ? 'this tab is on ' + where + ', which' : where} is on this computer or its local network — Cloud AI apps reach public web pages only (not localhost, private or link-local addresses, *.local, or file:, data: and view-source: pages); nothing ran. Ask the user to do this with an AI agent on their computer, or to open it themselves`
+    `${subject} is on this computer or its local network — Cloud AI apps reach public web pages only (not localhost, private or link-local addresses, *.local, or file:, data: and view-source: pages); ${outcome}. Ask the user to do this with an AI agent on their computer, or to open it themselves`
   );
   err.offLimits = true;
   return err;
@@ -5697,12 +5709,27 @@ function refuseOffLimits(msg) {
 
 // The same line wherever a tab ends up: an eval setting location, a click on a
 // link, a redirect or the page itself can carry a tab there after the URL check
-// (review). Cloud links neither act on such a tab nor read it — release, close
-// and unemulate stay possible, so they can back out.
+// (review). Cloud links neither act on such a tab nor read it — release, close,
+// unemulate and nav (whose target refuseOffLimits checks) stay possible, so they
+// can back out. Both addresses count: until a pending navigation commits, every
+// read runs in the page still shown.
+const tabOffLimits = (tab) => offLimitsUrl(tab.url) || offLimitsUrl(tab.pendingUrl);
 function refuseOffLimitsTab(tab, msg) {
-  if (!cloudLink(msg._link) || ['release', 'close', 'unemulate'].includes(msg.type)) return;
-  const where = offLimitsUrl(tab.pendingUrl || tab.url);
-  if (where) throw offLimitsError(where, true);
+  if (!cloudLink(msg._link) || ['release', 'close', 'unemulate', 'navigate'].includes(msg.type)) return;
+  const where = tabOffLimits(tab);
+  if (where) throw offLimitsError(`this tab is on ${where}, which`);
+}
+
+// net's capture runs for seconds after that check: requests to such addresses
+// (ws:// too) are left out of what a cloud link gets back (review).
+function netOffLimits(raw) {
+  let u;
+  try {
+    u = new URL(raw);
+  } catch {
+    return false;
+  }
+  return /^(https?|wss?):$/.test(u.protocol) ? privateHost(u.hostname) : u.protocol === 'file:';
 }
 
 // After an action navigated a tab: the snapshot that would come back, withheld
@@ -5710,7 +5737,7 @@ function refuseOffLimitsTab(tab, msg) {
 async function offLimitsLanding(tabId) {
   if (!cloudLink(ownerOf(tabId))) return null;
   const t = await chrome.tabs.get(tabId).catch(() => null);
-  const where = t && offLimitsUrl(t.pendingUrl || t.url);
+  const where = t && tabOffLimits(t);
   return where ? `${where} — on this computer or its local network, so Cloud AI apps get no snapshot of it. Go back (nav <match> <public url>) or close it, or ask the user to continue with an AI agent on their computer` : null;
 }
 // --- end off-limits
@@ -6099,7 +6126,7 @@ async function handle(msg) {
 
   if (msg.type === 'net') {
     const tab = await findTab(msg);
-    return await withCdp(tab.id, () => captureNetwork(tab.id, msg.duration, msg.filter, msg.body, msg.har, msg.ws));
+    return await withCdp(tab.id, () => captureNetwork(tab.id, msg.duration, msg.filter, msg.body, msg.har, msg.ws, cloudLink(msg._link)));
   }
 
   if (msg.type === 'wait') {
