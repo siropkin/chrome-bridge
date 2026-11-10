@@ -9,6 +9,7 @@ import vm from 'node:vm';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { bridgeFetch, listCheckouts, mac, nonce } from '../localauth.mjs';
+import { HOST_NAME, STORE_ID, hostDirs, registerHosts, unpackedId } from '../nativehost.mjs';
 
 // A free ephemeral port per run, not a fixed one: with a fixed port two
 // concurrent selftests (two agents, a pre-push hook beside a manual run)
@@ -33,6 +34,9 @@ const scratchFile = (name) => join(scratch, name);
 // the user's real one. Set on process.env too: in-process signed fetches read it.
 const stateDirectory = join(scratch, 'state');
 process.env.BRIDGE_STATE_DIR = stateDirectory;
+// Where the test server registers its native messaging host (never a real browser's folder).
+const hostDirectory = join(scratch, 'NativeMessagingHosts');
+process.env.BRIDGE_HOST_DIRS = hostDirectory;
 const env = { ...process.env, BRIDGE_PORT: String(PORT), BRIDGE_CMD_TIMEOUT_MS: '750', BRIDGE_DIAGNOSTICS_DIR: diagnosticDirectory, BRIDGE_DIAGNOSTICS_TEST: '1' };
 const authed = (path, init) => bridgeFetch(`http://127.0.0.1:${PORT}`, path, init);
 // The fake extension's handshake version mirrors the repo manifest — cli
@@ -59,8 +63,15 @@ function assert(cond, name, detail) {
 }
 
 // --- tiny WS client (client frames must be masked) ---------------------------
-function wsClient(port, id = 'alpha-test', name, install, vOverride, boot) {
+// Authenticates like the real extension (1.34+): ?c=, check the server's proof
+// with this run's key, answer with ours — resolved once the proof is sent.
+// opts.legacy: an extension from before 1.34 (no ?c=, seated on the grace).
+// opts.key: prove with another key (another OS user); opts.skipVerify: send
+// that proof without checking the server's (an attacker would).
+function wsClient(port, id = 'alpha-test', name, install, vOverride, boot, opts = {}) {
   return new Promise((resolve, reject) => {
+    const cn = nonce();
+    let authed = !!opts.legacy;
     const key = crypto.randomBytes(16).toString('base64');
     const socket = net.connect(port, '127.0.0.1');
     let handshaken = false;
@@ -91,7 +102,7 @@ function wsClient(port, id = 'alpha-test', name, install, vOverride, boot) {
       // ?v=/?id= mirror the real extension's handshake (cli health compares
       // versions against the repo manifest; --profile prefix-matches the id).
       socket.write(
-        `GET /ws?v=${vOverride || MANIFEST_V}&id=${id}${name ? `&name=${name}` : ''}${install ? `&install=${install}` : ''}${boot ? `&boot=${boot}` : ''} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`
+        `GET /ws?v=${vOverride || MANIFEST_V}&id=${id}${name ? `&name=${name}` : ''}${install ? `&install=${install}` : ''}${boot ? `&boot=${boot}` : ''}${opts.legacy ? '' : `&c=${cn}`} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`
       );
     });
     socket.on('data', (chunk) => {
@@ -102,7 +113,7 @@ function wsClient(port, id = 'alpha-test', name, install, vOverride, boot) {
         if (!buf.subarray(0, idx).toString().includes('101')) return reject(new Error('handshake failed'));
         handshaken = true;
         buf = buf.subarray(idx + 4);
-        resolve({ send, onMessage: (fn) => handlers.push(fn), socket });
+        if (authed) resolve({ send, onMessage: (fn) => handlers.push(fn), socket });
       }
       while (buf.length >= 2) {
         const op = buf[0] & 0x0f;
@@ -120,10 +131,21 @@ function wsClient(port, id = 'alpha-test', name, install, vOverride, boot) {
         if (buf.length < off + len) return;
         const payload = buf.subarray(off, off + len).toString();
         buf = buf.subarray(off + len);
-        if (op === 0x1) for (const fn of handlers) fn(JSON.parse(payload));
+        if (op !== 0x1) continue;
+        if (!authed) {
+          const a = JSON.parse(payload);
+          const key = opts.key || fs.readFileSync(join(stateDirectory, 'key'), 'utf8');
+          if (a.type !== 'auth' || (!opts.skipVerify && a.p !== mac(key, 'server', cn, a.s))) return reject(new Error('the server did not prove the key: ' + payload));
+          authed = true;
+          send({ type: 'auth', m: mac(key, 'extension', a.s, cn) });
+          resolve({ send, onMessage: (fn) => handlers.push(fn), socket });
+          continue;
+        }
+        for (const fn of handlers) fn(JSON.parse(payload));
       }
     });
     socket.on('error', reject);
+    socket.on('close', () => reject(new Error('closed before the handshake finished')));
   });
 }
 
@@ -1613,6 +1635,116 @@ try {
     }
   }
 
+  // The extension's half (1.34+): it reads the key through Chrome native
+  // messaging and must prove it on /ws before it gets a seat.
+  {
+    const manifestFile = join(hostDirectory, `${HOST_NAME}.json`);
+    const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
+    assert(
+      manifest.name === HOST_NAME && manifest.type === 'stdio' && manifest.path === join(stateDirectory, 'native-host.sh') &&
+        manifest.allowed_origins.includes(`chrome-extension://${unpackedId(join(ROOT, 'extension'))}/`) && manifest.allowed_origins.includes(`chrome-extension://${STORE_ID}/`) &&
+        (process.platform === 'win32' || (fs.statSync(manifestFile).mode & 0o777) === 0o600),
+      'ext auth: the server registers its native host for this checkout\'s unpacked id and the store build (0600)',
+      JSON.stringify(manifest)
+    );
+    if (process.platform !== 'win32') {
+      // The helper prints one native-messaging frame: 4-byte LE length + JSON.
+      const frame = (out) => (out.length >= 4 ? JSON.parse(out.subarray(4, 4 + out.readUInt32LE(0)).toString()) : null);
+      const run = () => spawnSync(manifest.path, [`chrome-extension://${STORE_ID}/`], { input: Buffer.from([2, 0, 0, 0, 123, 125]) }).stdout;
+      assert(frame(run())?.k === fs.readFileSync(join(stateDirectory, 'key'), 'utf8'), 'ext auth: the helper answers Chrome with this OS user\'s key');
+      fs.renameSync(join(stateDirectory, 'key'), join(stateDirectory, 'key.moved'));
+      const missing = frame(run());
+      fs.renameSync(join(stateDirectory, 'key.moved'), join(stateDirectory, 'key'));
+      assert(missing?.e === 'missing' && !('k' in missing), 'ext auth: without a key the helper says so instead of failing silently', JSON.stringify(missing));
+    }
+    const profileIds = async () => JSON.parse((await cli('health')).stdout).profiles.map((p) => p.id);
+    // Another OS user posing as the extension: it can't make the proof, so it
+    // never gets a seat — not even a free one.
+    const refused = (opts, id) =>
+      new Promise((resolve) => {
+        wsClient(PORT, id, 'ash', null, null, null, opts).then((c) => c.socket.on('close', () => resolve(true)), () => resolve(true));
+        setTimeout(() => resolve(false), 2000);
+      });
+    const other = crypto.randomBytes(32).toString('base64url');
+    const forgedSeen = await refused({ key: other, skipVerify: true }, 'forged-test');
+    assert(forgedSeen && !(await profileIds()).includes('forged-test'), 'ext auth: a client without the key never gets a seat (another OS user posing as the extension)');
+    // Its first frame must be the proof: a reply or event before it closes the socket.
+    const early = await new Promise((resolve) => {
+      const sock = net.connect(PORT, '127.0.0.1', () => sock.write(`GET /ws?v=${MANIFEST_V}&id=early-test&c=${nonce()} HTTP/1.1\r\nHost: 127.0.0.1:${PORT}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${crypto.randomBytes(16).toString('base64')}\r\nSec-WebSocket-Version: 13\r\n\r\n`));
+      let sent = false;
+      sock.on('data', (c) => {
+        if (sent || !c.includes('"type":"auth"')) return;
+        sent = true;
+        const payload = Buffer.from(JSON.stringify({ type: 'event', kind: 'boot' }));
+        const mask = crypto.randomBytes(4);
+        sock.write(Buffer.concat([Buffer.from([0x81, 0x80 | payload.length]), mask, payload.map((b, i) => b ^ mask[i & 3])]));
+      });
+      sock.on('close', () => resolve(true));
+      setTimeout(() => resolve(false), 2000);
+    });
+    assert(early && !(await profileIds()).includes('early-test'), 'ext auth: anything but the proof as the first frame closes the socket, no seat');
+    // An extension from before 1.34 (no ?c=): seated on the grace, flagged in health.
+    const legacy = await wsClient(PORT, 'legacy-test', 'elm', 'store', null, null, { legacy: true });
+    let h = JSON.parse((await cli('health')).stdout);
+    const row = h.profiles.find((p) => p.id === 'legacy-test');
+    assert(row?.legacy === true && h.warn.some((w) => w.startsWith('profile elm runs chrome-bridge extension') && w.includes('update it')) && !h.profiles.find((p) => p.id === 'alpha-test').legacy, 'ext auth: a pre-1.34 extension is still seated (grace), flagged legacy with a ⚠ naming the update', JSON.stringify(h));
+    legacy.socket.destroy();
+    await new Promise((r) => setTimeout(r, 100));
+    // An extension Chrome gave no key: &nokey=<why> → refused before the
+    // upgrade, the helper registered again (here: rewritten), health says why.
+    fs.rmSync(manifestFile);
+    const noUpgrade = await new Promise((resolve) => {
+      const sock = net.connect(PORT, '127.0.0.1', () => sock.write(`GET /ws?v=${MANIFEST_V}&id=keyless-test&name=oak&c=${nonce()}&nokey=forbidden HTTP/1.1\r\nHost: 127.0.0.1:${PORT}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${crypto.randomBytes(16).toString('base64')}\r\nSec-WebSocket-Version: 13\r\n\r\n`));
+      let out = '';
+      sock.on('data', (c) => (out += c));
+      sock.on('close', () => resolve(out));
+      sock.on('error', () => resolve(out));
+    });
+    h = JSON.parse((await cli('health')).stdout);
+    assert(!noUpgrade.includes('101') && fs.existsSync(manifestFile) && h.warn.some((w) => w.startsWith("profile oak's extension can't connect: Chrome refused this copy of the extension")), 'ext auth: a keyless dial is refused, re-registers the helper, and health names the cause and fix', noUpgrade + JSON.stringify(h.warn));
+    const oak = await wsClient(PORT, 'keyless-test', 'oak');
+    h = JSON.parse((await cli('health')).stdout);
+    assert(!h.warn.some((w) => w.includes("profile oak's")), 'ext auth: the warning clears once that profile proves itself', JSON.stringify(h.warn));
+    oak.socket.destroy();
+    await new Promise((r) => setTimeout(r, 100));
+    // The whole key folder deleted under a running server: an extension's
+    // next keyless dial brings back the key, the helper and this checkout's
+    // allowed origin (review: it stayed broken until a CLI command or restart).
+    if (process.platform !== 'win32') {
+      fs.rmSync(stateDirectory, { recursive: true, force: true });
+      await new Promise((r) => setTimeout(r, 3100)); // past the re-registration throttle
+      await new Promise((resolve) => {
+        const sock = net.connect(PORT, '127.0.0.1', () => sock.write(`GET /ws?v=${MANIFEST_V}&id=keyless-test&name=oak&c=${nonce()}&nokey=failed HTTP/1.1\r\nHost: 127.0.0.1:${PORT}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${crypto.randomBytes(16).toString('base64')}\r\nSec-WebSocket-Version: 13\r\n\r\n`));
+        sock.on('close', resolve);
+        sock.on('error', resolve);
+      });
+      const back = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
+      const frame = spawnSync(back.path, []).stdout;
+      assert(
+        fs.existsSync(join(stateDirectory, 'key')) && JSON.parse(frame.subarray(4).toString()).k === fs.readFileSync(join(stateDirectory, 'key'), 'utf8') && back.allowed_origins.includes(`chrome-extension://${unpackedId(join(ROOT, 'extension'))}/`) && listCheckouts(stateDirectory).length > 0,
+        'ext auth: a key folder deleted under a running server comes back (key, helper, this checkout) on the next keyless dial',
+        JSON.stringify(back)
+      );
+      const oak2 = await wsClient(PORT, 'keyless-test', 'oak');
+      oak2.socket.destroy();
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    // Default folders: only browsers that exist; Chrome for Testing's macOS
+    // folder is "Google/Chrome for Testing" (chrome_paths_mac.mm; review).
+    const fakeHome = join(scratch, 'fake-home');
+    fs.mkdirSync(join(fakeHome, 'Library', 'Application Support', 'Google', 'Chrome for Testing'), { recursive: true });
+    fs.mkdirSync(join(fakeHome, '.config', 'google-chrome'), { recursive: true });
+    const mac = hostDirs({ env: {}, platform: 'darwin', home: fakeHome, scan: false });
+    const linux = hostDirs({ env: {}, platform: 'linux', home: fakeHome, scan: false });
+    assert(
+      mac.length === 1 && mac[0] === join(fakeHome, 'Library', 'Application Support', 'Google', 'Chrome for Testing', 'NativeMessagingHosts') &&
+        linux.length === 1 && linux[0] === join(fakeHome, '.config', 'google-chrome', 'NativeMessagingHosts') &&
+        hostDirs({ env: { BRIDGE_STATE_DIR: '/x' }, platform: 'darwin', home: fakeHome }).length === 0,
+      'ext auth: default host folders are the installed browsers\' own (and none when the key folder is moved for tests)',
+      JSON.stringify({ mac, linux })
+    );
+  }
+
   // An updated checkout whose old server still runs: commands name the fix,
   // and `start` replaces that server by itself (zero-touch update path).
   {
@@ -2090,7 +2222,7 @@ try {
     };
     const work = join(tmp, 'work');
     fs.mkdirSync(join(work, 'extension'), { recursive: true });
-    for (const f of ['cli.mjs', 'drift.mjs', 'localauth.mjs', 'extension/commands.js']) fs.copyFileSync(join(ROOT, f), join(work, f));
+    for (const f of ['cli.mjs', 'drift.mjs', 'localauth.mjs', 'nativehost.mjs', 'extension/commands.js']) fs.copyFileSync(join(ROOT, f), join(work, f));
     const setV = (dir, v) => {
       fs.writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'x', version: v, type: 'module' }));
       fs.writeFileSync(join(dir, 'extension', 'manifest.json'), JSON.stringify({ version: v }));
@@ -2197,7 +2329,7 @@ try {
     const home = join(tmpU, 'home');
     const bridgeCopy = (dir) => {
       fs.mkdirSync(join(dir, 'extension'), { recursive: true });
-      for (const f of ['cli.mjs', 'drift.mjs', 'localauth.mjs', 'extension/commands.js']) fs.copyFileSync(join(ROOT, f), join(dir, f));
+      for (const f of ['cli.mjs', 'drift.mjs', 'localauth.mjs', 'nativehost.mjs', 'extension/commands.js']) fs.copyFileSync(join(ROOT, f), join(dir, f));
       fs.writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'chrome-bridge', version: '1.0.0', type: 'module' }));
     };
     const runU = (dir, ...a) => spawnSync(process.execPath, [join(dir, 'cli.mjs'), 'uninstall', ...a], { encoding: 'utf8', env: { ...env, HOME: home, USERPROFILE: home } });
@@ -2224,6 +2356,22 @@ try {
         const u = (...a) => spawnSync(process.execPath, [join(plain, 'cli.mjs'), 'uninstall', ...a], { encoding: 'utf8', env: { ...env, HOME: home, USERPROFILE: home, BRIDGE_STATE_DIR: lonely, BRIDGE_PORT: '1' } });
         const d = u();
         assert(d.status === 0 && d.stdout.includes(`remove the local key folder ${lonely}`) && fs.existsSync(join(lonely, 'key')), 'uninstall (dry run): lists the key folder when no other existing checkout uses it', d.stdout + d.stderr);
+        // Chrome's pointers to its helper live OUTSIDE the key folder: the last
+        // checkout's uninstall removes them too, never another program's.
+        const lonelyCopy = join(tmpU, 'chrome-bridge-lonely');
+        bridgeCopy(lonelyCopy);
+        fs.writeFileSync(join(lonely, 'checkouts.json'), JSON.stringify([fs.realpathSync(lonelyCopy)]));
+        const hosts = join(tmpU, 'Chrome', 'NativeMessagingHosts');
+        const hostEnv = { ...env, BRIDGE_STATE_DIR: lonely, BRIDGE_HOST_DIRS: hosts };
+        registerHosts({ dir: lonely, env: hostEnv });
+        const ours = join(hosts, `${HOST_NAME}.json`);
+        const theirs = join(hosts, 'com.example.other.json');
+        fs.writeFileSync(theirs, JSON.stringify({ name: 'com.example.other', path: '/opt/other/host' }));
+        const ul = (...a) => spawnSync(process.execPath, [join(lonelyCopy, 'cli.mjs'), 'uninstall', ...a], { encoding: 'utf8', env: { ...hostEnv, HOME: home, USERPROFILE: home, BRIDGE_PORT: '1' } });
+        const ld = ul();
+        assert(ld.status === 0 && ld.stdout.includes(`remove the extension's key helper registration ${ours}`) && fs.existsSync(ours), "uninstall (dry run): lists Chrome's helper registration with the key folder", ld.stdout + ld.stderr);
+        const ly = ul('--yes');
+        assert(ly.status === 0 && !fs.existsSync(ours) && fs.existsSync(theirs) && !fs.existsSync(lonely), "uninstall --yes: removes the helper registration and the key folder, never another program's host", ly.stdout + ly.stderr);
       }
       const real = runU(plain, '--yes');
       let linkGone = false;

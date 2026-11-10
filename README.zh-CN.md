@@ -182,7 +182,7 @@ CI 中可重复执行的回归测试可考虑 [Playwright Test](https://playwrig
 
 你要把已登录的浏览器交给智能体,所以设计前提是你想看着它工作。
 
-- **仅本地。** 服务器只监听 `127.0.0.1`,并拒绝来自网页的请求,你访问的网站无法驱动它。命令还必须用只有你的用户账户能读取的密钥签名,这个密钥在服务器第一次启动时自动生成(见安装细节里的「本地密钥」)。因此同一台电脑上**其他用户账户**运行的程序无法发送命令;如果 9333 端口上的程序无法证明自己持有同一个密钥,CLI 也不会把你的命令发给它。你自己运行的程序始终可以驱动桥接器。尚未覆盖:扩展自身与服务器之间的连接。在这部分发布之前,你的服务器停止时,其他账户可以冒充服务器连接你的扩展。在别人也会登录的电脑上,不用时请在 `chrome://extensions` 卸载扩展。
+- **仅本地。** 服务器只监听 `127.0.0.1`,并拒绝来自网页的请求,你访问的网站无法驱动它。命令还必须用只有你的用户账户能读取的密钥签名,这个密钥在服务器第一次启动时自动生成(见安装细节里的「本地密钥」)。因此同一台电脑上**其他用户账户**运行的程序无法发送命令;如果 9333 端口上的程序无法证明自己持有同一个密钥,CLI 也不会把你的命令发给它。扩展每次连接时也用同一个密钥向服务器证明自己,而且只在服务器先证明之后才这样做,因此其他账户既不能向你的扩展冒充服务器,也不能向服务器冒充你的扩展。你自己运行的程序始终可以驱动桥接器。1.34 之前的扩展无法证明自己:在更新之前它们仍能连接,`health` 会给出警告。
 - **代码可读。** 整个扩展就是一个未压缩的文件(`extension/background.js`)加一个 manifest。应用商店版是同样的文件。
 - **页面内容不可信。** 桥接器返回的任何内容都可能含有提示注入;智能体应遵循的规则见 [skill](.claude/skills/chrome-bridge/SKILL.md)。小心 `upload`:它会把智能体指定的任意本地文件读进页面。永远不要让页面决定附加什么文件。
 - **导出的历史不含敏感信息。** `history --batch` 会把键入和粘贴的文本、对话框回答和上传路径注释掉。
@@ -231,7 +231,7 @@ node cli.mjs extreload   # 仅限解压安装,且 health 提示时才需要
 
 **服务器停了。** 服务器挂掉或机器重启后,智能体的 health 检查会失败,智能体会用 `node cli.mjs start` 自行重启。
 
-**本地密钥。** 服务器第一次启动时会生成一个随机密钥,只有你的用户账户能读取:macOS 在 `~/Library/Application Support/chrome-bridge/`,Linux 在 `~/.config/chrome-bridge/`(设置了 `$XDG_CONFIG_HOME` 时用它),Windows 在 `%LOCALAPPDATA%\chrome-bridge\`。CLI 用它为每条命令签名,你无需接触它。其他账户可能读到的密钥会在下一条命令时被替换,被删除的密钥会自动重建。如果命令提示服务器 *predates local authentication*(你更新了代码,但旧服务器还在运行)或 *couldn't prove it is this OS user's chrome-bridge server*,运行 `node cli.mjs stop && node cli.mjs start`。`start` 会自动替换旧服务器。
+**本地密钥。** 服务器第一次启动时会生成一个随机密钥,只有你的用户账户能读取:macOS 在 `~/Library/Application Support/chrome-bridge/`,Linux 在 `~/.config/chrome-bridge/`(设置了 `$XDG_CONFIG_HOME` 时用它),Windows 在 `%LOCALAPPDATA%\chrome-bridge\`。CLI 用它为每条命令签名,你无需接触它。其他账户可能读到的密钥会在下一条命令时被替换,被删除的密钥会自动重建。如果命令提示服务器 *predates local authentication*(你更新了代码,但旧服务器还在运行)或 *couldn't prove it is this OS user's chrome-bridge server*,运行 `node cli.mjs stop && node cli.mjs start`。`start` 会自动替换旧服务器。扩展通过 Chrome 的 native messaging 读取这个密钥:服务器会注册一个小助手程序(该文件夹里的 `native-host.sh`,Windows 上是 `native-host.cmd`),写入每个已安装 Chromium 浏览器的文件夹(Windows 上写入注册表)以及正在运行的 Chrome 的 `--user-data-dir`。通过 Web Store 更新到 1.34 时,Chrome 会请你接受一次新的「与协作的本地应用通信」权限,接受之前扩展会暂停。如果弹窗提示这个浏览器无法连接 Chrome Bridge,用它的 **Copy fix prompt** 把修复方法交给你的智能体。
 
 **端口。** 所有组件都用 `127.0.0.1:9333`。`BRIDGE_PORT` 可以移动服务器和 CLI,但扩展始终连接 9333,所以还得修改 `extension/background.js`。`server.log` 显示 `EADDRINUSE` 说明 9333 被别的进程占用:用 `lsof -i :9333` 找到它。常常是另一个检出里的旧服务器,`node <那个仓库>/cli.mjs stop` 即可释放。
 
@@ -247,7 +247,7 @@ node cli.mjs extreload   # 仅限解压安装,且 health 提示时才需要
 
 工具栏弹窗 → ⚙ → **Remove Chrome Bridge**:
 
-1. 点击 **Copy uninstall prompt**,把提示粘贴给你的 AI 智能体。它会运行 `node cli.mjs uninstall`,先列出将要删除的内容(本地服务、`~/.claude/skills` 里的智能体技能、桥接器文件夹及其日志和设置,以及本地密钥文件夹,除非另一个桥接器文件夹仍在使用它),你同意后再删除(`uninstall --yes`)。不会删除你的任何内容:有本地修改、未跟踪文件、stash、其他 worktree 或 origin 没有的提交(任何分支、标签或分离的 HEAD)的 git 仓库会保留并列出,位于其他 git 项目里或作为子模块的桥接器文件夹也会保留;没有 git 的下载版本会先把你保存的 `recipes/` 移到旁边。
+1. 点击 **Copy uninstall prompt**,把提示粘贴给你的 AI 智能体。它会运行 `node cli.mjs uninstall`,先列出将要删除的内容(本地服务、`~/.claude/skills` 里的智能体技能、桥接器文件夹及其日志和设置,以及本地密钥文件夹和 Chrome 指向其助手程序的注册,除非另一个桥接器文件夹仍在使用它们),你同意后再删除(`uninstall --yes`)。不会删除你的任何内容:有本地修改、未跟踪文件、stash、其他 worktree 或 origin 没有的提交(任何分支、标签或分离的 HEAD)的 git 仓库会保留并列出,位于其他 git 项目里或作为子模块的桥接器文件夹也会保留;没有 git 的下载版本会先把你保存的 `recipes/` 移到旁边。
 2. 点击 **Remove extension**:Chrome 会请你确认。这也会删除扩展保存的所有内容,包括 Cloud Bridge 的登录。
 
 ## 开发

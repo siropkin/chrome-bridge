@@ -113,7 +113,12 @@ function addLink(def) {
   links.set(link.id, link);
   return link;
 }
-const linkOpen = (id) => links.get(id)?.socket?.readyState === WebSocket.OPEN;
+// Open AND usable: the local link counts only once the server proved itself
+// and accepted our proof (Local authentication, below).
+const linkOpen = (id) => {
+  const s = links.get(id)?.socket;
+  return s?.readyState === WebSocket.OPEN && (id !== 'local' || !!s._authed);
+};
 // Fire-and-forget: false when the link is down (the caller decides whether
 // to queue), never a throw.
 function linkSend(id, data) {
@@ -161,8 +166,14 @@ addLink({
     try {
       boot = await BOOT_TS_P;
     } catch {}
+    // No key yet (worker start, or the last read failed): ask the helper.
+    // Without one the dial still goes out, once, with &nokey=<why>: the server
+    // registers its helper again and says why in health, then refuses.
+    const why = localKey ? null : await readLocalKey();
+    if (why) setLocalAuth('no-key', why);
     // ?v= lets `cli health` catch a stale extension after git pull; ?id= names
-    // which profile holds the seat in the server log and /health.
+    // which profile holds the seat in the server log and /health; ?c= is our
+    // nonce for the server's proof.
     return (
       this.url +
       '?v=' +
@@ -170,10 +181,106 @@ addLink({
       (PROFILE_ID ? '&id=' + PROFILE_ID : '') +
       (PROFILE_NAME ? '&name=' + PROFILE_NAME : '') +
       (INSTALL_TYPE ? '&install=' + INSTALL_TYPE : '') +
-      (boot ? '&boot=' + boot : '')
+      (boot ? '&boot=' + boot : '') +
+      '&c=' +
+      b64u(crypto.getRandomValues(new Uint8Array(18))) +
+      (why ? '&nokey=' + why : '')
     );
   },
 });
+
+// --- Local authentication -----------------------------------------------------
+// 127.0.0.1:9333 is reachable by every OS user on this computer. The server
+// (localauth.mjs) holds a per-user key; this worker reads the same key from
+// the native messaging helper the server registers (nativehost.mjs — Chrome
+// runs it only for this user, only for our extension ids). On every connect
+// the server proves it holds the key BEFORE we say anything; then we prove it
+// back and only then get a seat. Another account's program on the port can't
+// prove it: it gets nothing from us and we run nothing it sends. Never falls
+// back to an unauthenticated connection.
+const LOCAL_HOST = 'com.siropkin.chrome_bridge';
+const LOCAL_KEY_RE = /^[A-Za-z0-9_-]{43}$/;
+let localKey = null;
+// What the popup shows: connecting | ok | no-key (why: not-found, forbidden,
+// failed, missing, other) | old-server | unverified.
+let localAuth = { state: 'connecting' };
+function setLocalAuth(state, why) {
+  if (localAuth.state !== state || localAuth.why !== why) logLine(`local link: ${state}${why ? ' (' + why + ')' : ''}`);
+  localAuth = why ? { state, why } : { state };
+}
+const b64u = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+async function localMac(key, ...parts) {
+  const raw = Uint8Array.from(atob(key.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+  const k = await crypto.subtle.importKey('raw', raw, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return b64u(await crypto.subtle.sign('HMAC', k, new TextEncoder().encode(['chrome-bridge/1', ...parts].join('\n'))));
+}
+const macEqual = (a, b) => {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return d === 0;
+};
+// Ask the helper for the key → null when we have it, else why not (Chrome's
+// own error texts: "Specified native messaging host not found.", "Access to
+// the specified native messaging host is forbidden.", "Failed to start native
+// messaging host.").
+async function readLocalKey() {
+  localKey = null;
+  try {
+    const r = await chrome.runtime.sendNativeMessage(LOCAL_HOST, { want: 'key' });
+    if (typeof r?.k === 'string' && LOCAL_KEY_RE.test(r.k)) {
+      localKey = r.k;
+      return null;
+    }
+    return r?.e === 'missing' ? 'missing' : 'other';
+  } catch (e) {
+    const t = String(e?.message || e);
+    return /not found/i.test(t) ? 'not-found' : /forbidden/i.test(t) ? 'forbidden' : /failed to start|has exited/i.test(t) ? 'failed' : 'other';
+  }
+}
+// Retry delay after a refused or unproven connect: 1s, 2s, 4s… capped (a
+// helper-less profile would otherwise re-ask Chrome and the server at 2Hz).
+function localAuthDelay(link, cap) {
+  link.authFails = (link.authFails || 0) + 1;
+  return Math.min(1000 * 2 ** (link.authFails - 1), cap);
+}
+function localAuthFailed(link, s, state) {
+  setLocalAuth(state);
+  s._retryMs = localAuthDelay(link, state === 'unverified' ? 30_000 : 5_000);
+  try {
+    s.close();
+  } catch {}
+}
+// The one frame the server sends before the seat: {type:'auth', s, p}.
+async function localAuthStep(link, s, msg) {
+  clearTimeout(s._authTimer);
+  if (s._retryMs !== undefined || s.readyState !== WebSocket.OPEN) return; // already refused: frames still in flight change nothing
+  if (s._authBusy) return localAuthFailed(link, s, 'unverified'); // an honest server waits for our proof
+  s._authBusy = true;
+  // A server from before 1.34 (or anything else on the port) talks without proving itself.
+  if (msg.type !== 'auth' || typeof msg.s !== 'string' || !localKey) return localAuthFailed(link, s, localKey ? 'old-server' : 'no-key');
+  const cn = new URL(s.url).searchParams.get('c');
+  const key = localKey;
+  if (!macEqual(msg.p, await localMac(key, 'server', cn, msg.s))) {
+    // The key may have changed (rotated, reinstalled): read it once more
+    // before calling the server an impostor; a new key redials right away.
+    if ((await readLocalKey()) === null && localKey !== key) {
+      s._retryMs = 0;
+      try {
+        s.close();
+      } catch {}
+      return;
+    }
+    return localAuthFailed(link, s, 'unverified');
+  }
+  const m = await localMac(key, 'extension', msg.s, cn);
+  if (link.socket !== s || s.readyState !== WebSocket.OPEN) return;
+  s.send(JSON.stringify({ type: 'auth', m }));
+  s._authed = true;
+  link.authFails = 0;
+  setLocalAuth('ok');
+  linkUp(link, s);
+}
 
 // Lifecycle journal — one WS event per marker-affecting transition (mark,
 // release, reap, boot, …) so server.log can answer "why is this tab still
@@ -330,6 +437,23 @@ async function runCommand(link, msg) {
   }
 }
 
+// A link is usable: reset its backoff, flush the local journal, and repaint
+// pills that showed "offline" (a command still running keeps its label —
+// local page-side work survives a server blip).
+function linkUp(link, s) {
+  link.backoff = link.retry[0];
+  if (link.id === 'local') for (const l of pendingJournal.splice(0)) s.send(l);
+  link.wasOffline = false; // disarms the offline-paint grace timer in onclose
+  if (link.offlinePainted) {
+    link.offlinePainted = false;
+    for (const tabId of drivenTabs) {
+      if (ownerOf(tabId) !== link.id) continue; // another link's tabs never painted offline
+      const busy = (inflight.get(tabId) || 0) > 0;
+      pillWrite(tabId, [busy ? pillBusy.get(tabId) || idleLabel(tabId) : idleLabel(tabId), tabActivity.get(tabId) || [], null, busy]);
+    }
+  }
+}
+
 // Async: awaits link.dial() (BOOT_TS_P for local) before dialing. Callers
 // fire-and-forget, and the double-connect guard runs synchronously at entry,
 // so the await can't wedge a second connect behind a first one — only the
@@ -356,21 +480,11 @@ async function connect(link) {
     return;
   }
   s.onopen = () => {
-    link.backoff = link.retry[0];
     if (link.rpc) cloudOpen(link, s);
-    if (link.id === 'local') for (const l of pendingJournal.splice(0)) s.send(l);
-    // Back online after a server outage: pills that painted "offline" go back
-    // to the honest current state (a command still running keeps its label —
-    // local page-side work survives a server blip).
-    link.wasOffline = false; // disarms the grace timer below
-    if (link.offlinePainted) {
-      link.offlinePainted = false;
-      for (const tabId of drivenTabs) {
-        if (ownerOf(tabId) !== link.id) continue; // another link's tabs never painted offline
-        const busy = (inflight.get(tabId) || 0) > 0;
-        pillWrite(tabId, [busy ? pillBusy.get(tabId) || idleLabel(tabId) : idleLabel(tabId), tabActivity.get(tabId) || [], null, busy]);
-      }
-    }
+    // Local: up only once the server proved itself (localAuthStep). One that
+    // says nothing in 5s predates 1.34 (or isn't ours).
+    if (link.id === 'local') s._authTimer = setTimeout(() => s._authed || localAuthFailed(link, s, 'old-server'), 5000);
+    else linkUp(link, s);
   };
   s.onmessage = async (e) => {
     if (link.rpc) return cloudMessage(link, s, e.data);
@@ -387,6 +501,7 @@ async function connect(link) {
       s.close();
       return;
     }
+    if (link.id === 'local' && !s._authed) return localAuthStep(link, s, msg);
     if (msg.type === 'diagnostics-result' && link.id === 'local') {
       pendingDiagnostics.get(msg.requestId)?.(msg);
       return;
@@ -426,6 +541,7 @@ async function connect(link) {
       clearInterval(s._ping);
       cloudDropPending(s);
     }
+    clearTimeout(s._authTimer);
     if (link.socket !== s) return; // a newer socket already took over — don't double-reconnect
     link.socket = null;
     if (s._seatTaken) return;
@@ -450,6 +566,10 @@ async function connect(link) {
         }
       }, 2500);
     }
+    // Refused for want of a key (the server refuses a &nokey dial), or the
+    // server couldn't prove itself: retry on the auth backoff, not at 2Hz.
+    if (link.id === 'local' && s._retryMs === undefined && /[?&]nokey=/.test(s.url)) s._retryMs = localAuthDelay(link, 5_000);
+    if (s._retryMs !== undefined) return void setTimeout(() => connect(link), s._retryMs);
     // Reconnect right away (local: a flat 500ms); the alarm is only a
     // backstop for a killed SW.
     const delay = link.backoff;
@@ -1034,7 +1154,8 @@ Promise.race([
 chrome.alarms.create('keepalive', { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener(() => {
   cloudHeartbeatCheck();
-  for (const link of links.values()) if (!linkOpen(link.id)) connect(link);
+  // A local socket still proving itself (≤5s, its own timer ends it) isn't dead.
+  for (const link of links.values()) if (!linkOpen(link.id) && !(link.socket?.readyState === WebSocket.OPEN && link.socket._authTimer && !link.socket._authed)) connect(link);
   cloudPollPairing();
   cloudRevokePending();
 });
@@ -2016,7 +2137,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // the human never sees the code name anywhere else.
     // cloud: the Settings → Cloud Bridge state rides along (no second round trip).
     // local: the Local AI agents switch.
-    Promise.all([ready, idReady, cloudReady, localReady]).then(() => ({ count: drivenTabs.size, active: msg.tabId != null && drivenTabs.has(msg.tabId), connected: linkOpen('local'), local: localOn, profile: PROFILE_NAME, cloud: cloudState() }))
+    // localAuth: why the local link isn't up when the server is running (popup's one fix).
+    Promise.all([ready, idReady, cloudReady, localReady]).then(() => ({ count: drivenTabs.size, active: msg.tabId != null && drivenTabs.has(msg.tabId), connected: linkOpen('local'), local: localOn, localAuth: { ...localAuth }, profile: PROFILE_NAME, cloud: cloudState() }))
       .then(sendResponse, (error) => sendResponse({ error: String(error) }));
     return true;
   }

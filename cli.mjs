@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto';
 import { Script } from 'node:vm';
 import { updateTarget } from './drift.mjs';
 import { bridgeFetch, listCheckouts, LocalAuthError, stateDir } from './localauth.mjs';
+import { registeredHosts, unregisterHosts } from './nativehost.mjs';
 // The shared command grammar (registry, tokenizer, parse/render) — a classic
 // script the extension can load too, so it publishes a global, not exports.
 import './extension/commands.js';
@@ -420,8 +421,9 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
   stop                              stop the server
   uninstall [--yes]                 remove chrome-bridge from this computer: stop the server,
                                     remove the agent skill (~/.claude/skills/chrome-bridge),
-                                    the local key folder (unless another bridge folder uses
-                                    it) and delete this bridge folder. Without --yes it only lists
+                                    the local key folder and Chrome's pointers to its helper
+                                    (unless another bridge folder uses them) and delete this
+                                    bridge folder. Without --yes it only lists
                                     what it would remove. Never deletes someone's work: a git
                                     checkout with local edits, untracked files, a stash, other
                                     worktrees or commits origin doesn't have (any branch, tag or
@@ -768,7 +770,13 @@ async function runCommand(cmdName, args) {
       if (fs.existsSync(keyDir)) {
         const others = listCheckouts(keyDir).filter((p) => !samePath(p, repo) && fs.existsSync(join(p, 'cli.mjs')));
         if (others.length) kept.push(`${keyDir} (the local key) — still used by ${others.join(', ')}`);
-        else actions.push([`remove the local key folder ${keyDir}`, () => fs.rmSync(keyDir, { recursive: true, force: true })]);
+        else {
+          // Chrome's pointers to the helper in that folder (native messaging
+          // manifests in each browser's folder; registry values on Windows).
+          const { manifests, keys } = registeredHosts({ dir: keyDir });
+          for (const where of [...manifests, ...keys]) actions.push([`remove the extension's key helper registration ${where}`, () => unregisterHosts({ dir: keyDir })]);
+          actions.push([`remove the local key folder ${keyDir}`, () => fs.rmSync(keyDir, { recursive: true, force: true })]);
+        }
       }
       // The bridge folder itself, only when it is really ours and holds nothing
       // of anyone's. Every doubt keeps it: a git checkout must be clean (all

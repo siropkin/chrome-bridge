@@ -17,6 +17,13 @@
 //      s is single-use and expires after 30 s.
 //   H(...parts) = base64url(HMAC-SHA256(key, ["chrome-bridge/1", ...parts].join("\n")))
 //   sha256(body) = base64url of the SHA-256 of the raw body bytes ("" for none).
+//
+// Extension (/ws?…&c=<client nonce>): the server's first frame is
+//   {"type":"auth","s":<server nonce>,"p":H("server", c, s)}
+// and the extension checks p, then answers {"type":"auth","m":H("extension", s, c)};
+// only then does it get a seat. It reads the key through Chrome native
+// messaging (nativehost.mjs). Without a key it dials once with &nokey=<why>
+// (the server re-registers its helper) and is refused.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { homedir } from 'node:os';
@@ -53,7 +60,8 @@ export const mac = (key, ...parts) => crypto.createHmac('sha256', Buffer.from(ke
 // be more than 43 bytes — and timingSafeEqual throws on a length mismatch,
 // which took the whole server down. Anything not base64url is simply wrong.
 const MAC_RE = /^[A-Za-z0-9_-]{43}$/;
-const same = (a, b) => typeof a === 'string' && typeof b === 'string' && MAC_RE.test(a) && MAC_RE.test(b) && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+export const same = (a, b) => typeof a === 'string' && typeof b === 'string' && MAC_RE.test(a) && MAC_RE.test(b) && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+export const isNonce = (c) => typeof c === 'string' && NONCE_RE.test(c);
 
 // Owner and mode of one path: null when missing; throws when another OS user
 // owns it (nothing here can repair that).

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // chrome-bridge server — zero dependencies, Node >= 18.
 // One port, two faces:
-//   ws://127.0.0.1:9333/ws   — the Chrome extension connects here
+//   ws://127.0.0.1:9333/ws   — the Chrome extension connects here, and proves itself first (localauth.mjs)
 //   POST 127.0.0.1:9333/cmd  — the CLI (or any agent) sends commands here, signed (localauth.mjs)
 //   GET  127.0.0.1:9333/health
 import http from 'node:http';
@@ -10,7 +10,8 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createDiagnostics } from './diagnostics.mjs';
 import { driftWarnings } from './drift.mjs';
-import { createGuard, ensureKey, registerCheckout, stateDir, UNAUTHENTICATED } from './localauth.mjs';
+import { createGuard, ensureKey, isNonce, mac, nonce, registerCheckout, same, stateDir, UNAUTHENTICATED } from './localauth.mjs';
+import { registerHosts } from './nativehost.mjs';
 
 const diagnostics = createDiagnostics(
   process.env.BRIDGE_DIAGNOSTICS_DIR || fileURLToPath(new URL('./.diagnostics/', import.meta.url)),
@@ -61,9 +62,10 @@ const SEAT_ID = /^[A-Za-z0-9-]{1,64}$/;
 // every user on the computer. Fail at boot, not on the first command, when the
 // key folder can't be used.
 const auth = createGuard();
+const REPO_DIR = fileURLToPath(new URL('.', import.meta.url)).replace(/[\\/]$/, '');
 try {
   ensureKey();
-  registerCheckout(fileURLToPath(new URL('.', import.meta.url)).replace(/[\\/]$/, ''));
+  registerCheckout(REPO_DIR);
 } catch (e) {
   console.error(`[bridge] can't use the local key folder ${stateDir()}: ${e.message}`);
   process.exit(1);
@@ -72,6 +74,49 @@ const refuseUnsigned = (res) => {
   res.writeHead(401, { 'content-type': 'application/json' });
   res.end(JSON.stringify({ ok: false, error: UNAUTHENTICATED }));
 };
+// The extension reads the key through Chrome native messaging: register the
+// helper wherever Chrome looks (nativehost.mjs). Again when an extension
+// dials without a key — a Chrome started after this server with its own
+// --user-data-dir only becomes visible then (throttled: ps per call).
+let hostsAt = 0;
+function registerNativeHosts(why) {
+  if (Date.now() - hostsAt < 3000) return;
+  hostsAt = Date.now();
+  try {
+    // The key folder may have been deleted under this server: bring back the
+    // key and this checkout's entry (its unpacked id is an allowed origin).
+    ensureKey();
+    registerCheckout(REPO_DIR);
+    const r = registerHosts();
+    if (r.errors.length) console.log(`[bridge] native host (${why}): couldn't write ${r.errors.join('; ')}`);
+  } catch (e) {
+    console.log(`[bridge] native host (${why}): ${e.message}`);
+  }
+}
+registerNativeHosts('boot');
+// Extensions that dialed without a key (profile → { reason, at }): /health
+// names the cause until that profile authenticates.
+const keyless = new Map();
+const KEYLESS = {
+  'not-found': "Chrome couldn't find the bridge's helper for this browser — it is registered in each installed Chrome's folder and in the --user-data-dir of running Chromes; restart the bridge with that Chrome open: `cli.mjs stop && cli.mjs start`",
+  forbidden: "Chrome refused this copy of the extension the bridge's helper: it was loaded from a folder no bridge on this computer started from — start the bridge from the checkout whose extension/ folder Chrome loaded (`node <that checkout>/cli.mjs start`)",
+  failed: "Chrome couldn't start the bridge's helper — restart the bridge to rewrite it: `cli.mjs stop && cli.mjs start`",
+  missing: 'the local key was missing when the extension asked — the bridge recreated it; the extension retries by itself',
+  other: "the extension couldn't read the local key — restart the bridge: `cli.mjs stop && cli.mjs start`",
+};
+// Seats from before extension authentication (< 1.34) — accepted until E1.
+const LEGACY_WARN = (label, v) =>
+  `profile ${label} runs chrome-bridge extension ${v || '(unknown version)'}, which can't prove itself to this server — until it updates to 1.34 or later, another account on this computer could pose as it or as this server; update it (Chrome Web Store: chrome://extensions → Update; unpacked: \`cli.mjs extreload\`)`;
+function authWarnings() {
+  const out = [];
+  for (const [pid, s] of seats) if (s.legacy && s.socket && !s.socket.destroyed) out.push({ pid, text: LEGACY_WARN(s.name || pid.slice(0, 4), s.v) });
+  for (const [who, k] of keyless) {
+    if (Date.now() - k.at > 120_000) keyless.delete(who);
+    // pid of its own: rides /cmd replies only when a command found no profile.
+    else out.push({ pid: 'keyless:' + who, text: `profile ${who}'s extension can't connect: ${KEYLESS[k.reason]}` });
+  }
+  return out;
+}
 
 // server.log holds operational notices only. All start paths share this
 // legacy boot-time cap; diagnostic events have their own rolling size limit.
@@ -150,14 +195,14 @@ function serverCodeMtime() {
   return m;
 }
 function currentDrift() {
-  return driftWarnings({
+  return [...driftWarnings({
     bootVersion: BOOT_VERSION,
     diskVersion: readVersion('./package.json'),
     serverStale: serverCodeMtime() > BOOT_MS + 2000,
     manifestVersion: readVersion('./extension/manifest.json'),
     extMtime: newestMtime('./extension/'),
     seats: [...seats.entries()].filter(([, s]) => s.socket && !s.socket.destroyed).map(([pid, s]) => ({ pid, name: s.name, v: s.v, install: s.install, boot: s.boot })),
-  });
+  }), ...authWarnings()];
 }
 
 function dropSeatPending(seat, error) {
@@ -762,7 +807,8 @@ const server = http.createServer((req, res) => {
       JSON.stringify({
         ok: true,
         extension: !![...seats.values()].find((s) => s.socket && !s.socket.destroyed),
-        profiles: [...seats.entries()].map(([pid, s]) => ({ id: pid, v: s.v, ...(s.name ? { name: s.name } : {}), ...(s.install ? { install: s.install } : {}) })),
+        // legacy: an extension from before 1.34 that didn't prove itself (accepted until E1).
+        profiles: [...seats.entries()].map(([pid, s]) => ({ id: pid, v: s.v, ...(s.name ? { name: s.name } : {}), ...(s.install ? { install: s.install } : {}), ...(s.legacy ? { legacy: true } : {}) })),
         // Profiles the human switched off for local agents (popup → ⚙ Settings).
         ...(localOff.size ? { localOff: [...localOff.keys()] } : {}),
         // Drift warnings (the CLI prints them to stderr) — the same texts
@@ -955,10 +1001,42 @@ server.on('upgrade', (req, socket) => {
   // (SW race) — it gets the seat-taken bounce, not a second seat posing as a
   // second profile.
   const id = u.searchParams.get('id') || 'anon';
-  if ((v !== null && !SEAT_VERSION.test(v)) || (name !== null && !SEAT_NAME.test(name)) || !SEAT_ID.test(id)) {
-    console.log(`[bridge] seat refused — malformed handshake (v, name or id)`);
+  // Extension authentication (localauth.mjs): an extension that sends ?c=
+  // (1.34+) must answer this server's proof before it gets a seat — another
+  // OS user's program can't, so it never receives this user's commands.
+  // Without ?c= it's an extension from before 1.34: seated as before, flagged
+  // legacy with a ⚠ in health (the grace ends in E1).
+  const cn = u.searchParams.get('c');
+  if ((v !== null && !SEAT_VERSION.test(v)) || (name !== null && !SEAT_NAME.test(name)) || !SEAT_ID.test(id) || (cn !== null && !isNonce(cn))) {
+    console.log(`[bridge] seat refused — malformed handshake (v, name, id or c)`);
     socket.destroy();
     return;
+  }
+  // The extension couldn't read the key (Chrome didn't find or start our
+  // helper): register it again — a Chrome started after this server with its
+  // own --user-data-dir becomes visible now — note why for health, refuse.
+  // The extension retries by itself.
+  const nokey = u.searchParams.get('nokey');
+  if (nokey !== null) {
+    const reason = Object.hasOwn(KEYLESS, nokey) ? nokey : 'other';
+    const who = name || id.slice(0, 8);
+    keyless.delete(who);
+    keyless.set(who, { reason, at: Date.now() });
+    if (keyless.size > 16) keyless.delete(keyless.keys().next().value);
+    console.log(`[bridge] extension without a local key (${reason}) id=${id} — registering the native host again`);
+    registerNativeHosts('extension without a key');
+    socket.destroy();
+    return;
+  }
+  let authKey = null;
+  if (cn !== null) {
+    try {
+      authKey = ensureKey();
+    } catch (e) {
+      console.log(`[bridge] seat refused — can't use the local key folder ${stateDir()}: ${e.message}`);
+      socket.destroy();
+      return;
+    }
   }
   const accept = crypto.createHash('sha1').update(key + WS_GUID).digest('base64');
   socket.write(
@@ -968,16 +1046,25 @@ server.on('upgrade', (req, socket) => {
       `Sec-WebSocket-Accept: ${accept}\r\n\r\n`
   );
   socket.setNoDelay(true);
-  // One seat per profile. A duplicate id is the SAME profile's service-worker
-  // reconnect race — bounce it with a seat-taken frame (the SW backs off and
-  // lets its 30s keepalive alarm re-probe) instead of evicting the live socket.
-  const existing = seats.get(id);
-  if (existing && existing.socket && !existing.socket.destroyed) {
-    console.log(`[bridge] seat taken — rejected v=${v || '?'} id=${id} (duplicate; holder is alive)`);
-    socket.end(encodeFrame(JSON.stringify({ type: 'seat-taken' }))); // end() flushes before FIN — write()+destroy() can lose the bounce frame
-    return;
-  }
-  localOff.delete(name || id); // switched back on: it connects again
+  const sn = nonce();
+  let authTimer = null;
+  // One seat per profile, taken only once the extension proved itself (or as
+  // legacy). A duplicate id is the SAME profile's service-worker reconnect
+  // race — bounce it with a seat-taken frame (the SW backs off and lets its
+  // 30s keepalive alarm re-probe) instead of evicting the live socket.
+  const takeSeat = () => {
+    const existing = seats.get(id);
+    if (existing && existing.socket && !existing.socket.destroyed) {
+      console.log(`[bridge] seat taken — rejected v=${v || '?'} id=${id} (duplicate; holder is alive)`);
+      socket.end(encodeFrame(JSON.stringify({ type: 'seat-taken' }))); // end() flushes before FIN — write()+destroy() can lose the bounce frame
+      return;
+    }
+    localOff.delete(name || id); // switched back on: it connects again
+    keyless.delete(name || id.slice(0, 8));
+    seats.set(id, seat);
+    seat.ready = true;
+    console.log(`[bridge] extension connected origin=${origin || 'none'} v=${v || '?'} id=${id} auth=${seat.legacy ? 'none (extension before 1.34)' : 'key'}`);
+  };
   const seat = {
     pid: id,
     v,
@@ -985,6 +1072,8 @@ server.on('upgrade', (req, socket) => {
     install,
     boot,
     socket,
+    legacy: cn === null,
+    ready: false,
     nextId: 1,
     pending: new Map(),
     onMessage(data) {
@@ -992,6 +1081,15 @@ server.on('upgrade', (req, socket) => {
       try {
         msg = JSON.parse(data);
       } catch {
+        if (!this.ready) socket.destroy();
+        return;
+      }
+      if (!this.ready) {
+        // Exactly one frame before the seat: the extension's proof.
+        clearTimeout(authTimer);
+        if (msg?.type === 'auth' && same(msg.m, mac(authKey, 'extension', sn, cn))) return takeSeat();
+        console.log(`[bridge] seat refused — the extension's proof didn't match this OS user's key id=${id}`);
+        socket.destroy();
         return;
       }
       if (msg?.type === 'diagnostics') {
@@ -1043,11 +1141,10 @@ server.on('upgrade', (req, socket) => {
       }
     },
   };
-  seats.set(id, seat);
-  console.log(`[bridge] extension connected origin=${origin || 'none'} v=${v || '?'} id=${id}`);
   const state = { buf: Buffer.alloc(0), fragments: [], fragmentBytes: 0 };
   socket.on('data', (chunk) => handleWsData(seat, chunk, state));
   const onGone = () => {
+    clearTimeout(authTimer);
     if (seats.get(id) === seat) {
       seats.delete(id);
       console.log(`[bridge] extension disconnected id=${id}`);
@@ -1066,6 +1163,13 @@ server.on('upgrade', (req, socket) => {
   socket.on('end', onGone);
   socket.on('close', onGone);
   socket.on('error', onGone);
+  if (seat.legacy) return takeSeat();
+  socket.write(encodeFrame(JSON.stringify({ type: 'auth', s: sn, p: mac(authKey, 'server', cn, sn) })));
+  authTimer = setTimeout(() => {
+    if (seat.ready) return;
+    console.log(`[bridge] seat refused — no proof from the extension within 5s id=${id}`);
+    socket.destroy();
+  }, 5000);
 });
 
 // A second server on the same port used to die as an unhandled 'error' event

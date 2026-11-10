@@ -48,10 +48,18 @@ jobs:
             --disable-background-timer-throttling --disable-renderer-backgrounding \
             --disable-backgrounding-occluded-windows \
             --load-extension="$PWD/extension" about:blank >/tmp/chrome.log 2>&1 &
+      # Also proves local authentication against real Chrome: Chrome starts
+      # AFTER the server with its own --user-data-dir, so the extension's first
+      # dial has no key (&nokey=not-found); the server finds that folder in ps,
+      # registers its native host there, and the retry must authenticate. A
+      # legacy (unauthenticated) seat fails the job.
       - name: Wait for the extension seat (90s cap)
         run: |
           for i in $(seq 1 30); do
-            node cli.mjs health 2>/dev/null | grep -q '"extension":true' && exit 0
+            if node cli.mjs health 2>/dev/null | grep -q '"extension":true'; then
+              node cli.mjs profiles | grep -q '"legacy":true' && { echo "extension seated WITHOUT authentication"; node cli.mjs health; exit 1; }
+              exit 0
+            fi
             sleep 3
           done
           node cli.mjs health || true

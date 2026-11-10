@@ -50,6 +50,7 @@ function render() {
   renderRelease(n);
   $('idle').hidden = true;
   $('off-card').hidden = true;
+  $('update').hidden = true; // renderBanner shows it again when it applies
   // Local AI agents switched off (Settings): this profile is unreachable for
   // agents on this computer whatever the helper is doing — no setup push, no
   // "reconnecting". Cloud AI apps still work on their own.
@@ -87,6 +88,12 @@ function render() {
   }
   if (!bridgeHealth) return; // health hasn't answered yet: "Checking…" stays
   $('setup-card').hidden = true;
+  // This profile's own link was refused or the program on the port couldn't
+  // prove it's this computer's bridge (local authentication): health answering
+  // says nothing about that. One plain sentence and one fix.
+  const auth = bridgeState?.connected === false ? bridgeState.localAuth : null;
+  const problem = auth && (AUTH_PROBLEMS[auth.state === 'no-key' ? auth.why : auth.state] || (auth.state === 'no-key' && AUTH_PROBLEMS.other));
+  if (problem) return renderBanner(problem, 'warn');
   // Until this profile's own socket is up, local agents can't use it yet.
   $('local-status').textContent = 'Connecting to the helper on this computer…';
   if (!(bridgeHealth.ok && bridgeHealth.extension)) return setStatus('Connecting to your AI agent…', '');
@@ -100,8 +107,12 @@ function render() {
     return setStatus('Reconnecting to your AI agent…', '');
   }
   $('local-status').textContent = 'Connected: agents on this computer can use this browser';
-  if (updateNeeded) setStatus('Update needed', 'warn');
-  else if (busy) setStatus(`AI is working in ${n} tab${n > 1 ? 's' : ''}`, 'busy');
+  // The update prompt quotes /health's folder: only from a server this
+  // profile verified (connected), never while the worker hasn't answered.
+  if (updateNeeded && bridgeState?.connected === true) {
+    renderBanner(updateInfo);
+    setStatus('Update needed', 'warn');
+  } else if (busy) setStatus(`AI is working in ${n} tab${n > 1 ? 's' : ''}`, 'busy');
   else setStatus('Ready for your AI agent', 'ok');
   if (bridgeState) $('idle').hidden = false; // the tab ID stays copyable while the agent works
 }
@@ -113,11 +124,51 @@ function renderRelease(n) {
   $('release-tab').hidden = !(n > 0 && lastKnownState?.active);
 }
 
+// Why this profile's local link isn't up although the helper answers, keyed
+// by the worker's localAuth state (or, for no-key, Chrome's reason):
+// [what the person reads, what the agent is told]. The agent's prompt never
+// quotes /health here: the program on the port is exactly what's in doubt.
+const AUTH_PROBLEMS = {
+  'not-found': ["This browser can't reach Chrome Bridge on your computer yet.", "Chrome couldn't find the bridge's native messaging helper (the bridge registers it when it starts)"],
+  forbidden: ['This copy of the extension isn\'t the one Chrome Bridge on your computer set up.', 'Chrome refused this extension the bridge\'s helper: it was loaded from a folder no bridge on this computer started from — start the bridge from the checkout whose extension/ folder Chrome loaded'],
+  failed: ["This browser can't reach Chrome Bridge on your computer yet.", "Chrome couldn't start the bridge's native messaging helper"],
+  missing: ["This browser can't reach Chrome Bridge on your computer yet.", "the bridge's local key was missing; the bridge recreates it when it runs"],
+  other: ["This browser can't reach Chrome Bridge on your computer yet.", "the extension couldn't read the bridge's local key"],
+  'old-server': ['Chrome Bridge on your computer is older than this extension.', 'the bridge running on this computer predates extension authentication (1.34): update it (node cli.mjs update) or restart it'],
+  unverified: ["Something else is answering for Chrome Bridge on your computer, so this browser isn't using it.", "the program on 127.0.0.1:9333 couldn't prove it is this OS user's chrome-bridge server, so the extension refused it (if start says the port is taken, see who holds it: lsof -i :9333)"],
+};
+for (const k of Object.keys(AUTH_PROBLEMS)) {
+  const [plain, detail] = AUTH_PROBLEMS[k];
+  AUTH_PROBLEMS[k] = {
+    plain,
+    status: plain,
+    text: detail,
+    button: 'Copy fix prompt',
+    prompt: () =>
+      `My chrome-bridge extension (Chrome profile ${$('profile-name').textContent || 'this one'}) isn't connecting to the bridge on this computer: ${detail}. In the chrome-bridge folder, run node cli.mjs health and fix what its warnings say (usually: node cli.mjs stop && node cli.mjs start), then tell me whether the extension connected.`,
+  };
+}
+
+// The amber banner: one sentence for the person, the exact cause on hover,
+// one prompt to hand to the agent. The local-auth problem outranks an update.
+function renderBanner(b, kind) {
+  updatePrompt = b.prompt();
+  $('update-text').textContent = b.plain + (b.button === 'Copy fix prompt' ? ' Copy this prompt to your AI agent and it will fix it.' : ' Copy this prompt to your AI agent and it will update it.');
+  $('update-text').title = b.text;
+  $('copy-update').textContent = b.button;
+  $('update').hidden = false;
+  if (kind) {
+    $('local-status').textContent = b.status;
+    setStatus(b.status, kind);
+  }
+}
+
 // Version drift: Chrome auto-updates a store extension, but the bridge on disk
 // (server, CLI, the agent's skill) only moves when someone runs `cli.mjs
 // update` — the human sees it here and hands the fix to their agent. A server
 // without h.v predates version reporting: no banner (health warns).
 let updatePrompt = '';
+let updateInfo = null;
 function renderUpdate() {
   const h = bridgeHealth;
   if (!ownVersion || !h?.v) return;
@@ -134,10 +185,12 @@ function renderUpdate() {
   }
   if (!text) return;
   const cli = `${String(h.repo || '').replace(/[\\/]$/, '')}/cli.mjs`;
-  updatePrompt = `My chrome-bridge is out of step: ${text} Run node "${cli}" update, then node "${cli}" health, and tell me what changed and whether anything still needs me (for example, reloading the extension at chrome://extensions).`;
-  $('update-text').textContent = plain + ' Copy this prompt to your AI agent and it will update it.';
-  $('update-text').title = text;
-  $('update').hidden = false;
+  updateInfo = {
+    plain,
+    text,
+    button: 'Copy update prompt',
+    prompt: () => `My chrome-bridge is out of step: ${text} Run node "${cli}" update, then node "${cli}" health, and tell me what changed and whether anything still needs me (for example, reloading the extension at chrome://extensions).`,
+  };
   updateNeeded = true;
 }
 const copyTo = (text, out, done) =>

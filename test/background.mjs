@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { webcrypto } from 'node:crypto';
+import { mac, nonce } from '../localauth.mjs';
 
 const source = fs.readFileSync(new URL('../extension/background.js', import.meta.url), 'utf8');
 const evalSource = source.slice(source.indexOf('async function runEval('), source.indexOf('// --- --diff on actions:'));
@@ -37,7 +39,7 @@ function popupListener({ failedTab, ready = Promise.resolve(), owners = new Map(
   const context = {
     chrome: { runtime: { id: 'bridge', getURL: (path) => 'chrome-extension://bridge/' + path, onMessage: { addListener: (handler) => { listener = handler; } } }, storage: { local: { set: async (o) => Object.assign(storage, o) } } },
     localOn: true, localLoaded: true, localReady: Promise.resolve(), links: new Map([['local', localLink]]), connect: (link) => connects.push(link.id),
-    ready, idReady: Promise.resolve(), cloudReady: Promise.resolve(), cloudState: () => ({ paired: false }), PROFILE_NAME: 'poplar', drivenTabs, humanReclaimed,
+    ready, idReady: Promise.resolve(), cloudReady: Promise.resolve(), cloudState: () => ({ paired: false }), PROFILE_NAME: 'poplar', drivenTabs, humanReclaimed, localAuth: { state: 'ok' },
     linkOpen: (id) => id === 'local',
     linkSend: (id, data) => { events.push([id, JSON.parse(data)]); return true; },
     ownerOf: (tabId) => (drivenTabs.has(tabId) ? owners.get(tabId) || 'local' : null),
@@ -1060,7 +1062,14 @@ const linksSource = source.slice(source.indexOf('// --- Links ---'), source.inde
 
 const commandsSource = fs.readFileSync(new URL('../extension/commands.js', import.meta.url), 'utf8');
 
-function linksHarness({ owners = new Map(), driven = [], idReady = Promise.resolve(), cloud, localAgents, localRead, handle, fetchImpl, tabsGet = async () => null } = {}) {
+// The key the fake native host hands out, and the server's half of the local
+// handshake (the real one: server.mjs + localauth.mjs).
+const LOCAL_KEY = 'k'.repeat(43);
+const serverAuth = (url, key = LOCAL_KEY) => {
+  const s = nonce();
+  return { type: 'auth', s, p: mac(key, 'server', new URL(url).searchParams.get('c'), s) };
+};
+function linksHarness({ owners = new Map(), driven = [], idReady = Promise.resolve(), cloud, localAgents, localRead, handle, fetchImpl, tabsGet = async () => null, nativeHost } = {}) {
   const sockets = [];
   const logs = [];
   const timers = [];
@@ -1070,10 +1079,19 @@ function linksHarness({ owners = new Map(), driven = [], idReady = Promise.resol
   class FakeWS {
     static OPEN = 1;
     constructor(url, protocols) { this.url = url; this.protocols = protocols; this.readyState = 0; this.sent = []; sockets.push(this); }
-    send(data) { this.sent.push(data === 'ping' ? data : JSON.parse(data)); }
+    send(data) {
+      const m = data === 'ping' ? data : JSON.parse(data);
+      if (m?.type === 'auth') this.auth = m; // the local handshake, kept apart from what the link sends
+      else this.sent.push(m);
+    }
     // A browser fires onclose asynchronously — by then connect() has moved link.socket on.
     close() { this.readyState = 3; setImmediate(() => this.onclose?.({ code: 1000, reason: '' })); }
-    open() { this.readyState = 1; this.onopen(); }
+    // Local sockets: the server proves itself first (await it); open(false) leaves that to the test.
+    open(auth = true) {
+      this.readyState = 1;
+      this.onopen();
+      if (auth && this.url.startsWith('ws://127.0.0.1')) return this.recv(serverAuth(this.url));
+    }
     drop(code = 1006, reason = '') { this.readyState = 3; this.onclose({ code, reason }); }
     recv(obj) { return this.onmessage({ data: typeof obj === 'string' ? obj : JSON.stringify(obj) }); }
   }
@@ -1084,12 +1102,12 @@ function linksHarness({ owners = new Map(), driven = [], idReady = Promise.resol
   const intervals = [];
   const context = vm.createContext({
     WS_URL: 'ws://127.0.0.1:9333/ws', BOOT_TS_P: Promise.resolve(123), PROFILE_ID: 'pid', PROFILE_NAME: 'oak', INSTALL_TYPE: 'dev',
-    idReady, installReady: Promise.resolve(), WebSocket: FakeWS, crypto: { randomUUID: () => 'req-1' },
+    idReady, installReady: Promise.resolve(), WebSocket: FakeWS, crypto: { randomUUID: () => 'req-1', getRandomValues: (a) => webcrypto.getRandomValues(a), subtle: webcrypto.subtle }, atob,
     setTimeout: (fn, ms) => timers.push({ fn, ms }), clearTimeout() {},
     setInterval: (fn, ms) => intervals.push({ fn, ms }) && intervals.length, clearInterval() {},
     URL, fetch: fetchImpl, AbortSignal, btoa, TextEncoder,
     chrome: {
-      runtime: { getManifest: () => ({ version: '9.9.9' }) }, alarms: { create() {}, onAlarm: { addListener: (fn) => { alarm = fn; } } },
+      runtime: { getManifest: () => ({ version: '9.9.9' }), sendNativeMessage: async (host, msg) => (nativeHost ? nativeHost(host, msg) : { k: LOCAL_KEY }) }, alarms: { create() {}, onAlarm: { addListener: (fn) => { alarm = fn; } } },
       storage: { local: { get: async (k) => (k === 'localAgents' && localRead ? { localAgents: await localRead } : { [k]: storage[k] }), set: async (o) => Object.assign(storage, structuredClone(o)) } },
       tabs: { create: async (o) => created.push(o), get: tabsGet },
       action: { setBadgeText: async (o) => badge.push(['text', o.text]), setBadgeBackgroundColor: async () => {}, setTitle: async (o) => badge.push(['title', o.title]) },
@@ -1104,7 +1122,7 @@ function linksHarness({ owners = new Map(), driven = [], idReady = Promise.resol
   vm.runInContext(commandsSource, context); // the worker's importScripts('commands.js')
   // runCommand withholds replies from cloud tabs now on localhost/LAN (the off-limits helpers).
   vm.runInContext(source.slice(source.indexOf('function privateHost('), source.indexOf('// --- end off-limits')), context);
-  vm.runInContext(linksSource + '\nthis.links = links; this.linkOpen = linkOpen; this.cloudState = cloudState; this.cloudPair = cloudPair; this.cloudSignOut = cloudSignOut; this.cloudHeartbeatCheck = cloudHeartbeatCheck; this.connect = connect; this.setLocal = (on) => { localOn = on; };', context);
+  vm.runInContext(linksSource + '\nthis.links = links; this.linkOpen = linkOpen; this.cloudState = cloudState; this.cloudPair = cloudPair; this.cloudSignOut = cloudSignOut; this.cloudHeartbeatCheck = cloudHeartbeatCheck; this.connect = connect; this.setLocal = (on) => { localOn = on; }; this.localAuthState = () => localAuth;', context);
   const flush = () => new Promise((r) => setImmediate(r));
   const fire = (ms) => timers.splice(0).filter((t) => t.ms === ms || (timers.push(t), false)).forEach((t) => t.fn());
   return { context, sockets, timers, handled, painted, logs, flush, fire, alarm: () => alarm(), storage, created, intervals, badge };
@@ -1159,10 +1177,10 @@ test('links: boot dials local with its handshake query, journal queues until ope
   const h = linksHarness();
   await h.flush();
   assert.equal(h.sockets.length, 1);
-  assert.equal(h.sockets[0].url, 'ws://127.0.0.1:9333/ws?v=9.9.9&id=pid&name=oak&install=dev&boot=123');
+  assert.match(h.sockets[0].url, /^ws:\/\/127\.0\.0\.1:9333\/ws\?v=9\.9\.9&id=pid&name=oak&install=dev&boot=123&c=[A-Za-z0-9_-]{24}$/);
   h.context.journal('boot', null, 'v9.9.9');
   assert.deepEqual(h.sockets[0].sent, [], 'not open yet — queued, not lost');
-  h.sockets[0].open();
+  await h.sockets[0].open();
   assert.deepEqual(h.sockets[0].sent.map((e) => e.kind), ['boot']);
   assert.equal(h.context.linkOpen('local'), true);
 });
@@ -1187,7 +1205,7 @@ test('links: every link strips caller _fields, tags _link and replies on the rec
   const h = linksHarness();
   await h.flush();
   const local = h.sockets[0];
-  local.open();
+  await local.open();
   await local.recv({ id: 1, type: 'snap', urlMatch: 'x', _tabId: 99, _pill: true, _markedByMe: true, _warn: 'forged', _link: 'cloud' });
   assert.deepEqual(h.handled[0], { id: 1, type: 'snap', urlMatch: 'x', _link: 'local' });
   assert.deepEqual(local.sent, [{ id: 1, ok: true, result: 'ok' }], 'a forged _warn never reaches the reply');
@@ -1216,7 +1234,7 @@ test('links: a drop reconnects that link with its backoff, paints only its tabs,
   const h = linksHarness({ driven: [7, 8], owners: new Map([[8, 'cloud']]) });
   await h.flush();
   const local = h.sockets[0];
-  local.open();
+  await local.open();
   h.context.addLink({ id: 'cloud', label: 'cloud', url: 'wss://hub.test/arm', retry: [1000, 4000], dial: async () => 'wss://hub.test/arm' });
   h.context.connect(h.context.links.get('cloud'));
   await h.flush();
@@ -1256,7 +1274,7 @@ test('links: Local AI agents off — no dial at boot, on the alarm or after a dr
   assert.equal(off.sockets.length, 0, 'switched off in storage: this profile never reaches the local server');
   const h = linksHarness({ driven: [7] });
   await h.flush();
-  h.sockets[0].open();
+  await h.sockets[0].open();
   h.timers.length = 0;
   h.context.setLocal(false);
   h.sockets[0].drop();
@@ -1287,7 +1305,7 @@ test('links: a dial still awaiting when Local AI agents goes off opens no socket
   assert.equal(h.sockets.length, 1, 'the post-dial recheck stands down: no second socket');
   const live = linksHarness();
   await live.flush();
-  live.sockets[0].open();
+  await live.sockets[0].open();
   live.context.setLocal(false);
   await live.sockets[0].recv({ id: 4, type: 'click', urlMatch: 'x' });
   assert.deepEqual(live.handled, [], 'nothing ran');
@@ -1301,7 +1319,7 @@ test('links: a stored "off" read slower than the boot watchdog hangs up the sock
   await h.flush();
   h.fire(5000); // the watchdog gives up on the read and connects with the default (on)
   await h.flush();
-  h.sockets[0].open();
+  await h.sockets[0].open();
   finishRead(false);
   await h.flush();
   assert.equal(h.context.linkOpen('local'), false);
@@ -1315,7 +1333,7 @@ test('links: a seat-taken loser stands down without a hot reconnect', async () =
   const h = linksHarness();
   await h.flush();
   const local = h.sockets[0];
-  local.open();
+  await local.open();
   h.context.journal('boot');
   h.timers.length = 0;
   await local.recv({ type: 'seat-taken' });
@@ -1323,6 +1341,129 @@ test('links: a seat-taken loser stands down without a hot reconnect', async () =
   local.drop();
   assert.deepEqual(h.timers, [], 'the keepalive alarm re-probes instead');
   assert.equal(h.handled.length, 0);
+});
+
+test('local auth: the server proves itself first, then we prove back; nothing is sent or run before that', async () => {
+  const h = linksHarness();
+  await h.flush();
+  const ws = h.sockets[0];
+  const url = new URL(ws.url);
+  assert.equal(url.searchParams.has('nokey'), false);
+  h.context.journal('boot');
+  ws.open(false);
+  assert.equal(h.context.linkOpen('local'), false, 'open is not up: no proof yet');
+  await ws.recv({ id: 9, type: 'eval', code: 'document.cookie' }); // anything but the proof first
+  assert.deepEqual(h.handled, [], 'a frame before the proof runs nothing');
+  assert.deepEqual(ws.sent, [], 'and gets nothing back — not even the journal');
+  assert.equal(ws.auth, undefined);
+  assert.equal(h.context.localAuthState().state, 'old-server');
+  const ok = h.sockets.length;
+  await h.flush();
+  // The honest server: its proof, then ours with the same key.
+  const h2 = linksHarness();
+  await h2.flush();
+  const s2 = h2.sockets[0];
+  h2.context.journal('boot');
+  s2.open(false);
+  const challenge = serverAuth(s2.url);
+  await s2.recv(challenge);
+  assert.equal(s2.auth.m, mac(LOCAL_KEY, 'extension', challenge.s, new URL(s2.url).searchParams.get('c')), 'our proof binds the server nonce and ours');
+  assert.equal(h2.context.linkOpen('local'), true);
+  assert.deepEqual({ ...h2.context.localAuthState() }, { state: 'ok' });
+  assert.deepEqual(s2.sent.map((e) => e.kind), ['boot'], 'the journal flushes only after the handshake');
+  await s2.recv({ id: 1, type: 'snap', urlMatch: 'x' });
+  assert.equal(h2.handled.length, 1);
+  assert.ok(ok >= 1);
+});
+
+test('local auth: a server that can\'t prove the key gets nothing, runs nothing, and is retried on a slow backoff (impostor on the port)', async () => {
+  let reads = 0;
+  const h = linksHarness({ nativeHost: async () => (reads++, { k: LOCAL_KEY }) });
+  await h.flush();
+  const ws = h.sockets[0];
+  ws.open(false);
+  h.timers.length = 0;
+  await ws.recv(serverAuth(ws.url, 'x'.repeat(43)));
+  await ws.recv({ id: 2, type: 'fill', text: 'hunter2' });
+  assert.equal(ws.auth, undefined, 'no proof of ours reaches it');
+  assert.deepEqual(ws.sent, []);
+  assert.deepEqual(h.handled, []);
+  assert.equal(reads, 2, 'the key is read once more before calling the server an impostor');
+  assert.equal(h.context.localAuthState().state, 'unverified');
+  assert.equal(ws.readyState, 3);
+  await h.flush();
+  assert.deepEqual(h.timers.filter((t) => t.ms !== 2500).map((t) => t.ms), [1000], 'not the 500ms hot loop');
+  assert.equal(h.context.linkOpen('local'), false);
+});
+
+test('local auth: a rotated key is re-read once and the next connect succeeds without waiting', async () => {
+  let key = LOCAL_KEY;
+  const h = linksHarness({ nativeHost: async () => ({ k: key }) });
+  await h.flush();
+  const first = h.sockets[0];
+  first.open(false);
+  key = 'n'.repeat(43); // the server rotated it (reinstall, or a key other users could read)
+  h.timers.length = 0;
+  await first.recv(serverAuth(first.url, key));
+  await h.flush();
+  assert.deepEqual(h.timers.filter((t) => t.ms !== 2500).map((t) => t.ms), [0], 'redial right away');
+  h.fire(0);
+  await h.flush();
+  const second = h.sockets[1];
+  second.open(false);
+  await second.recv(serverAuth(second.url, key));
+  assert.equal(h.context.linkOpen('local'), true);
+  assert.deepEqual({ ...h.context.localAuthState() }, { state: 'ok' });
+});
+
+test('local auth: no key from Chrome → one &nokey dial says why, then 1s/2s/4s/5s retries; a key later connects', async () => {
+  let reply = () => { throw new Error('Specified native messaging host not found.'); };
+  const h = linksHarness({ nativeHost: async () => reply() });
+  await h.flush();
+  assert.equal(new URL(h.sockets[0].url).searchParams.get('nokey'), 'not-found');
+  assert.deepEqual({ ...h.context.localAuthState() }, { state: 'no-key', why: 'not-found' });
+  const delays = [];
+  for (let i = 0; i < 4; i++) {
+    h.timers.length = 0;
+    h.sockets.at(-1).drop(); // the server refuses a &nokey dial
+    delays.push(h.timers.find((t) => t.ms !== 2500).ms);
+    h.fire(delays.at(-1));
+    await h.flush();
+  }
+  assert.deepEqual(delays, [1000, 2000, 4000, 5000]);
+  for (const [text, why] of [['Access to the specified native messaging host is forbidden.', 'forbidden'], ['Failed to start native messaging host.', 'failed']]) {
+    const x = linksHarness({ nativeHost: async () => { throw new Error(text); } });
+    await x.flush();
+    assert.equal(new URL(x.sockets[0].url).searchParams.get('nokey'), why);
+  }
+  const missing = linksHarness({ nativeHost: async () => ({ e: 'missing' }) });
+  await missing.flush();
+  assert.equal(new URL(missing.sockets[0].url).searchParams.get('nokey'), 'missing');
+  reply = () => ({ k: LOCAL_KEY });
+  h.timers.length = 0;
+  h.sockets.at(-1).drop();
+  h.fire(5000);
+  await h.flush();
+  const ws = h.sockets.at(-1);
+  assert.equal(new URL(ws.url).searchParams.has('nokey'), false, 'the next dial reads the key again');
+  await ws.open();
+  assert.equal(h.context.linkOpen('local'), true);
+  h.timers.length = 0;
+  ws.drop();
+  assert.ok(h.timers.some((t) => t.ms === 500), 'once authenticated, an ordinary drop is back to the flat 500ms');
+});
+
+test('local auth: a server that never proves itself (before 1.34) is left after 5s; the keepalive leaves a handshake alone', async () => {
+  const h = linksHarness();
+  await h.flush();
+  const ws = h.sockets[0];
+  ws.open(false);
+  h.alarm();
+  await h.flush();
+  assert.equal(h.sockets.length, 1, 'the alarm does not kill a socket still proving itself');
+  h.fire(5000);
+  assert.equal(ws.readyState, 3);
+  assert.equal(h.context.localAuthState().state, 'old-server');
 });
 
 // --- Tab ownership per link (A2): findTab's gate, in a vm.
