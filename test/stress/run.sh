@@ -735,6 +735,17 @@ s_type() {
   local took=$((SECONDS - t0))
   assert_grep "heavy editor: long type survives past the old 70s cap" "$OUT/type-heavy.log" 'typed 1000 chars'
   if [ "$took" -gt 70 ]; then ok "heavy editor: the type really outlasted 70s (${took}s)"; else bad "heavy editor: the type took ${took}s — under 70s it no longer tests the cap; raise the payload or the fixture cost"; fi
+  # A lost reply leaves the type running page-side (#32): its keystrokes then land
+  # in the fields the clear checks below empty, failing three of them for no fault
+  # of clear (full e2e, 2026-11-10). Wait it out so only the heavy check reports it.
+  if ! grep -q 'typed 1000 chars' "$OUT/type-heavy.log"; then
+    local i
+    for i in $(seq 1 60); do
+      [ "$("${CLI[@]}" eval "x=type" "window.__bridgeTyping === true" --profile "$P1" 2>/dev/null)" = "true" ] || break
+      sleep 2
+    done
+    echo "  (heavy type's reply was lost; waited ~$((i * 2))s for its page-side keystrokes to finish)"
+  fi
   # #34: clear — the only programmatic emptying path. Plain CE and the
   # preventDefault-ing editor take the native Selection+execCommand delete;
   # the execCommand-blocking editor (the vc.ru symptom) forces the DOM-removal
