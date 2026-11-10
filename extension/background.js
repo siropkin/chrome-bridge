@@ -5223,9 +5223,14 @@ const CROSS_LINK_READS = new Set(['snap', 'shot', 'measure', 'console', 'ask', '
 // toolbar popup copies (also shown in tabs/open output). ONE predicate for
 // findTab / probe / close --all — the three copies this replaced had to be
 // kept in sync by comment.
-const tabMatches = (t, m) => {
+// A cloud link matches a tab it may not read only by its exact id: its URL and
+// title are hidden from it (tabRowFor), and a substring test on them answered
+// yes/no about them — a localhost OAuth code, one character a call (review).
+const tabMatches = (t, m, link) => {
   const id = /^id:(\d+)$/.exec(m || '');
-  return id ? t.id === Number(id[1]) : (t.url || '').includes(m) || (t.title || '').includes(m);
+  if (id) return t.id === Number(id[1]);
+  if (hiddenFrom(link, t)) return false;
+  return (t.url || '').includes(m) || (t.title || '').includes(m);
 };
 
 // Takes the whole msg: records _tabId so the onmessage finally can flip a
@@ -5268,7 +5273,7 @@ async function findTab(msg) {
   // URL or title substring (or an exact id:<tabId> reference) — the same
   // predicate `cli tabs <match>` filters with, so the list the agent picked
   // from and the resolver never disagree.
-  const matches = tabs.filter((t) => tabMatches(t, msg.urlMatch));
+  const matches = tabs.filter((t) => tabMatches(t, msg.urlMatch, msg._link));
   if (!matches.length) {
     if (/^id:\d+$/.test(msg.urlMatch || ''))
       throw new Error(`no tab with ${msg.urlMatch} — tab ids die on browser restart and change on prerender; re-copy it from the toolbar popup`);
@@ -5934,6 +5939,16 @@ async function offLimitsNow(msg) {
 const BACK_OUT = new Set(['navigate', 'release', 'close', 'unemulate', 'open']);
 const withheld = (where, outcome) =>
   `this tab is now on ${where}, on this computer or its local network, so Cloud AI apps get nothing back from it (the command ${outcome}). Go back (nav <match> <public url>) or close it, or ask the user to continue with an AI agent on their computer`;
+// tabs and doctor list every tab: a cloud link gets the row of a tab it may not
+// read without its address and title (a file: path, a localhost URL carrying a
+// token — an OAuth code showed up this way, 2026-11-10), only where it is.
+function hiddenFrom(link, tab) {
+  return (cloudLink(link) && tabOffLimits(tab)) || null;
+}
+function tabRowFor(link, tab, row) {
+  const where = hiddenFrom(link, tab);
+  return where ? { ...row, url: '', title: '', offLimits: `${where}: on this computer or its local network, so Cloud AI apps can't read or use this tab` } : row;
+}
 // --- end off-limits
 
 // Adding a command? EIGHT registries stay in sync (a missing one fails SILENTLY):
@@ -5989,7 +6004,7 @@ async function handle(msg) {
   if (msg.type === 'tabs') {
     const tabs = await chrome.tabs.query({});
     const gTitles = new Map((await chrome.tabGroups.query({})).map((g) => [g.id, g.title]));
-    return tabs.map((t) => ({
+    return tabs.map((t) => tabRowFor(msg._link, t, {
       id: t.id,
       url: t.url, // whole — agents pick their <match> substring from this
       title: (t.title || '').slice(0, 80),
@@ -6019,7 +6034,7 @@ async function handle(msg) {
       const emulated = emulatedTabs.has(t.id);
       const dbg = cdpRefs.has(t.id);
       if (grouped || driven || status || emulated || dbg)
-        rows.push({ id: t.id, url: (t.url || '').slice(0, 80), title: (t.title || '').slice(0, 60), grouped, driven, status, emulated, debugger: dbg });
+        rows.push(tabRowFor(msg._link, t, { id: t.id, url: (t.url || '').slice(0, 80), title: (t.title || '').slice(0, 60), grouped, driven, status, emulated, debugger: dbg }));
     }
     const stale = [...new Set([...drivenTabs, ...tabStatus.keys(), ...tabActivity.keys(), ...emulatedTabs.keys(), ...shotBaselines.keys(), ...failedSinceOk.keys(), ...cdpRefs.keys(), ...tabOwner.keys()])].filter((id) => !live.has(id));
     if (msg.fix && stale.length) {
@@ -6046,7 +6061,7 @@ async function handle(msg) {
   if (msg.type === 'probe') {
     const tabs = await chrome.tabs.query({});
     return tabs
-      .filter((t) => tabMatches(t, msg.urlMatch))
+      .filter((t) => tabMatches(t, msg.urlMatch, msg._link))
       .map((t) => ({ id: t.id, url: (t.url || '').slice(0, 80), lastAccessed: t.lastAccessed || 0 }));
   }
 
@@ -6148,7 +6163,7 @@ async function handle(msg) {
     // and a sibling link's live work is not that.
     if (msg.all) {
       const ts = await chrome.tabs.query({});
-      const found = ts.filter((t) => tabMatches(t, msg.urlMatch));
+      const found = ts.filter((t) => tabMatches(t, msg.urlMatch, msg._link));
       if (!found.length) throw new Error(`no tab matching "${msg.urlMatch}" — already closed? (the match is a URL/title substring)`);
       const matches = found.filter((t) => [null, msg._link].includes(ownerOf(t.id)));
       const skipped = found.length - matches.length;

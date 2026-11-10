@@ -1066,6 +1066,10 @@ try {
       '#61: shot rethrows the real error on a foreign debugger (a doomed fallback would steal the human\'s view) and on every permanent unscriptable wall (chrome://, Web Store — the masked fallback error missed #37\'s unmark and left a pill-less marked tab)'
     );
     assert(
+      bg.includes('return tabs.map((t) => tabRowFor(msg._link, t, {') && bg.includes('rows.push(tabRowFor(msg._link, t, {'),
+      'cloud links get tabs/doctor rows of localhost/LAN/file: tabs without address or title (tabRowFor) — a localhost OAuth code leaked through cloud tabs'
+    );
+    assert(
       bg.includes("couldn't check whether a modal dialog opened") && !bg.includes("modalNoteSrc(m0)).catch(() => '')"),
       '#51: a trusted click whose modal check fails says so (and logs it) instead of reading as "no modal opened" — a full e2e once missed the note with no trace'
     );
@@ -1361,8 +1365,8 @@ try {
     // The id:<tabId> match form the popup copies — one predicate shared by
     // findTab / probe / close --all. Pin it so the branch can't silently die.
     assert(
-      bg.includes('const tabMatches') && bg.includes('/^id:(\\d+)$/') && (bg.match(/tabMatches\(t, msg\.urlMatch\)/g) || []).length === 3,
-      'ext: tabMatches predicate with the id: branch feeds all 3 match sites'
+      bg.includes('const tabMatches') && bg.includes('/^id:(\\d+)$/') && (bg.match(/tabMatches\(t, msg\.urlMatch, msg\._link\)/g) || []).length === 3 && bg.includes('if (hiddenFrom(link, t)) return false;'),
+      'ext: tabMatches predicate with the id: branch feeds all 3 match sites, and never matches a cloud link\'s substring on a tab hidden from it'
     );
     // The hygiene trio: lifecycle journal helper + doctor handler + boot-time
     // reap of dead-session group residue (re-deriving driven state from the

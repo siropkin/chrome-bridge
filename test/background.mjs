@@ -1140,6 +1140,23 @@ test('a web-page tab Chrome refuses as "another extension\'s page" is named a st
   assert.equal(real.error, raw);
 });
 
+test('cloud tabs/doctor rows: a tab on this computer or its network is listed without its address or title (a localhost OAuth callback code leaked, 2026-11-10)', () => {
+  const h = linksHarness();
+  const row = (t) => ({ id: 1, url: t.url, title: t.title, active: true });
+  const rowFor = (link, t) => JSON.parse(JSON.stringify(h.context.tabRowFor(link, t, row(t))));
+  const local = { url: 'http://127.0.0.1:8790/callback?code=gh-1:abc', title: '127.0.0.1:8790/callback?code=gh-1:abc' };
+  assert.deepEqual(rowFor('cloud', local), { id: 1, url: '', title: '', active: true, offLimits: "127.0.0.1:8790: on this computer or its local network, so Cloud AI apps can't read or use this tab" });
+  assert.equal(rowFor('cloud', { url: 'file:///Users/me/secret.pdf', title: 'secret.pdf' }).offLimits, "file: pages: on this computer or its local network, so Cloud AI apps can't read or use this tab");
+  assert.equal(rowFor('cloud', { url: 'https://example.com/', pendingUrl: 'http://192.168.1.1/', title: 'x' }).url, '', 'a tab on its way there counts too');
+  assert.deepEqual(rowFor('local', local), row(local), 'the local link sees everything');
+  const pub = { url: 'https://github.com/x', title: 'GitHub' };
+  assert.deepEqual(rowFor('cloud', pub), row(pub));
+  // The <match> resolver uses the same line (tabMatches skips such a tab for a cloud substring): nothing to probe the hidden URL with.
+  assert.equal(Boolean(h.context.hiddenFrom('cloud', local)), true);
+  assert.equal(h.context.hiddenFrom('local', local), null);
+  assert.equal(h.context.hiddenFrom('cloud', pub), null);
+});
+
 test('cloud replies: nothing comes back from a tab that is now on localhost/LAN — not the result, not its page errors (review)', async () => {
   const tabs = new Map([[7, { id: 7, url: 'http://localhost:3000/' }]]);
   const h = linksHarness({
