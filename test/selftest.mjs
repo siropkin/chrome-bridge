@@ -2172,6 +2172,35 @@ try {
     }
   }
 
+  // stop must not report its completion to the server it just stopped: that
+  // /diagnostics POST lands on a connection the exiting server resets, and on
+  // Node 24 (undici 7, nodejs/undici#6075) the reset can throw an uncaught
+  // EINVAL that crashes the CLI after "stopped" — exit 1, so the documented
+  // `stop && start` never started (found live, 2026-11-09).
+  {
+    const seen = [];
+    const fake = http.createServer((req, res) => {
+      seen.push(`${req.method} ${req.url}`);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    await new Promise((r) => fake.listen(0, '127.0.0.1', r));
+    try {
+      const out = await new Promise((resolve) => {
+        const child = spawn(process.execPath, [`${ROOT}/cli.mjs`, 'stop'], { env: { ...env, BRIDGE_PORT: String(fake.address().port) } });
+        let stdout = '';
+        let stderr = '';
+        child.stdout.on('data', (d) => (stdout += d));
+        child.stderr.on('data', (d) => (stderr += d));
+        child.on('close', (status) => resolve({ status, stdout, stderr }));
+      });
+      await new Promise((r) => setTimeout(r, 100));
+      assert(out.status === 0 && out.stdout.trim() === 'stopped' && seen.join() === 'POST /stop', 'cli stop sends nothing after /stop (no completion report to the stopped server)', `${seen.join(', ')} | ${out.stdout}${out.stderr}`);
+    } finally {
+      fake.close();
+    }
+  }
+
   // stop → health fails → start (detached) → health recovers. Runs last: it
   // kills the test server for real, and `start` spawns a detached replacement
   // that the final stop cleans up.

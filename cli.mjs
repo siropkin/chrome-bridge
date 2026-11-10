@@ -28,7 +28,14 @@ const diagnosticHeaders = () => ({
   'x-bridge-test': process.env.BRIDGE_DIAGNOSTICS_TEST === '1' ? '1' : '0',
 });
 
+// Set by commands that stop the server (stop, uninstall): there is nothing left
+// to report to, and the attempt lands on a connection the exiting server resets,
+// which Node 24's undici can turn into an uncaught EINVAL (nodejs/undici#6075)
+// that crashed the CLI after its job was done — exit 1 broke `stop && start`.
+let serverStopped = false;
+
 async function reportCompletion(type, started, error) {
+  if (serverStopped) return;
   try {
     await fetch(`${BASE}/diagnostics`, {
       method: 'POST', headers: diagnosticHeaders(), signal: AbortSignal.timeout(500),
@@ -698,7 +705,7 @@ async function runCommand(cmdName, args) {
       const h = await fetch(`${BASE}/health`).then((r) => r.json()).catch(() => null);
       const samePath = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
       if (h?.ok && (!h.repo || samePath(String(h.repo).replace(/[\\/]$/, ''), repo)))
-        actions.push(['stop the bridge server', () => fetch(`${BASE}/stop`, { method: 'POST' }).catch(() => null)]);
+        actions.push(['stop the bridge server', () => ((serverStopped = true), fetch(`${BASE}/stop`, { method: 'POST' }).catch(() => null))]);
       else if (h?.ok) kept.push(`the running bridge server belongs to another folder (${h.repo}) — left running`);
       // The agent skill: our symlink, or a copy of our skill.
       const skill = join(homedir(), '.claude', 'skills', 'chrome-bridge');
@@ -842,6 +849,7 @@ async function runCommand(cmdName, args) {
     }
 
     case 'stop': {
+      serverStopped = true;
       const res = await fetch(`${BASE}/stop`, { method: 'POST' }).catch(() => null);
       // Nothing-to-stop is success for the caller's purpose: setup texts tell
       // agents (and install.sh tells humans) `stop && start`, and a fresh
