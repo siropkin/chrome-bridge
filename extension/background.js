@@ -650,9 +650,11 @@ function cloudOpen(link, s) {
 
 // The hub forgot this arm (revoked in its UI, or a reset hub): drop the token
 // and stay down — redialing with it would only be refused again.
+// The notice is for people (the popup's Cloud AI apps line): no "hub", no "pair".
+const CLOUD_FORGOTTEN = 'Cloud Bridge disconnected this Chrome profile (on its web page, or the account\'s data was deleted). To connect it again, turn on Cloud AI apps.';
 function cloudUnpaired(reason) {
   logLine('cloud: the hub refused this profile (' + (reason || 'revoked') + ') — unpaired; pair again from the popup');
-  saveCloud({ token: '', enabled: false, notice: 'The hub no longer knows this Chrome profile. Pair it again.' });
+  saveCloud({ token: '', enabled: false, notice: CLOUD_FORGOTTEN });
 }
 
 // The tools live in commands.js (the hub syncs its pre-pairing list from

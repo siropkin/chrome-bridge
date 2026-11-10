@@ -1825,7 +1825,9 @@ test('cloud: a 4401 close unpairs the profile and stops redialing', async () => 
   await flush();
   assert.equal(storage.cloud.token, '');
   assert.equal(storage.cloud.enabled, false);
-  assert.match(storage.cloud.notice, /Pair it again/);
+  // Read by people in the popup: what happened and the one next step, without "hub"/"pair".
+  assert.equal(storage.cloud.notice, 'Cloud Bridge disconnected this Chrome profile (on its web page, or the account\'s data was deleted). To connect it again, turn on Cloud AI apps.');
+  assert.doesNotMatch(storage.cloud.notice, /\bhub\b|\bpair/i);
   timers.splice(0).forEach((t) => t.fn());
   alarm();
   await flush();
