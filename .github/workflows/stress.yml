@@ -97,3 +97,53 @@ jobs:
         run: |
           for f in test/stress/out/*; do [ -e "$f" ] || continue; echo "=== $f"; tail -40 "$f"; done
           echo "=== chrome log"; tail -50 /tmp/chrome.log
+
+  # Local authentication's Windows path, end to end — nothing else exercises
+  # it (the suite above is Linux; selftest's fake extension never asks Chrome
+  # for the key). Chrome runs a non-.exe native host through cmd.exe, finds it
+  # through HKCU\Software\Google\Chrome\NativeMessagingHosts, and allows the
+  # unpacked extension whose id is the SHA-256 of its UTF-16 path
+  # (nativehost.mjs). authsmoke.mjs: authenticated seat (not legacy) → a
+  # command round trip → extreload comes back authenticated → the host
+  # registration names this checkout's id → unregister removes the registry
+  # values, register brings them back.
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: browser-actions/setup-chrome@v2
+        id: chrome
+      # One step: a background process started in a Windows step isn't
+      # guaranteed to outlive it. Chrome starts AFTER the server with its own
+      # --user-data-dir, like an agent's Chrome. Headful: chrome.debugger
+      # doesn't work headless.
+      - name: Bridge, Chrome with the extension, local-auth smoke
+        run: |
+          node cli.mjs start
+          ( node test/stress/server.mjs >/dev/null 2>&1 & )
+          udd=$(mktemp -d)
+          "${{ steps.chrome.outputs.chrome-path }}" --user-data-dir="$(cygpath -w "$udd")" --no-first-run --no-default-browser-check \
+            --remote-debugging-port=9222 --load-extension="$(cygpath -w "$PWD/extension")" about:blank >chrome.log 2>&1 &
+          for i in $(seq 1 30); do curl -s localhost:9222/json/version >/dev/null && break; sleep 1; done
+          node test/stress/devmode.mjs 9222
+          node test/stress/authsmoke.mjs --uninstall
+          # stop is a signed /stop too; the port must actually free up
+          node cli.mjs stop
+          sleep 1
+          if curl -s localhost:9333/health; then echo "server still up after cli stop"; exit 1; fi
+      - name: Logs on failure
+        if: failure()
+        run: |
+          node cli.mjs health || true
+          echo "=== server.log"; tail -60 server.log || true
+          echo "=== key folder"; ls -la "$LOCALAPPDATA/chrome-bridge" || true
+          for f in "$LOCALAPPDATA"/chrome-bridge/*.json "$LOCALAPPDATA"/chrome-bridge/native-host.cmd; do echo "=== $f"; cat "$f" || true; done
+          echo "=== registry"; MSYS_NO_PATHCONV=1 reg query 'HKCU\Software\Google\Chrome\NativeMessagingHosts' /s || true
+          echo "=== chrome.log"; tail -60 chrome.log || true
