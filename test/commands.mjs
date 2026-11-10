@@ -107,6 +107,11 @@ test('splitLine: --profile routing, verbatim eval payloads, shell-tokenized ever
   assert.equal(json(split('type m @e2 a"b c" \'d e\'')), json({ profile: null, argv: ['type', 'm', '@e2', 'ab c', 'd e'] }));
   assert.equal(json(split('eval m document.querySelector("button").textContent')), json({ profile: null, argv: ['eval', 'm', 'document.querySelector("button").textContent'] }));
   assert.equal(json(split('--profile oak eval "my tab" "a \\"q\\"" --world main')), json({ profile: 'oak', argv: ['eval', 'my tab', 'a "q"', '--world', 'main'] }));
+  // A quoted profile (a Cloud Bridge name with spaces) keeps eval's payload verbatim (review: it fell through to tokenize, which ate the JS's quotes).
+  assert.equal(json(split('--profile "Work laptop" eval body document.querySelector("button").click()')), json({ profile: 'Work laptop', argv: ['eval', 'body', 'document.querySelector("button").click()'] }));
+  assert.equal(json(split("--profile 'Work' eval m \"document.title\"")), json({ profile: 'Work', argv: ['eval', 'm', 'document.title'] }));
+  assert.equal(json(split('--profile "Work laptop" snap m')), json({ profile: 'Work laptop', argv: ['snap', 'm'] }));
+  assert.throws(() => C.splitLine('--profile "" eval m 1'), /--profile needs an id or name/);
   assert.throws(() => C.splitLine('eval m'), /usage: eval <match>/);
   assert.throws(() => C.splitLine("snap 'open"), /unterminated quote in batch line/);
   assert.throws(() => C.splitLine('--profile --x snap m'), /--profile needs an id or name/);

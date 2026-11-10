@@ -1758,6 +1758,24 @@ test('cloud: every command carries a dispatch deadline like the local server\'s 
   assert.ok(human.deadlineAt >= t0 + 120000, 'a human hand-off gets its own timeout');
 });
 
+test('cloud: --profile accepts the name the user gave this Chrome on the hub (arm/name), any case, and the refusal names both', async () => {
+  const { call, handled, text, ws, flush } = await cloudArm();
+  await ws.recv({ jsonrpc: '2.0', method: 'arm/name', params: { name: 'Work laptop' } });
+  await flush();
+  assert.equal(text(await call('chrome', { command: '--profile "work LAPTOP" tabs' })), 'ok');
+  // Its word name may be another Chrome's hub name now (review): through the cloud, only the hub name counts.
+  assert.equal(text(await call('chrome', { command: '--profile oak tabs' })), '--profile oak is not this Chrome ("Work laptop" on Cloud Bridge; "oak" is its chrome-bridge name, which Cloud Bridge doesn\'t use since the rename). Pick the Chrome with the tool\'s profile argument instead.');
+  assert.equal(text(await call('chrome', { command: '--profile elm tabs' })), '--profile elm is not this Chrome ("Work laptop" on Cloud Bridge). Pick the Chrome with the tool\'s profile argument instead.');
+  assert.equal(text(await call('chrome', { command: '--profile "Work laptop" eval x document.querySelector("b").id' })), 'ok', 'a quoted hub name keeps eval verbatim');
+  assert.equal(handled.at(-1).code, 'document.querySelector("b").id');
+  assert.deepEqual(handled.map((m) => m.type), ['tabs', 'eval']);
+  // Not renamed: the hub name is the word name, and both spellings work.
+  await ws.recv({ jsonrpc: '2.0', method: 'arm/name', params: { name: 'oak' } });
+  await flush();
+  assert.equal(text(await call('chrome', { command: '--profile OAK tabs' })), 'ok');
+  assert.equal(text(await call('chrome', { command: '--profile oak tabs' })), 'ok');
+});
+
 test('cloud: a command line runs through the CLI grammar, tagged with the cloud link', async () => {
   const { call, handled, text } = await cloudArm();
   const r = await call('chrome', { command: 'snap github' });

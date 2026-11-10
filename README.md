@@ -152,6 +152,8 @@ Cloud Bridge lets cloud AI apps (Claude.ai, ChatGPT, other remote-MCP clients) d
 
 Turning **Cloud AI apps** off signs this browser out of Cloud Bridge at once: it forgets the token and the hub forgets this profile, so AI apps stop listing it. Turning it on again connects anew. A connector added before any Chrome is connected already has the Chrome tools; until one connects they answer with how to connect it. The public hub (`https://cloud-bridge.ivan-seredkin.workers.dev`, a preview of [siropkin/cloud-bridge](https://github.com/siropkin/cloud-bridge)) is run by the chrome-bridge developer; [PRIVACY.md](PRIVACY.md) says what it keeps. You can deploy your own instead (its README shows how).
 
+**Your Cloud Bridge page** (`<hub>/app`, signed in with GitHub) lists the Chrome profiles you connected and the AI apps you allowed: **Rename** a profile (AI apps then pick it by that name, in the tools' `profile` argument or `--profile` in a command line; chrome-bridge keeps its own name on your computer), **Disconnect** one (the popup then says Cloud Bridge disconnected it; turn Cloud AI apps on to connect again), **Remove** an AI app, or **Delete my data**.
+
 What agents see while two links are on:
 
 - **Each link owns the tabs it drives.** A tab driven through the other link is read-only from yours (`snap`, `shot`, `measure`, `console`, `ask`, `perf`, `net`). Actions on it are refused with the next step: open your own tab.

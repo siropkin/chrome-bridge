@@ -649,6 +649,7 @@ addLink({
 
 function cloudOpen(link, s) {
   const version = chrome.runtime.getManifest().version;
+  link.hubName = ''; // this connection's hub sends its own (arm/name), or none (an older hub)
   s.send(JSON.stringify({ jsonrpc: '2.0', method: 'arm/hello', params: {
     kind: 'chrome', name: PROFILE_NAME, version, selector: 'profile',
     offlineHint: `Ask the user to open Chrome (the profile chrome-bridge calls "${PROFILE_NAME}") and check that Cloud AI apps is on in the chrome-bridge popup's ⚙ Settings`,
@@ -827,6 +828,14 @@ async function cloudMessage(link, s, data) {
     link.policy = { commands: {}, blockedDomains: [], ...(msg.params && typeof msg.params === 'object' ? msg.params : {}) };
     return;
   }
+  // The name AI apps pick this profile by: the user may rename it on the
+  // hub's page ("Work laptop"), and a command line saying --profile with that
+  // name means this Chrome. Sent on every connection and on each rename.
+  if (msg.method === 'arm/name') {
+    const name = msg.params?.name;
+    link.hubName = typeof name === 'string' && name.trim() ? name.trim().slice(0, 64) : '';
+    return;
+  }
   if (msg.id === undefined || msg.id === null) return; // a notification this version doesn't know
   if (!msg.method && cloudPending.has(msg.id)) {
     const p = cloudPending.get(msg.id);
@@ -892,8 +901,19 @@ async function cloudLine(link, line) {
     return cloudText(cloudWords(errMsg(err)), true);
   }
   const { profile, argv } = split;
-  if (profile && profile !== PROFILE_NAME && !(PROFILE_ID && PROFILE_ID.startsWith(profile)))
-    return cloudText(`--profile ${profile} is not this Chrome ("${PROFILE_NAME}"). Pick the Chrome with the tool's profile argument instead.`, true);
+  // Through the cloud a Chrome is the name AI apps pick it by. Once the user
+  // renamed it on the hub's page, that name (any case, as the hub compares)
+  // is the only one: hub names are unique only among themselves, so this
+  // Chrome's word name may be ANOTHER Chrome's hub name, and accepting it
+  // would run the line here when the hub routed it here for another reason
+  // (review). Without a hub rename the word name is the hub name.
+  const hubName = link?.hubName || '';
+  const renamed = hubName && hubName !== PROFILE_NAME;
+  const named = renamed ? profile?.toLowerCase() === hubName.toLowerCase() : profile === PROFILE_NAME || (hubName && profile?.toLowerCase() === hubName.toLowerCase());
+  if (profile && !named && !(PROFILE_ID && PROFILE_ID.startsWith(profile))) {
+    const known = renamed ? `"${hubName}" on Cloud Bridge${profile === PROFILE_NAME ? `; "${PROFILE_NAME}" is its chrome-bridge name, which Cloud Bridge doesn't use since the rename` : ''}` : `"${PROFILE_NAME}"`;
+    return cloudText(`--profile ${profile} is not this Chrome (${known}). Pick the Chrome with the tool's profile argument instead.`, true);
+  }
   return cloudArgv(link, argv);
 }
 

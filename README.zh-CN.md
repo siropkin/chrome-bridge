@@ -150,6 +150,8 @@ Cloud Bridge 让云端 AI 应用(Claude.ai、ChatGPT 和其他远程 MCP 客户�
 
 关闭 **Cloud AI apps** 会立即让这个浏览器退出 Cloud Bridge:浏览器丢弃令牌,hub 也删除这个配置的记录,AI 应用不再列出它。再次打开会重新连接。在连接任何 Chrome 之前就添加的连接器已经带有 Chrome 工具;在 Chrome 连接之前,它们会回复如何连接。公共 hub(`https://cloud-bridge.ivan-seredkin.workers.dev`,[siropkin/cloud-bridge](https://github.com/siropkin/cloud-bridge) 的预览版)由 chrome-bridge 的开发者运行;它保存哪些数据见 [PRIVACY.md](PRIVACY.md)。你也可以自己部署(见其 README)。
 
+**你的 Cloud Bridge 页面**(`<hub>/app`,用 GitHub 登录)列出你连接的 Chrome 配置和你允许的 AI 应用:可以 **Rename** 某个配置(AI 应用之后用这个名字选择它,包括工具的 `profile` 参数和命令行里的 `--profile`;本机上的 chrome-bridge 名字不变)、**Disconnect** 某个配置(弹窗会提示 Cloud Bridge 已断开它;重新打开 Cloud AI apps 即可再次连接)、**Remove** 某个 AI 应用,或 **Delete my data**。
+
 两条连接同时开启时,智能体会看到:
 
 - **每条连接拥有它驱动的标签页。** 另一条连接驱动的标签页,对你只读(`snap`、`shot`、`measure`、`console`、`ask`、`perf`、`net`)。在上面执行操作会被拒绝,并给出下一步:打开你自己的标签页。

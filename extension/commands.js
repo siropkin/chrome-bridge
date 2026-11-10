@@ -157,12 +157,17 @@
   // is unquoted once so a replay round-trips the original code.
   function splitLine(line) {
     let profile = null;
-    if (/^(?:--profile\s+\S+\s+)?eval(\s|$)/.test(line)) {
+    // The profile may be quoted ("Work laptop": a name given on the Cloud Bridge
+    // page can have spaces); missing that sent the line to tokenize(), which
+    // strips the JS's own quotes (#42 again).
+    const PROFILE = /^--profile\s+("[^"]*"|'[^']*'|\S+)\s+/;
+    const prof = line.match(PROFILE);
+    if (/^eval(\s|$)/.test(prof ? line.slice(prof[0].length) : line)) {
       let rest = line;
-      const prof = rest.match(/^--profile\s+(\S+)\s+/);
       if (prof) {
-        if (prof[1].startsWith('--')) fail('--profile needs an id or name (see: cli.mjs profiles)');
-        profile = prof[1];
+        const name = /^["']/.test(prof[1]) ? prof[1].slice(1, -1) : prof[1];
+        if (!name || name.startsWith('--')) fail('--profile needs an id or name (see: cli.mjs profiles)');
+        profile = name;
         rest = rest.slice(prof[0].length);
       }
       rest = rest.replace(/^eval/, '').trimStart();
