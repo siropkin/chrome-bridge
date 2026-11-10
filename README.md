@@ -184,7 +184,7 @@ Since Chrome 136 (May 2025), Chrome ignores `--remote-debugging-port` on your de
 
 You're giving an agent your logged-in browser, so the design assumes you want to watch it work.
 
-- **Local only.** The server listens on `127.0.0.1` and rejects requests that come from web pages, so a site you visit can't drive it. **Any local process can**, though. Unload the extension at `chrome://extensions` when you're not using it.
+- **Local only.** The server listens on `127.0.0.1` and rejects requests that come from web pages, so a site you visit can't drive it. **Any local process can**, though, including another user account on the same computer: nothing authenticates the local connection yet, so on a shared computer someone else could drive your Chrome (and `upload` your files) while the bridge runs, or start their own server on port 9333 while yours is stopped. Use it on a computer only you sign in to. Unload the extension at `chrome://extensions` when you're not using it.
 - **Readable code.** The whole extension is one unminified file (`extension/background.js`) plus a manifest. The Web Store build is the same files.
 - **Page content is untrusted.** Anything the bridge returns may contain prompt injection; the rules agents follow are in [the skill](.claude/skills/chrome-bridge/SKILL.md). Be careful with `upload`: it reads any local file the agent names into the page. Never let a page decide what gets attached.
 - **Exported history leaves out secrets.** `history --batch` comments out typed and pasted text, dialog answers and upload paths.
