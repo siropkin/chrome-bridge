@@ -1128,6 +1128,18 @@ function linksHarness({ owners = new Map(), driven = [], idReady = Promise.resol
   return { context, sockets, timers, handled, painted, logs, flush, fire, alarm: () => alarm(), storage, created, intervals, badge };
 }
 
+test('a web-page tab Chrome refuses as "another extension\'s page" is named a stuck tab with its remedy, not sent hunting for an extension (found live, 2026-11-10)', async () => {
+  const tabs = new Map([[7, { id: 7, url: 'http://localhost:8787/app' }], [8, { id: 8, url: 'chrome-extension://abcdefghijklmnop/page.html' }]]);
+  const raw = 'Cannot access a chrome-extension:// URL of different extension';
+  const h = linksHarness({ tabsGet: async (id) => tabs.get(id), handle: async (msg) => { msg._tabId = Number(msg.urlMatch); throw new Error(raw); } });
+  const stuck = await h.context.runCommand({ id: 'local' }, { type: 'snap', urlMatch: '7' });
+  assert.equal(stuck.ok, false);
+  assert.equal(stuck.error, "Chrome refuses scripts on this tab as if it showed another extension's page, though it shows a web page (a stuck tab, e.g. after a debugger session ended) — reload it (nav <match> <its url>); if it's still refused, close it and open the page in a new tab");
+  // A tab really ON another extension's page keeps Chrome's own error (wrapErr names it).
+  const real = await h.context.runCommand({ id: 'local' }, { type: 'snap', urlMatch: '8' });
+  assert.equal(real.error, raw);
+});
+
 test('cloud replies: nothing comes back from a tab that is now on localhost/LAN — not the result, not its page errors (review)', async () => {
   const tabs = new Map([[7, { id: 7, url: 'http://localhost:3000/' }]]);
   const h = linksHarness({

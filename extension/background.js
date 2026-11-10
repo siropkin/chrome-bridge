@@ -323,6 +323,19 @@ function journal(kind, tabId, detail) {
   }
 }
 
+// Chrome refuses a tab that shows an ordinary web page with the error meant for
+// another extension's page ("Cannot access a chrome-extension:// URL…"): the tab
+// is stuck in Chrome. Seen after a debugger session ended, and live on
+// 2026-11-10 after a sign-in redirect, where a reload didn't clear it but a new
+// tab on the same URL worked. "That tab shows another extension's page" sent
+// the agent looking for an extension that wasn't there.
+const STUCK_TAB = "Chrome refuses scripts on this tab as if it showed another extension's page, though it shows a web page (a stuck tab, e.g. after a debugger session ended) — reload it (nav <match> <its url>); if it's still refused, close it and open the page in a new tab";
+async function stuckTab(err, tabId) {
+  if (tabId == null || !/Cannot access a chrome-extension:\/\/ URL/.test(String(err?.message || err))) return false;
+  const url = (await chrome.tabs.get(tabId).catch(() => null))?.url || '';
+  return /^https?:/.test(url);
+}
+
 // One command from any link: strip caller-supplied _fields, tag the link, run
 // it with the pill/favicon bookkeeping, and answer with the reply envelope
 // {ok, result | error, pageErrors?} (the local link sends it as-is with its id;
@@ -356,6 +369,7 @@ async function runCommand(link, msg) {
   } catch (err) {
     failed = true;
     let wrapped = wrapErr(err); // raw Chrome tab-gone noise → named cause + recovery
+    if (await stuckTab(err, msg._tabId)) wrapped = STUCK_TAB;
     // The gate's own refusal stands; any other error from a tab now off-limits is withheld (it can quote the page).
     const off = err?.offLimits || (await offLimitsNow(msg));
     if (off && !err?.offLimits) wrapped = withheld(off, 'failed');
@@ -4704,13 +4718,12 @@ async function runEval(tabId, code, world) {
       // opening, a debugger-hostile page like console.cloud.google.com),
       // Chrome leaves the tab reporting its http(s) URL while injection fails
       // as if the document were another extension's page — every command then
-      // dies with Chrome's misleading error until a reload. Name it and the
-      // remedy instead. A tab genuinely ON another extension's page keeps the
+      // dies with Chrome's misleading error (a reload may not clear it; a new
+      // tab does). Name it and the remedy instead (STUCK_TAB). A tab genuinely ON another extension's page keeps the
       // original error (its URL is chrome-extension://).
       if (/Cannot access a chrome-extension:\/\/ URL/.test(String(e))) {
         const url = (await chrome.tabs.get(tabId).catch(() => null))?.url || '';
-        if (/^https?:/.test(url))
-          throw new Error('tab wedged after an external debugger detach — reload it (nav <match> <its url>) and retry');
+        if (/^https?:/.test(url)) throw new Error(STUCK_TAB);
       }
       throw e;
     }
