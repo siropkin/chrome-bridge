@@ -197,6 +197,29 @@ test('close --all validates every reclaim before removing any tab without markin
   assert.deepEqual(removed, [9]);
 });
 
+test('cloud links reach public web pages only: no localhost, LAN, *.local or file: (S1, decision cloud-private-net)', () => {
+  const offSource = source.slice(source.indexOf('function privateHost('), source.indexOf('// --- end off-limits'));
+  const context = vm.createContext({ URL });
+  vm.runInContext(offSource, context);
+  const run = (type, url, link = 'cloud') => context.refuseOffLimits({ type, url, urlMatch: 'x', _link: link });
+  for (const url of [
+    'http://127.0.0.1:9333/log', // the local agent's command feed
+    'http://localhost:3000/', 'http://app.localhost/', 'http://[::1]:9333/health', 'http://192.168.1.1/admin', 'http://10.0.0.5/',
+    'http://172.20.1.1/', 'http://169.254.169.254/latest/meta-data', 'http://100.64.0.1/', 'http://printer.local./', 'http://0/',
+    'http://0x7f.1/', 'http://2130706433/', 'http://[::ffff:127.0.0.1]/', 'http://[fd00::1]/', 'http://[fe80::1]/',
+    'file:///etc/passwd', 'view-source:http://127.0.0.1:9333/log', 'data:text/html,<b>x</b>', 'about:settings',
+  ]) {
+    for (const type of ['open', 'navigate', 'fetch']) assert.throws(() => run(type, url), /is on this computer or its local network — Cloud AI apps reach public web pages only .*nothing ran\. Ask the user to do this with an AI agent on their computer/, `${type} ${url}`);
+  }
+  for (const url of ['https://example.com/', 'http://8.8.8.8/', 'about:blank', 'https://172.15.0.1/', 'https://localhost.example.com/']) assert.doesNotThrow(() => run('open', url), url);
+  // Local agents keep their reach; other commands aren't URL commands.
+  assert.doesNotThrow(() => run('open', 'http://127.0.0.1:9333/log', 'local'));
+  assert.doesNotThrow(() => context.refuseOffLimits({ type: 'click', urlMatch: '192.168.1.1', _link: 'cloud' }));
+  // Tripwire: handle() applies it before any command branch runs.
+  const handleHead = source.slice(source.indexOf('async function handle(msg) {'), source.indexOf("if (msg.type === 'ping')"));
+  assert.match(handleHead, /refuseOffLimits\(msg\);/);
+});
+
 test('open: a URL that only downloads (Chrome closes its tab) says so, not "re-find it" (found live)', async () => {
   const openedSource = source.slice(source.indexOf('async function openedTabUrl('), source.indexOf('// Bounded wait for a tab'));
   const tabs = new Map([[5, { url: '' }], [6, { url: 'https://example.test/x' }]]);

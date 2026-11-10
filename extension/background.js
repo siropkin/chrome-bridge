@@ -5622,6 +5622,40 @@ async function cmdShot(tab, msg) {
   }
 }
 
+// Cloud links stay on the public web (decision cloud-private-net, S1): an AI app,
+// or a page prompt-injecting it, opened http://127.0.0.1:9333/log (the local
+// agent's commands), a router at 192.168.1.1 or file:///. Literal addresses and
+// local names only — a public DNS name pointing into the LAN gets through, as it
+// would for any web page; the server's Host guard covers its own aliases. Local
+// agents are unaffected.
+function privateHost(hostname) {
+  const h = hostname.replace(/^\[|\]$/g, '').toLowerCase().replace(/\.+$/, '');
+  if (!h || h === 'localhost' || /\.(localhost|local)$/.test(h)) return true;
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(h)) {
+    const [a, b] = h.split('.').map(Number);
+    return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
+  }
+  if (!h.includes(':')) return false;
+  // IPv6 loopback/unspecified, unique-local, link-local, and IPv4 inside it
+  // (::a.b.c.d, ::ffff:…, NAT64): the URL parser writes those as hex.
+  return h === '::' || h === '::1' || /^f[cd]/.test(h) || /^fe[89ab]/.test(h) || h.startsWith('::ffff:') || /^::[0-9a-f]{1,4}(:[0-9a-f]{1,4})?$/.test(h) || h.startsWith('64:ff9b:');
+}
+
+function refuseOffLimits(msg) {
+  if (!msg._link || msg._link === 'local' || !['open', 'navigate', 'fetch'].includes(msg.type)) return;
+  let u;
+  try {
+    u = new URL(msg.url);
+  } catch {
+    return; // a bad URL is worded by the command's own check
+  }
+  const web = u.protocol === 'http:' || u.protocol === 'https:';
+  const where = web ? (privateHost(u.hostname) ? u.host : null) : u.href === 'about:blank' ? null : u.protocol + ' pages';
+  if (where)
+    throw new Error(`${where} is on this computer or its local network — Cloud AI apps reach public web pages only (not localhost, private or link-local addresses, *.local, or file:, data: and view-source: pages); nothing ran. Ask the user to do this with an AI agent on their computer, or to open it themselves`);
+}
+// --- end off-limits
+
 // Adding a command? EIGHT registries stay in sync (a missing one fails SILENTLY):
 // cli.mjs USAGE · extension/commands.js REGISTRY + parse() (or cli.mjs run() for the
 // commands the CLI handles itself) · server.mjs CLI_LINES · server.mjs route() (only if it
@@ -5649,6 +5683,7 @@ async function handle(msg) {
     if (u.protocol === 'chrome:' || u.protocol === 'chrome-extension:' || u.host === 'chromewebstore.google.com' || (u.host === 'chrome.google.com' && u.pathname.startsWith('/webstore')))
       throw new Error(`"${u.protocol}//${u.host}" can never be driven — Chrome blocks extension scripting on chrome:// pages, other extensions' pages, and the Web Store. Open it by hand for the human instead; the bridge would only leave a marked tab it can't act on`);
   }
+  refuseOffLimits(msg);
 
   if (msg.type === 'ping') {
     return 'pong';
