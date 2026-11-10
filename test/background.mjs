@@ -1060,7 +1060,7 @@ const linksSource = source.slice(source.indexOf('// --- Links ---'), source.inde
 
 const commandsSource = fs.readFileSync(new URL('../extension/commands.js', import.meta.url), 'utf8');
 
-function linksHarness({ owners = new Map(), driven = [], idReady = Promise.resolve(), cloud, localAgents, localRead, handle, fetchImpl } = {}) {
+function linksHarness({ owners = new Map(), driven = [], idReady = Promise.resolve(), cloud, localAgents, localRead, handle, fetchImpl, tabsGet = async () => null } = {}) {
   const sockets = [];
   const logs = [];
   const timers = [];
@@ -1091,7 +1091,7 @@ function linksHarness({ owners = new Map(), driven = [], idReady = Promise.resol
     chrome: {
       runtime: { getManifest: () => ({ version: '9.9.9' }) }, alarms: { create() {}, onAlarm: { addListener: (fn) => { alarm = fn; } } },
       storage: { local: { get: async (k) => (k === 'localAgents' && localRead ? { localAgents: await localRead } : { [k]: storage[k] }), set: async (o) => Object.assign(storage, structuredClone(o)) } },
-      tabs: { create: async (o) => created.push(o) },
+      tabs: { create: async (o) => created.push(o), get: tabsGet },
       action: { setBadgeText: async (o) => badge.push(['text', o.text]), setBadgeBackgroundColor: async () => {}, setTitle: async (o) => badge.push(['title', o.title]) },
     },
     logLine: (line) => logs.push(line), drivenTabs, ownerOf: (tabId) => (drivenTabs.has(tabId) ? owners.get(tabId) || 'local' : null),
@@ -1102,11 +1102,58 @@ function linksHarness({ owners = new Map(), driven = [], idReady = Promise.resol
     pageErrorsFor: async () => null, currentActivity: () => false,
   });
   vm.runInContext(commandsSource, context); // the worker's importScripts('commands.js')
+  // runCommand withholds replies from cloud tabs now on localhost/LAN (the off-limits helpers).
+  vm.runInContext(source.slice(source.indexOf('function privateHost('), source.indexOf('// --- end off-limits')), context);
   vm.runInContext(linksSource + '\nthis.links = links; this.linkOpen = linkOpen; this.cloudState = cloudState; this.cloudPair = cloudPair; this.cloudSignOut = cloudSignOut; this.cloudHeartbeatCheck = cloudHeartbeatCheck; this.connect = connect; this.setLocal = (on) => { localOn = on; };', context);
   const flush = () => new Promise((r) => setImmediate(r));
   const fire = (ms) => timers.splice(0).filter((t) => t.ms === ms || (timers.push(t), false)).forEach((t) => t.fn());
   return { context, sockets, timers, handled, painted, logs, flush, fire, alarm: () => alarm(), storage, created, intervals, badge };
 }
+
+test('cloud replies: nothing comes back from a tab that is now on localhost/LAN — not the result, not its page errors (review)', async () => {
+  const tabs = new Map([[7, { id: 7, url: 'http://localhost:3000/' }]]);
+  const h = linksHarness({
+    tabsGet: async (id) => tabs.get(id),
+    handle: async (msg) => {
+      msg._tabId = 7;
+      if (msg.type === 'navigate') return { id: 7, loaded: false };
+      if (msg.type === 'open') return { id: 7, url: 'http://localhost:3000/', loaded: true };
+      if (msg.type === 'eval') throw new Error('TypeError: token=router-secret');
+      if (msg.type === 'click') throw Object.assign(new Error('this tab is on localhost:3000, which is on this computer or its local network — …'), { offLimits: true });
+      return 'secret page text';
+    },
+  });
+  let drained = 0;
+  h.context.pageErrorsFor = async () => (drained++, { count: 1, lines: ['Error: dev server secret'] });
+  const run = (link, msg) => h.context.runCommand({ id: link }, msg);
+  const snap = await run('cloud', { type: 'snap', urlMatch: 'x' });
+  assert.equal(snap.ok, false, 'an error every renderer handles (shot would have made the text an image)');
+  assert.match(snap.error, /^this tab is now on localhost:3000, on this computer or its local network, so Cloud AI apps get nothing back from it \(the command ran\)\. Go back/);
+  assert.equal(snap.pageErrors, undefined);
+  // open keeps its id (fetch's scratch tab is closed by it): ids and addresses, no page content.
+  const opened = await run('cloud', { type: 'open', url: 'https://public.example/r' });
+  assert.deepEqual({ ...opened.result }, { id: 7, url: 'http://localhost:3000/', loaded: true });
+  assert.equal(opened.pageErrors, undefined);
+  // Backing out answers, but without the page's errors (nav to a 204 leaves the LAN page shown).
+  const nav = await run('cloud', { type: 'navigate', urlMatch: 'x', url: 'https://httpbin.org/status/204' });
+  assert.deepEqual({ ...nav.result }, { id: 7, loaded: false });
+  assert.equal(nav.pageErrors, undefined);
+  const failed = await run('cloud', { type: 'eval', urlMatch: 'x', code: '1' });
+  assert.equal(failed.ok, false);
+  assert.doesNotMatch(failed.error, /router-secret/);
+  assert.match(failed.error, /\(the command failed\)/);
+  const gate = await run('cloud', { type: 'click', urlMatch: 'x', target: '@e1' });
+  assert.match(gate.error, /^this tab is on localhost:3000, which/, 'the gate\'s own refusal passes through');
+  assert.equal(drained, 0, 'no page errors drained for a cloud reply from that tab');
+  // The local link reads it as before; a public tab answers the cloud as before.
+  const local = await run('local', { type: 'snap', urlMatch: 'x' });
+  assert.equal(local.result, 'secret page text');
+  assert.ok(local.pageErrors);
+  tabs.set(7, { id: 7, url: 'https://example.com/' });
+  const pub = await run('cloud', { type: 'snap', urlMatch: 'x' });
+  assert.equal(pub.result, 'secret page text');
+  assert.ok(pub.pageErrors);
+});
 
 test('links: boot dials local with its handshake query, journal queues until open', async () => {
   const h = linksHarness();

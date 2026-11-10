@@ -231,6 +231,9 @@ async function runCommand(link, msg) {
   let failed = false;
   try {
     let result = await handle(msg);
+    const off = await offLimitsNow(msg);
+    // An error, not a swapped result: every renderer (shot's image, fetch's body) handles one.
+    if (off && !BACK_OUT.has(msg.type)) throw Object.assign(new Error(withheld(off, 'ran')), { offLimits: true });
     // A few legacy/diagnostic call paths can still attach a warning. Keep
     // it visible whatever the result shape is; tab-targeting commands now
     // reject ambiguity before they can dispatch an action (findTab).
@@ -241,11 +244,14 @@ async function runCommand(link, msg) {
       else if (result !== undefined && result !== null) result = [result, msg._warn]; // primitives (eval "1+1") — the warning must not vanish
     }
     // A separate field, never merged into result: eval output stays byte-identical for scripts parsing it.
-    const pageErrors = await pageErrorsFor(msg);
+    const pageErrors = off ? null : await pageErrorsFor(msg);
     return { ok: true, result, ...(pageErrors ? { pageErrors } : {}) };
   } catch (err) {
     failed = true;
     let wrapped = wrapErr(err); // raw Chrome tab-gone noise → named cause + recovery
+    // The gate's own refusal stands; any other error from a tab now off-limits is withheld (it can quote the page).
+    const off = err?.offLimits || (await offLimitsNow(msg));
+    if (off && !err?.offLimits) wrapped = withheld(off, 'failed');
     // #37: a command that MARKED the tab (this command, just now) and then
     // hit Chrome's permanent "nothing here is drivable" wall (chrome://,
     // Web Store, PDF, another extension's page, an unattachable debugger)
@@ -269,7 +275,7 @@ async function runCommand(link, msg) {
       // instead of narrating agent-speak ('✗ clicked @e4').
       pillWrite(msg._tabId, ['✗ ' + done, lines, msg.target || null, false], 'MAIN');
     }
-    const pageErrors = await pageErrorsFor(msg);
+    const pageErrors = off ? null : await pageErrorsFor(msg);
     return { ok: false, error: wrapped, ...(pageErrors ? { pageErrors } : {}) };
   } finally {
     // ✅ when a command on a driven tab lands, ✗ when it failed — the strip
@@ -5740,6 +5746,20 @@ async function offLimitsLanding(tabId) {
   const where = t && tabOffLimits(t);
   return where ? `${where} — on this computer or its local network, so Cloud AI apps get no snapshot of it. Go back (nav <match> <public url>) or close it, or ask the user to continue with an AI agent on their computer` : null;
 }
+// Where a cloud command's tab is when the command is done: a page can move
+// between the gate and the read (a self-navigation mid-shot), and the reply's
+// pageErrors come from whatever page is shown — nav or unemulate on a LAN tab
+// returned its console errors (review). Null for the local link.
+async function offLimitsNow(msg) {
+  if (!cloudLink(msg._link) || msg._tabId == null) return null;
+  const t = await chrome.tabs.get(msg._tabId).catch(() => null);
+  return t ? tabOffLimits(t) : null;
+}
+// What may still answer from such a tab: backing out of it, and open (its id and
+// address, no page content: fetch's scratch tab needs the id to be closed).
+const BACK_OUT = new Set(['navigate', 'release', 'close', 'unemulate', 'open']);
+const withheld = (where, outcome) =>
+  `this tab is now on ${where}, on this computer or its local network, so Cloud AI apps get nothing back from it (the command ${outcome}). Go back (nav <match> <public url>) or close it, or ask the user to continue with an AI agent on their computer`;
 // --- end off-limits
 
 // Adding a command? EIGHT registries stay in sync (a missing one fails SILENTLY):
