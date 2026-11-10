@@ -1008,18 +1008,24 @@ s_doctor() {
   # (ungrouped, unmarked) before doctor ever has something to report.
   "${CLI[@]}" open "$FX/static.html?x=doctor" --profile "$P1" >/dev/null
   "${CLI[@]}" tabs "x=doctor" | grep -q '"group":"🟣 Bridge"' && ok "tab grouped while driven" || bad "driven tab not grouped"
+  local t0 reloaded=""
+  t0=$(node -e 'console.log(Date.now())')
   "${CLI[@]}" extreload --profile "$P1" >/dev/null 2>&1
   # P2 is never reloaded and doctor stays on P1: P2 may be a profile another
   # session is driving — a reload killed its in-flight command mid-run (e2e
   # run, 07:03), and a profile-wide doctor --fix touched its tabs too.
   # reconnect + hydration + the boot reap — poll, don't sleep: a cold CI
   # profile takes far longer than 5s, and the ngrep asserts below PASS
-  # vacuously on "extension not connected" output (the blind spot this closes)
-  for _ in $(seq 1 10); do
-    "${CLI[@]}" health 2>/dev/null | grep -q '"extension":true' && break
-    sleep 3
+  # vacuously on "extension not connected" output (the blind spot this closes).
+  # Wait for the NEW worker (its swlogs "loaded <time>" after t0), not
+  # "extension":true — the old socket still answers that for a moment after
+  # extreload returns, and the next check then fell into the reconnect gap
+  # (CI, 1.34.0: FAIL 0.47s after the previous PASS, the 30s poll never ran).
+  for _ in $(seq 1 15); do
+    sleep 2
+    if "${CLI[@]}" swlogs --profile "$P1" 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.exit([...s.matchAll(/ loaded (\S+Z)/g)].some((m)=>Date.parse(m[1])>=Number(process.argv[1]))?0:1))' "$t0"; then reloaded=1; break; fi
   done
-  "${CLI[@]}" health 2>/dev/null | grep -q '"extension":true' || bad "extension reconnected after extreload"
+  [ -n "$reloaded" ] && "${CLI[@]}" health 2>/dev/null | grep -q '"extension":true' || bad "extension reconnected after extreload"
   sleep 2 # hydration + reap trail the seat
   "${CLI[@]}" tabs "x=doctor" >"$OUT/doctor-1.log" 2>&1
   assert_ngrep "boot reaps the dead-session group membership" "$OUT/doctor-1.log" '🟣 Bridge'
