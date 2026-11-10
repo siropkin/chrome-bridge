@@ -46,13 +46,21 @@ jobs:
             --user-data-dir="$(mktemp -d)" --no-first-run --no-default-browser-check \
             --window-size=1280,900 \
             --disable-background-timer-throttling --disable-renderer-backgrounding \
-            --disable-backgrounding-occluded-windows \
+            --disable-backgrounding-occluded-windows --remote-debugging-port=9222 \
             --load-extension="$PWD/extension" about:blank >/tmp/chrome.log 2>&1 &
       # Also proves local authentication against real Chrome: Chrome starts
       # AFTER the server with its own --user-data-dir, so the extension's first
       # dial has no key (&nokey=not-found); the server finds that folder in ps,
       # registers its native host there, and the retry must authenticate. A
       # legacy (unauthenticated) seat fails the job.
+      # A fresh profile has Developer mode off, and Chrome disables an
+      # unpacked extension when it reloads then — the doctor section's
+      # extreload never came back (its follow-up checks passed vacuously on
+      # "extension not connected"). A real unpacked install has it on.
+      - name: Developer mode on, like a real unpacked install
+        run: |
+          for i in $(seq 1 20); do curl -s localhost:9222/json/version >/dev/null && break; sleep 1; done
+          node test/stress/devmode.mjs 9222
       - name: Wait for the extension seat (90s cap)
         run: |
           for i in $(seq 1 30); do
