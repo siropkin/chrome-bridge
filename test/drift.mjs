@@ -51,6 +51,13 @@ test('update targets: store pins to its tag, unpacked or mixed follows the branc
   assert.match(updateTarget([]).error, /no extension connected/);
 });
 
+test('update never targets a store version that is not a release number (S1: dot segments moved the download to another repo)', () => {
+  const evil = updateTarget([{ v: '99./../../../../../../attacker/evil/archive/main', install: 'store' }]);
+  assert.equal(evil.target, undefined);
+  assert.match(evil.error, /is not a release number — nothing changed/);
+  assert.match(updateTarget([{ v: '1.33.1', install: 'store' }, { v: '2.0.0-x', install: 'store' }]).error, /not a release number/);
+});
+
 test('versionNewer compares numerically', () => {
   assert.equal(versionNewer('1.30.10', '1.30.9'), true);
   assert.equal(versionNewer('1.30.5', '1.30.5'), false);

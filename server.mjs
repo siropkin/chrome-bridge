@@ -45,6 +45,15 @@ const MAX_WS_BUFFER_BYTES = MAX_WS_FRAME_BYTES + 64 * 1024;
 // Sec-Fetch guards still block its POSTs, but GET /log would read fine. Fetch
 // can't forge Host, so requiring a loopback Host closes every route at once.
 const LOOPBACK_HOST = /^(127\.0\.0\.1|localhost)(:\d+)?$/;
+// What a seat may say about itself (?v=&name=&id=), in the shapes the extension
+// sends. The values reach places that trust them: /health and every reply's
+// warnings, the `extreload --profile "<name>"` an agent may run, the release tag
+// `cli.mjs update` downloads (v=99./../../attacker/repo/archive/main pointed a
+// no-git install at another GitHub repo), the watch feed. Any local process or
+// extension can open this socket, so anything else is refused (S1).
+const SEAT_VERSION = /^\d{1,5}(\.\d{1,5}){0,3}$/;
+const SEAT_NAME = /^[a-z][a-z0-9-]{0,31}$/;
+const SEAT_ID = /^[A-Za-z0-9-]{1,64}$/;
 
 // server.log holds operational notices only. All start paths share this
 // legacy boot-time cap; diagnostic events have their own rolling size limit.
@@ -894,6 +903,11 @@ server.on('upgrade', (req, socket) => {
   // (SW race) — it gets the seat-taken bounce, not a second seat posing as a
   // second profile.
   const id = u.searchParams.get('id') || 'anon';
+  if ((v !== null && !SEAT_VERSION.test(v)) || (name !== null && !SEAT_NAME.test(name)) || !SEAT_ID.test(id)) {
+    console.log(`[bridge] seat refused — malformed handshake (v, name or id)`);
+    socket.destroy();
+    return;
+  }
   const accept = crypto.createHash('sha1').update(key + WS_GUID).digest('base64');
   socket.write(
     'HTTP/1.1 101 Switching Protocols\r\n' +

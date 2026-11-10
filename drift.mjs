@@ -67,6 +67,8 @@ export function updateTarget(seats) {
   const dev = live.filter((s) => s.install !== 'store');
   if (store.length && !dev.length) {
     const v = store.map((s) => s.v).reduce((a, b) => (versionNewer(b, a) ? b : a));
+    // It becomes a git ref and a download URL: a release number and nothing else (S1).
+    if (!/^\d+\.\d+\.\d+$/.test(String(v))) return { error: `the Chrome Web Store extension reported version "${String(v).slice(0, 40)}", which is not a release number — nothing changed; reload it at chrome://extensions, then run update again` };
     return { target: 'tag', tag: 'v' + v };
   }
   return { target: 'branch', ...(store.length ? { note: 'an unpacked build loads from this checkout, so it follows the branch — the store profile may run an older release than the docs describe' } : {}) };

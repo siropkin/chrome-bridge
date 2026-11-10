@@ -644,6 +644,8 @@ async function runCommand(cmdName, args) {
         else if (!check && !steps.length) steps.push(`already up to date with ${target}`);
       } else {
         const ref = plan.target === 'tag' ? `refs/tags/${plan.tag}` : 'refs/heads/master';
+        // Only this repo's release tags or master: dot segments in a tag would move the URL to another repo.
+        if (!/^refs\/(tags\/v\d+\.\d+\.\d+|heads\/master)$/.test(ref)) fail(`refusing to download ${ref}: not a release tag of siropkin/chrome-bridge — nothing changed`);
         const url = `https://github.com/siropkin/chrome-bridge/archive/${ref}.tar.gz`;
         if (check) steps.push('download ' + url);
         else {

