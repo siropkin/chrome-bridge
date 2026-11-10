@@ -922,7 +922,7 @@ try {
     // hung open past its 8s cap to the server's 70s timeout. The response
     // also needs the requested URL: a still-pending tab has url "" and could
     // never be matched.
-    assert(bg.includes('url: url || msg.url') && /markTab\(tab\.id\)\.catch/.test(bg), 'ext: open fire-and-forgets marking, url falls back to the request');
+    assert(bg.includes('return tab.url || requested;') && bg.includes('url: await openedTabUrl(tab.id, msg.url)') && /markTab\(tab\.id\)\.catch/.test(bg), 'ext: open fire-and-forgets marking, url falls back to the request');
     // External debugger detach must reset the refcount (infobar cancel,
     // DevTools opened) — else a stale count wedges the session until close.
     assert(bg.includes('chrome.debugger.onDetach.addListener'), 'ext: onDetach resets the CDP refcount');

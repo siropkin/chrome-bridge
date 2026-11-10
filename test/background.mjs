@@ -197,6 +197,20 @@ test('close --all validates every reclaim before removing any tab without markin
   assert.deepEqual(removed, [9]);
 });
 
+test('open: a URL that only downloads (Chrome closes its tab) says so, not "re-find it" (found live)', async () => {
+  const openedSource = source.slice(source.indexOf('async function openedTabUrl('), source.indexOf('// Bounded wait for a tab'));
+  const tabs = new Map([[5, { url: '' }], [6, { url: 'https://example.test/x' }]]);
+  const context = vm.createContext({ chrome: { tabs: { get: async (id) => { if (!tabs.has(id)) throw new Error(`No tab with id: ${id}.`); return tabs.get(id); } } } });
+  vm.runInContext(openedSource, context);
+  assert.equal(await context.openedTabUrl(6, 'https://example.test/'), 'https://example.test/x');
+  assert.equal(await context.openedTabUrl(5, 'https://example.test/'), 'https://example.test/', 'a pending tab still gets a usable <match>');
+  await assert.rejects(context.openedTabUrl(7, 'https://hub.test/files/x/data.json'), (err) => {
+    assert.equal(err.message, "the new tab closed before a page loaded — https://hub.test/files/x/data.json most likely started a download (Chrome closes a tab that only downloads a file; the file is in the browser's downloads), or someone closed the tab. There is no tab to drive");
+    assert.doesNotMatch(err.message, /No tab with id/, 'the generic mapping would turn it into "run tabs to re-find it"');
+    return true;
+  });
+});
+
 const queueSource = source.slice(source.indexOf('const snapQ ='), source.indexOf('// Bounded wait for a tab'));
 function deferred() {
   let resolve;

@@ -4795,6 +4795,21 @@ async function waitForCommit(tabId, url0, doc0, timeout = 8000) {
   }
 }
 
+// open's answer once the load wait is over: the tab's URL, or why there is no
+// tab. A URL that only downloads a file never gets a page and Chrome closes
+// its tab, so the generic "No tab with id" mapping ("closed mid-command — run
+// tabs to re-find it") sent agents looking for a tab that can't exist (found
+// live opening a Cloud Bridge file link).
+async function openedTabUrl(tabId, requested) {
+  let tab;
+  try {
+    tab = await chrome.tabs.get(tabId);
+  } catch {
+    throw new Error(`the new tab closed before a page loaded — ${requested} most likely started a download (Chrome closes a tab that only downloads a file; the file is in the browser's downloads), or someone closed the tab. There is no tab to drive`);
+  }
+  return tab.url || requested; // "" while pending: the requested URL is still a usable <match>
+}
+
 // Bounded wait for a tab to reach status 'complete' — nav/open then read as
 // loaded instead of the agent paying a separate `wait` round trip (playwright
 // caps goto the same way). 8s ceiling; `loaded: false` means still loading.
@@ -5760,10 +5775,7 @@ async function handle(msg) {
     markTab(tab.id).catch(() => {});
     recordActivity(tab.id, msg);
     const loaded = await complete;
-    const { url } = await chrome.tabs.get(tab.id); // "" while pending
-    // url falls back to the requested one: a still-pending tab can't be
-    // matched by its (empty) URL, and the agent needs a usable <match>.
-    return { id: tab.id, url: url || msg.url, loaded };
+    return { id: tab.id, url: await openedTabUrl(tab.id, msg.url), loaded };
   }
 
   if (msg.type === 'navigate') {
