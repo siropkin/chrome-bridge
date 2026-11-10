@@ -46,7 +46,24 @@ function activeIds() {
 }
 
 function unchanged(label) {
-  assert.deepEqual(activeIds(), baseline, `${label}: active tabs changed`);
+  let inventory = tabs();
+  const active = () => inventory.filter((tab) => tab.active).map((tab) => tab.id).sort((left, right) => left - right);
+  // Chrome activates the neighbor before a closing tab leaves the list: read
+  // again a moment later, or a close in flight looks like this command's doing.
+  if (JSON.stringify(active()) !== JSON.stringify(baseline)) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1500);
+    inventory = tabs();
+  }
+  const now = active();
+  // A baseline active tab that no longer exists was closed by someone else (this
+  // suite closes only tabs it opened), and Chrome activated its neighbor. That
+  // read as "<command>: active tabs changed" (D1 follow-ups e2e, 2026-11-10:
+  // another agent session closed its tab in the same profile mid-run).
+  const gone = baseline.filter((id) => !created.has(id) && !inventory.some((tab) => tab.id === id));
+  if (gone.length && JSON.stringify(now) !== JSON.stringify(baseline)) {
+    throw new Error(`${label}: not checked — ${gone.map((id) => `tab id:${id}`).join(', ')} (not this suite's) closed meanwhile and Chrome activated another tab: another session or the person at the computer did that, not this command. Re-run: test/stress/run.sh safety`);
+  }
+  assert.deepEqual(now, baseline, `${label}: active tabs changed`);
   console.log(`PASS [safety] ${label}: active tabs unchanged`);
 }
 
