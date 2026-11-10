@@ -220,6 +220,34 @@ test('cloud links reach public web pages only: no localhost, LAN, *.local or fil
   assert.match(handleHead, /refuseOffLimits\(msg\);/);
 });
 
+test('cloud links neither act on nor read a tab that ended up off-limits, whatever took it there (review: eval, a click, a redirect)', async () => {
+  const offSource = source.slice(source.indexOf('function privateHost('), source.indexOf('// --- end off-limits'));
+  const tabs = new Map([[7, { id: 7, url: 'http://192.168.1.1/admin' }], [8, { id: 8, url: 'https://example.com/', pendingUrl: 'http://localhost:8080/' }], [9, { id: 9, url: 'https://example.com/' }]]);
+  const context = vm.createContext({ URL, drivenTabs: new Set([7, 8, 9]), tabOwner: new Map([[7, 'cloud'], [8, 'cloud'], [9, 'local']]), chrome: { tabs: { get: async (id) => tabs.get(id) } } });
+  vm.runInContext(offSource + '\nconst ownerOf = (tabId) => (drivenTabs.has(tabId) ? tabOwner.get(tabId) || "local" : null);', context);
+  // blob: pages count as their origin; an uncommitted tab has nothing to judge.
+  assert.equal(context.offLimitsUrl('blob:https://example.com/0f1e'), null);
+  assert.equal(context.offLimitsUrl('blob:http://192.168.1.1/0f1e'), '192.168.1.1');
+  assert.equal(context.offLimitsUrl(''), null);
+  for (const type of ['snap', 'eval', 'shot', 'click', 'net', 'fetch', 'mark'])
+    assert.throws(() => context.refuseOffLimitsTab(tabs.get(7), { type, _link: 'cloud' }), /^Error: this tab is on 192\.168\.1\.1, which is on this computer or its local network — .*nothing ran/, type);
+  assert.throws(() => context.refuseOffLimitsTab(tabs.get(8), { type: 'snap', _link: 'cloud' }), /this tab is on localhost:8080/, 'a pending navigation counts');
+  for (const type of ['release', 'close', 'unemulate']) assert.doesNotThrow(() => context.refuseOffLimitsTab(tabs.get(7), { type, _link: 'cloud' }), type);
+  assert.doesNotThrow(() => context.refuseOffLimitsTab(tabs.get(7), { type: 'snap', _link: 'local' }));
+  // After an action navigated: a cloud-driven tab's snapshot is withheld; a local one's isn't.
+  assert.match(await context.offLimitsLanding(7), /^192\.168\.1\.1 — on this computer or its local network, so Cloud AI apps get no snapshot of it\. Go back/);
+  assert.equal(await context.offLimitsLanding(9), null);
+  tabs.set(9, { id: 9, url: 'http://10.0.0.1/' });
+  assert.equal(await context.offLimitsLanding(9), null, 'the local link keeps its reach');
+  // Tripwires: every place that resolves a tab or snaps a page it navigated to.
+  const findTabSrc = source.slice(source.indexOf('async function findTab(msg) {'), source.indexOf('async function cmdFetch('));
+  assert.match(findTabSrc, /assertLinkMayDrive\(matches\[0\]\.id, msg\);\n\s*refuseOffLimitsTab\(matches\[0\], msg\);/);
+  const landings = source.match(/const offLimits = await offLimitsLanding\(tabI?d?\.?i?d?\);\n\s*if \(offLimits\) return [^\n]+\n\s*const (wall|snap) = await runEval/g) || [];
+  assert.equal(landings.length, 3, 'the --diff verdict, nav --diff and wait --human check before reading the page');
+  const fetchSrcCode = source.slice(source.indexOf('async function cmdFetch('), source.indexOf("Network.loadNetworkResource', {"));
+  assert.match(fetchSrcCode, /offLimitsUrl\(landed\)[\s\S]*catch \(e\) \{\n\s*if \(e\?\.offLimits\) throw e;/, 'a redirect off-limits is refused, not retried through the browser-network fallback');
+});
+
 test('open: a URL that only downloads (Chrome closes its tab) says so, not "re-find it" (found live)', async () => {
   const openedSource = source.slice(source.indexOf('async function openedTabUrl('), source.indexOf('// Bounded wait for a tab'));
   const tabs = new Map([[5, { url: '' }], [6, { url: 'https://example.test/x' }]]);
@@ -1200,7 +1228,9 @@ function ownershipHarness({ driven = [], owners = [], reclaimed = [] } = {}) {
     chrome: { tabs: { query: async () => tabs } },
   });
   const findTabSource = source.slice(source.indexOf('const CROSS_LINK_READS'), source.indexOf('async function cmdFetch('));
-  vm.runInContext(findTabSource, context);
+  // findTab's off-limits gate (cloud links on localhost/LAN tabs) lives with the other off-limits helpers.
+  const offSource = source.slice(source.indexOf('function privateHost('), source.indexOf('// --- end off-limits'));
+  vm.runInContext(offSource + '\n' + findTabSource, Object.assign(context, { URL }));
   return { context, marked, recorded };
 }
 

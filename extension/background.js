@@ -4506,10 +4506,10 @@ const fetchSrc = (url, headers) => `(async () => {
     const buf = new Uint8Array(await res.arrayBuffer());
     let bin = '';
     for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
-    return { status: res.status, ct, binary: true, body: btoa(bin).slice(0, 700_000), truncated: buf.length > ${BODY_CAP} };
+    return { url: res.url, status: res.status, ct, binary: true, body: btoa(bin).slice(0, 700_000), truncated: buf.length > ${BODY_CAP} };
   }
   const body = await res.text();
-  return { status: res.status, ct, binary: false, body: body.slice(0, ${BODY_CAP}), truncated: body.length > ${BODY_CAP} };
+  return { url: res.url, status: res.status, ct, binary: false, body: body.slice(0, ${BODY_CAP}), truncated: body.length > ${BODY_CAP} };
 })()`;
 
 // --- eval machinery -----------------------------------------------------------
@@ -4641,6 +4641,8 @@ async function observeDiff(tabId, actionResult, url0, doc0) {
       // a link that worked (#55). The URL change proves the action did
       // something; strip the stale warning.
       await waitForLoad(tabId, 8000, true);
+      const offLimits = await offLimitsLanding(tabId);
+      if (offLimits) return `succeeded · ${acted()} — navigated to ${offLimits}`;
       const wall = await runEval(tabId, WALL_SRC).catch(() => ({}));
       if (wall.captcha) return `needs_human · ${acted()} — bot wall: ${wall.captcha} — hand off: wait <match> --human`;
       if (wall.block) return `blocked · ${acted()} — ${wall.block}`;
@@ -4911,6 +4913,8 @@ async function waitHumanRun(tab, msg) {
   // baseline) died with the old document. Fresh full snap instead of a diff.
   if (how === 'nav' || (await chrome.tabs.get(tab.id).catch(() => null))?.url !== url0) {
     await waitForLoad(tab.id, 8000, true);
+    const offLimits = await offLimitsLanding(tab.id);
+    if (offLimits) return 'the human navigated to ' + offLimits;
     const snap = await runEval(tab.id, SNAP_SRC(null, false, false));
     return 'the human navigated to ' + (await chrome.tabs.get(tab.id)).url + ' — fresh snap (refs are new):\n' + snap;
   }
@@ -5125,6 +5129,7 @@ async function findTab(msg) {
   // Another link's tab: reads pass, everything else is refused here — before
   // mark's reclaim-clear, the auto-mark and any activity record.
   assertLinkMayDrive(matches[0].id, msg);
+  refuseOffLimitsTab(matches[0], msg);
   if (msg.type === 'mark') {
     humanReclaimed.delete(matches[0].id);
     persist(); // the re-claim must survive an SW restart too — a resurrected veto would refuse commands on a tab the human handed back
@@ -5219,8 +5224,16 @@ async function cmdFetch(tab, msg) {
   // net --body reads bodies through. Shape handled defensively; a Chrome
   // version that answers differently fails loudly here, not silently.
   try {
-    return await runEval(tab.id, fetchSrc(msg.url, headers));
+    const out = await runEval(tab.id, fetchSrc(msg.url, headers));
+    // Where a redirect landed (url) is checked for cloud links, then dropped from
+    // the reply. (The browser-network fallback below can't report it, like a
+    // public name pointing into the LAN: that stays out of reach of this check.)
+    const { url: landed, ...reply } = out || {};
+    const where = cloudLink(msg._link) && landed ? offLimitsUrl(landed) : null;
+    if (where) throw offLimitsError('the request was redirected to ' + where + ', which');
+    return out ? reply : out;
   } catch (e) {
+    if (e?.offLimits) throw e;
     // The fallback can't carry custom headers (Network.loadNetworkResource
     // has no headers param) — a headerless retry of a CSRF-checked API is a
     // 403 that misreads as "the API broke". Fail with the real error instead.
@@ -5641,18 +5654,64 @@ function privateHost(hostname) {
   return h === '::' || h === '::1' || /^f[cd]/.test(h) || /^fe[89ab]/.test(h) || h.startsWith('::ffff:') || /^::[0-9a-f]{1,4}(:[0-9a-f]{1,4})?$/.test(h) || h.startsWith('64:ff9b:');
 }
 
-function refuseOffLimits(msg) {
-  if (!msg._link || msg._link === 'local' || !['open', 'navigate', 'fetch'].includes(msg.type)) return;
+// Where a cloud link may not go, or null: a place on this computer or its
+// network, or a non-web page. blob: pages count as their http(s) origin.
+function offLimitsUrl(raw) {
   let u;
   try {
-    u = new URL(msg.url);
+    u = new URL(raw);
+  } catch {
+    return null; // '' (a tab not committed yet): nothing to judge
+  }
+  if (u.protocol === 'blob:') {
+    try {
+      u = new URL(u.origin);
+    } catch {
+      return 'blob: pages';
+    }
+  }
+  if (u.protocol === 'http:' || u.protocol === 'https:') return privateHost(u.hostname) ? u.host : null;
+  return u.href === 'about:blank' ? null : u.protocol + ' pages';
+}
+
+const cloudLink = (link) => !!link && link !== 'local';
+
+function offLimitsError(where, tab) {
+  const err = new Error(
+    `${tab ? 'this tab is on ' + where + ', which' : where} is on this computer or its local network — Cloud AI apps reach public web pages only (not localhost, private or link-local addresses, *.local, or file:, data: and view-source: pages); nothing ran. Ask the user to do this with an AI agent on their computer, or to open it themselves`
+  );
+  err.offLimits = true;
+  return err;
+}
+
+function refuseOffLimits(msg) {
+  if (!cloudLink(msg._link) || !['open', 'navigate', 'fetch'].includes(msg.type)) return;
+  try {
+    new URL(msg.url);
   } catch {
     return; // a bad URL is worded by the command's own check
   }
-  const web = u.protocol === 'http:' || u.protocol === 'https:';
-  const where = web ? (privateHost(u.hostname) ? u.host : null) : u.href === 'about:blank' ? null : u.protocol + ' pages';
-  if (where)
-    throw new Error(`${where} is on this computer or its local network — Cloud AI apps reach public web pages only (not localhost, private or link-local addresses, *.local, or file:, data: and view-source: pages); nothing ran. Ask the user to do this with an AI agent on their computer, or to open it themselves`);
+  const where = offLimitsUrl(msg.url);
+  if (where) throw offLimitsError(where);
+}
+
+// The same line wherever a tab ends up: an eval setting location, a click on a
+// link, a redirect or the page itself can carry a tab there after the URL check
+// (review). Cloud links neither act on such a tab nor read it — release, close
+// and unemulate stay possible, so they can back out.
+function refuseOffLimitsTab(tab, msg) {
+  if (!cloudLink(msg._link) || ['release', 'close', 'unemulate'].includes(msg.type)) return;
+  const where = offLimitsUrl(tab.pendingUrl || tab.url);
+  if (where) throw offLimitsError(where, true);
+}
+
+// After an action navigated a tab: the snapshot that would come back, withheld
+// when the tab's driver is a cloud link and it landed off-limits.
+async function offLimitsLanding(tabId) {
+  if (!cloudLink(ownerOf(tabId))) return null;
+  const t = await chrome.tabs.get(tabId).catch(() => null);
+  const where = t && offLimitsUrl(t.pendingUrl || t.url);
+  return where ? `${where} — on this computer or its local network, so Cloud AI apps get no snapshot of it. Go back (nav <match> <public url>) or close it, or ask the user to continue with an AI agent on their computer` : null;
 }
 // --- end off-limits
 
@@ -5846,6 +5905,8 @@ async function handle(msg) {
     // nav --diff carries the verdict too — no baseline diff (the page is
     // replaced), so: walls first, then a fresh snap as the body.
     if (msg.diff) {
+      const offLimits = await offLimitsLanding(tab.id);
+      if (offLimits) return `succeeded · navigated to ${offLimits}`;
       const wall = await runEval(tab.id, WALL_SRC).catch(() => ({}));
       if (wall.captcha) return `needs_human · navigated — bot wall: ${wall.captcha} — hand off: wait <match> --human`;
       if (wall.block) return `blocked · navigated — ${wall.block}`;
