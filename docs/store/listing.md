@@ -51,7 +51,7 @@ Source, setup and operating manual: https://github.com/siropkin/chrome-bridge
 
 PRIVACY
 
-The extension-to-CLI connection is local, through 127.0.0.1. Optional Cloud Bridge (off until you connect it) links a profile to a hub so cloud AI apps you authorize can drive it: by default the developer-operated public hub, or one you run. Commands and their results pass through that hub, which stores call metadata only; the policy lists what it keeps. The local link sends no browsing data to the developer. Your connected AI agent receives page content and may send it to its model provider or other services. Requested browser actions, including form submissions and uploads, can send data to websites.
+The extension-to-CLI connection is local, through 127.0.0.1. Optional Cloud Bridge (off until you connect it) links a profile to a hub so cloud AI apps you authorize can drive it: by default the developer-operated public hub, or one you run. Commands and their results pass through that hub, which stores call metadata, plus a file a command saves (fetch --out, net --har) for one hour; the policy lists what it keeps. The local link sends no browsing data to the developer. Your connected AI agent receives page content and may send it to its model provider or other services. Requested browser actions, including form submissions and uploads, can send data to websites.
 
 Use only information and accounts you are authorized to expose to your chosen agent. Full policy: https://raw.githubusercontent.com/siropkin/chrome-bridge/master/PRIVACY.md
 

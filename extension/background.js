@@ -544,7 +544,7 @@ const cloudDeadline = (msg) => Date.now() + (msg.human ? Math.min(Number(msg.tim
 // The module's errors are worded for the CLI; the cloud has no cli.mjs.
 const cloudWords = (text) => String(text).replace(' (see: cli.mjs profiles)', ': pick the Chrome with the tool\'s profile argument instead');
 
-// Requests this arm sends the hub (today only arm/download), answered by id.
+// Requests this arm sends the hub (arm/download, arm/file), answered by id.
 let cloudSeq = 0;
 const cloudPending = new Map(); // id -> { resolve, reject, timer, socket }
 function cloudRequest(link, method, params, ms = 45000) {
@@ -633,6 +633,28 @@ function cloudIo(link) {
       return { name: file.name, mimeType: typeof file.mimeType === 'string' ? file.mimeType : 'application/octet-stream', data: file.data };
     },
   };
+}
+
+// fetch --out / net --har over the cloud: there is no disk here, so the hub
+// keeps the file for an hour and answers with a link that opens only for the
+// signed-in Cloud Bridge account (a HAR carries cookies). The AI app gets it as
+// a resource_link it can read back with resources/read.
+async function cloudKeep(link, path, mimeType, body, detail) {
+  const name = String(path).split(/[\\/]/).pop() || 'download';
+  let file;
+  try {
+    file = await cloudRequest(link, 'arm/file', { name, mimeType, ...body });
+  } catch (err) {
+    const m = errMsg(err);
+    if (/^Method not found/.test(m)) throw new Error(`this Cloud Bridge can't keep files yet (an older hub), so ${name} wasn't saved — run the command without --out/--har: the result comes back here`);
+    throw new Error(`${name} wasn't saved: ${m}`);
+  }
+  if (!file || typeof file.url !== 'string') throw new Error(`Cloud Bridge sent back no link for ${name}`);
+  const kb = Math.max(1, Math.round((Number(file.size) || 0) / 1024));
+  return [
+    { type: 'text', text: `saved ${file.name || name} (${kb} KB, ${detail}) → ${file.url}\nThe link works for an hour, only for the user signed in to Cloud Bridge; resources/read on it returns the file to you.` },
+    { type: 'resource_link', uri: file.url, name: file.name || name, mimeType: file.mimeType || mimeType, ...(Number.isFinite(file.size) ? { size: file.size } : {}), description: `${detail}; expires ${file.expiresAt || 'in an hour'}` },
+  ];
 }
 
 // The user's Allow/Ask/Off rule for a command, as refusal text (null = allowed).
@@ -750,8 +772,6 @@ async function cloudArgv(link, argv) {
     // wait --js runs page code like eval, so eval's rule covers it too.
     const refused = parsed.name === 'wait' && parsed.msg.js ? policyRefusal(link, 'eval') : null;
     if (refused) return cloudText(refused, true);
-    if (parsed.view?.outFile) return cloudText('fetch --out writes a file on the user\'s machine, which Cloud Bridge can\'t do yet. Drop --out: the body comes back in the result.', true);
-    if (parsed.view?.har) return cloudText('net --har writes a file on the user\'s machine, which Cloud Bridge can\'t do yet. Drop --har: the request lines come back in the result.', true);
   } catch (err) {
     return cloudText(cloudWords(errMsg(err)), true);
   }
@@ -773,6 +793,17 @@ async function cloudArgv(link, argv) {
       const refused = policyRefusal(link, 'release');
       const r = refused ? { ok: false, error: refused } : await runCommand(link, { type: 'release', urlMatch: 'id:' + row.id });
       row.fixed = r.ok ? 'released' : 'release failed: ' + r.error;
+    }
+  }
+  if (parsed.name === 'net' && parsed.view?.har) {
+    const { lines, har } = reply.result || {};
+    const text = { type: 'text', text: [String(lines ?? ''), ...warnings].join('\n') };
+    if (!har?.log) return { content: [text, { type: 'text', text: 'the extension returned no HAR for this capture' }], isError: true };
+    try {
+      const kept = await cloudKeep(link, parsed.view.har, 'application/json', { text: JSON.stringify(har, null, 1) }, `HAR 1.2, ${har.log.entries.length} entries — contains cookies/tokens: treat it as a secret`);
+      return { content: [text, ...kept], isError: false };
+    } catch (err) {
+      return { content: [text, { type: 'text', text: errMsg(err) }], isError: true };
     }
   }
   if (parsed.name === 'shot') {
@@ -799,7 +830,7 @@ async function cloudArgv(link, argv) {
 async function cloudFetch(link, parsed) {
   const C = globalThis.BridgeCommands;
   const { urlMatch: match, url } = parsed.msg;
-  const { keep, host } = parsed.view;
+  const { keep, host, outFile } = parsed.view;
   const notes = [];
   let res = await runCommand(link, { ...parsed.msg });
   if (!res.ok && String(res.error).includes('no tab matching') && !String(res.error).includes('in any connected profile')) {
@@ -814,8 +845,19 @@ async function cloudFetch(link, parsed) {
   const warnings = C.replyWarnings(res);
   if (!res.ok) return cloudText([...notes, String(res.error), ...warnings].join('\n'), true);
   const r = res.result;
-  if (r.binary) return cloudText(`binary response (${r.ct || 'unknown type'}): Cloud Bridge can't return files yet. Fetch a text/JSON URL instead.`, true);
+  if (r.binary && !outFile) return cloudText([...notes, `binary response (${r.ct || 'unknown type'}) — save it: fetch <match> <url> --out <name> (you get a download link)`, ...warnings].join('\n'), true);
   if (/text\/html/i.test(r.ct || '')) notes.push(`⚠ response is HTML, not the JSON you likely wanted — an unmatched dev-proxy route serves the SPA shell; check the path (status ${r.status})`);
+  if (outFile) {
+    const mime = String(r.ct || '').split(';')[0].trim() || (r.binary ? 'application/octet-stream' : 'text/plain');
+    const pre = notes.length ? [{ type: 'text', text: notes.join('\n') }] : [];
+    const post = warnings.length ? [{ type: 'text', text: warnings.join('\n') }] : [];
+    try {
+      const kept = await cloudKeep(link, outFile, mime, r.binary ? { data: r.body || '' } : { text: r.body || '' }, `${r.status} ${r.ct || ''}${r.truncated ? ' — page capped the body at 512KB' : ''}`.trim());
+      return { content: [...pre, ...kept, ...post], isError: false };
+    } catch (err) {
+      return { content: [...pre, { type: 'text', text: errMsg(err) }, ...post], isError: true };
+    }
+  }
   const cap = 50_000;
   const body = r.body || '';
   const shown = body.length > cap ? body.slice(0, cap) + `\n… body truncated at ${cap} chars — fetch a narrower URL` : body || '(empty body)';

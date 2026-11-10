@@ -1364,6 +1364,50 @@ test('cloud: upload takes data: URLs, and public URLs downloaded by the hub — 
   assert.match(ws.sent.find((m) => m.id === 'up').result.content[0].text, /^the connection to Cloud Bridge dropped before it answered$/);
 });
 
+test('cloud: fetch --out and net --har hand the file to the hub and return its link (no disk here)', async () => {
+  const results = {
+    fetch: (m) => (m.url.endsWith('.png') ? { status: 200, ct: 'image/png', binary: true, body: 'iVBORw0KGgo=' } : { status: 200, ct: 'application/json; charset=utf-8', body: '{"a":1}' }),
+    net: () => ({ lines: 'GET 200 https://github.com/api', har: { log: { version: '1.2', entries: [{ request: { headers: [{ name: 'Cookie', value: 's=1' }] } }] } } }),
+  };
+  const h = await cloudArm({ handle: (msg) => results[msg.type]?.(msg) ?? 'ok' });
+  const { call, ws } = h;
+  const kept = [];
+  let hub = 'new';
+  const send = ws.send.bind(ws);
+  ws.send = (data) => {
+    send(data);
+    const m = typeof data === 'string' && data !== 'ping' ? JSON.parse(data) : null;
+    if (m?.method !== 'arm/file') return;
+    kept.push(plain(m.params));
+    const size = m.params.text !== undefined ? m.params.text.length : Math.floor(m.params.data.length * 0.75);
+    const answer = hub === 'old' ? { error: { code: -32601, message: 'Method not found: arm/file' } } : { result: { url: `https://hub.test/files/${'a'.repeat(32)}/${encodeURIComponent(m.params.name)}`, name: m.params.name, mimeType: m.params.mimeType, size, expiresAt: '2026-11-10T00:00:00.000Z' } };
+    setImmediate(() => ws.recv({ jsonrpc: '2.0', id: m.id, ...answer }));
+  };
+  const json = await call('chrome', { command: 'fetch github https://github.com/x.json --out /tmp/out/data.json' });
+  assert.equal(json.isError, false);
+  assert.deepEqual(kept[0], { name: 'data.json', mimeType: 'application/json', text: '{"a":1}' }, 'only the file name goes to the hub, never the local path');
+  assert.equal(json.content[0].text, `saved data.json (1 KB, 200 application/json; charset=utf-8) → https://hub.test/files/${'a'.repeat(32)}/data.json\nThe link works for an hour, only for the user signed in to Cloud Bridge; resources/read on it returns the file to you.`);
+  assert.deepEqual(plain(json.content[1]), { type: 'resource_link', uri: `https://hub.test/files/${'a'.repeat(32)}/data.json`, name: 'data.json', mimeType: 'application/json', size: 7, description: '200 application/json; charset=utf-8; expires 2026-11-10T00:00:00.000Z' });
+  const png = await call('chrome', { command: 'fetch github https://github.com/x.png --out x.png' });
+  assert.equal(png.isError, false);
+  assert.deepEqual(kept[1], { name: 'x.png', mimeType: 'image/png', data: 'iVBORw0KGgo=' }, 'binary bodies go as base64');
+  const bin = await call('chrome', { command: 'fetch github https://github.com/x.png' });
+  assert.equal(bin.isError, true);
+  assert.equal(h.text(bin), 'binary response (image/png) — save it: fetch <match> <url> --out <name> (you get a download link)');
+  const net = await call('chrome', { command: 'net github --har capture.har' });
+  assert.equal(net.isError, false);
+  assert.equal(net.content[0].text, 'GET 200 https://github.com/api', 'the request lines come back as without --har');
+  assert.match(net.content[1].text, /^saved capture\.har \(1 KB, HAR 1\.2, 1 entries — contains cookies\/tokens: treat it as a secret\) → https:\/\/hub\.test\/files\//);
+  assert.equal(kept[2].name, 'capture.har');
+  assert.deepEqual(JSON.parse(kept[2].text).log.entries[0].request.headers, [{ name: 'Cookie', value: 's=1' }]);
+  assert.equal(net.content[2].type, 'resource_link');
+  hub = 'old';
+  const old = await call('chrome', { command: 'net github --har capture.har' });
+  assert.equal(old.isError, true);
+  assert.equal(old.content[0].text, 'GET 200 https://github.com/api', 'the capture still comes back');
+  assert.equal(old.content[1].text, "this Cloud Bridge can't keep files yet (an older hub), so capture.har wasn't saved — run the command without --out/--har: the result comes back here");
+});
+
 test('cloud: every command carries a dispatch deadline like the local server\'s (--diff actions refused without one, found live)', async () => {
   const { call, handled } = await cloudArm();
   const t0 = Date.now();
@@ -1391,7 +1435,6 @@ test('cloud: refusals name the next step and run nothing', async () => {
   assert.match(text(await call('chrome', { command: 'frobnicate x' })), /^Unknown command: frobnicate\. Commands: tabs, /);
   assert.match(text(await call('chrome', { command: '--profile elm tabs' })), /--profile elm is not this Chrome \("oak"\)/);
   assert.match(text(await call('chrome', { command: '--profile --x tabs' })), /^--profile needs an id or name: pick the Chrome with the tool's profile argument instead$/, 'no cli.mjs in cloud errors');
-  assert.match(text(await call('chrome', { command: 'fetch github https://github.com/x --out f.json' })), /fetch --out writes a file on the user's machine/);
   await ws.recv({ jsonrpc: '2.0', method: 'arm/policy', params: { commands: { click: 'off', eval: 'ask' } } });
   await flush();
   const off = await call('chrome', { command: 'click github @e1' });
