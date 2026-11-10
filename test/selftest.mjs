@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { bridgeFetch, listCheckouts, mac, nonce } from '../localauth.mjs';
 
 // A free ephemeral port per run, not a fixed one: with a fixed port two
 // concurrent selftests (two agents, a pre-push hook beside a manual run)
@@ -28,7 +29,12 @@ const diagnosticDirectory = fs.mkdtempSync(join(tmpdir(), 'bridge-selftest-'));
 // or an upload of a vanished file failing an unrelated check).
 const scratch = fs.mkdtempSync(join(tmpdir(), 'bridge-selftest-run-'));
 const scratchFile = (name) => join(scratch, name);
+// The local key (localauth.mjs) of the test server and its CLI calls — never
+// the user's real one. Set on process.env too: in-process signed fetches read it.
+const stateDirectory = join(scratch, 'state');
+process.env.BRIDGE_STATE_DIR = stateDirectory;
 const env = { ...process.env, BRIDGE_PORT: String(PORT), BRIDGE_CMD_TIMEOUT_MS: '750', BRIDGE_DIAGNOSTICS_DIR: diagnosticDirectory, BRIDGE_DIAGNOSTICS_TEST: '1' };
+const authed = (path, init) => bridgeFetch(`http://127.0.0.1:${PORT}`, path, init);
 // The fake extension's handshake version mirrors the repo manifest — cli
 // health compares the two, and a hardcode here would trip its warning.
 const MANIFEST_V = JSON.parse(fs.readFileSync(`${ROOT}extension/manifest.json`, 'utf8')).version;
@@ -260,7 +266,7 @@ try {
   h = await cli('health');
   assert(JSON.parse(h.stdout).extension === true, 'health: extension true after connect');
   {
-    const configure = (body, headers = {}) => fetch(`http://127.0.0.1:${PORT}/diagnostics`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
+    const configure = (body, headers = {}) => authed(`/diagnostics`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
     assert(JSON.parse(h.stdout).diagnostics.enabled === false, 'diagnostics: off by default');
     const popupRequest = (action, extra = {}) => new Promise((resolve, reject) => {
       const requestId = crypto.randomUUID();
@@ -344,7 +350,7 @@ try {
   // The relay accepted this frame, but the extension never replied. A bare
   // "extension timeout" invites a blind retry of a click/fill that may already
   // have landed; the response must state the post-dispatch uncertainty.
-  const timeoutReply = await fetch(`http://127.0.0.1:${PORT}/cmd`, {
+  const timeoutReply = await authed(`/cmd`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ type: 'timeout-test', urlMatch: 'example.com' }),
@@ -358,7 +364,7 @@ try {
   // Client-supplied internal fields (_tabId/_pill) must never reach the
   // extension: the refusal's "no marking, no bookkeeping" guarantee and the
   // per-tab inflight counters both trust them to be extension-set.
-  const stripReply = await fetch(`http://127.0.0.1:${PORT}/cmd`, {
+  const stripReply = await authed(`/cmd`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ type: 'strip-test', urlMatch: 'example.com', _tabId: 999, _pill: true }),
@@ -692,7 +698,7 @@ try {
   assert(evRuntimeSyntax.status === 1 && evRuntimeSyntax.stderr.includes('SyntaxError') && !evRuntimeSyntax.stderr.includes('Local syntax check'), 'cli eval: runtime parsing errors are not mislabeled as malformed input', evRuntimeSyntax.stderr);
 
   // large frame extension→server (3 MB result)
-  const bigRes = await fetch(`http://127.0.0.1:${PORT}/cmd`, {
+  const bigRes = await authed(`/cmd`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ type: 'big' }),
@@ -704,7 +710,7 @@ try {
   // turned a multi-byte character split across a boundary into U+FFFD — a
   // large paste/fill of non-ASCII text reached the page corrupted.
   const wide = '€я😀'.repeat(40_000);
-  const wideRes = await (await fetch(`http://127.0.0.1:${PORT}/cmd`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'echo-text', text: wide }) })).json();
+  const wideRes = await (await authed(`/cmd`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'echo-text', text: wide }) })).json();
   assert(wideRes.ok && wideRes.result === wide, 'server: a multi-byte command body survives chunk boundaries intact', wideRes.ok ? `${(wideRes.result.match(/\uFFFD/g) || []).length} U+FFFD` : wideRes.error);
 
   // Local requests are a control boundary too: reject an oversized command
@@ -1394,14 +1400,14 @@ try {
   }
 
   // activity feed (watch): every relayed command lands in /log; since= yields a delta
-  const logAll = (await fetch(`http://127.0.0.1:${PORT}/log`).then((r) => r.json())).lines;
+  const logAll = (await authed(`/log`).then((r) => r.json())).lines;
   assert(
     logAll.some((a) => a.line.includes('eval example.com') && a.line.includes('· ok')) &&
       logAll.some((a) => a.line.includes('note example.com saving the draft')),
     'server /log records commands',
     JSON.stringify(logAll.slice(-3))
   );
-  const logDelta = (await fetch(`http://127.0.0.1:${PORT}/log?since=${logAll[logAll.length - 1].seq - 1}`).then((r) => r.json())).lines;
+  const logDelta = (await authed(`/log?since=${logAll[logAll.length - 1].seq - 1}`).then((r) => r.json())).lines;
   assert(logDelta.length === 1, 'server /log since= delta filtering', JSON.stringify(logDelta));
 
   // --- lifecycle journal + doctor ------------------------------------------
@@ -1475,11 +1481,11 @@ try {
 
   // The journal must NOT leak into the command feed — watch/history stay
   // command-focused (the ring above is the only in-memory surface).
-  const feedLines = (await fetch(`http://127.0.0.1:${PORT}/log`).then((r) => r.json())).lines;
+  const feedLines = (await authed(`/log`).then((r) => r.json())).lines;
   assert(!feedLines.some((l) => l.line.includes('selftest') && l.line.includes('mark tab')), 'journal stays out of the activity ring');
 
   // unknown command surfaces the extension's error
-  const bad = await (await fetch(`http://127.0.0.1:${PORT}/cmd`, {
+  const bad = await (await authed(`/cmd`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ type: 'nope' }),
@@ -1493,6 +1499,173 @@ try {
     body: JSON.stringify({ type: 'ping' }),
   });
   assert(evil.status === 403, 'server: POST /cmd with browser Origin → 403');
+
+  // Local authentication (localauth.mjs): 127.0.0.1 is reachable by every OS
+  // user on the computer — only requests signed with this user's key run.
+  {
+    const base = `http://127.0.0.1:${PORT}`;
+    const unsigned = async (path, method = 'POST', body) => {
+      const r = await fetch(base + path, { method, body });
+      return { status: r.status, body: await r.json().catch(() => null) };
+    };
+    const u1 = await unsigned('/cmd', 'POST', JSON.stringify({ type: 'ping' }));
+    assert(u1.status === 401 && /cli\.mjs/.test(u1.body?.error) && /bridgeFetch/.test(u1.body?.error), 'auth: unsigned /cmd → 401 naming the CLI and bridgeFetch', JSON.stringify(u1));
+    assert((await unsigned('/diagnostics', 'POST', JSON.stringify({ action: 'status' }))).status === 401, 'auth: unsigned /diagnostics → 401');
+    assert((await unsigned('/log', 'GET')).status === 401, 'auth: unsigned /log → 401');
+    assert((await unsigned('/stop')).status === 401 && JSON.parse((await cli('health')).stdout).ok === true, 'auth: unsigned /stop → 401, server keeps running');
+    if (process.platform !== 'win32') {
+      const d = fs.statSync(stateDirectory).mode & 0o777;
+      const k = fs.statSync(join(stateDirectory, 'key')).mode & 0o777;
+      assert(d === 0o700 && k === 0o600, 'auth: key folder 0700, key file 0600', `${d.toString(8)} ${k.toString(8)}`);
+    }
+    assert(listCheckouts(stateDirectory).includes(ROOT.replace(/\/$/, '')), 'auth: the server registers its checkout in the key folder', JSON.stringify(listCheckouts(stateDirectory)));
+
+    // Signed by hand: the header is single-use, and it binds the body and route.
+    const key = fs.readFileSync(join(stateDirectory, 'key'), 'utf8');
+    const sign = async (method, path, body) => {
+      const cn = nonce();
+      const a = await (await fetch(`${base}/auth?c=${cn}`)).json();
+      assert(a.p === mac(key, 'server', cn, a.s), 'auth: the server proves the key for the client nonce');
+      return `${a.s}.${mac(key, 'cli', a.s, `${method} ${path}`, crypto.createHash('sha256').update(body).digest('base64url'))}`;
+    };
+    const body = JSON.stringify({ type: 'ping' });
+    const hdr = await sign('POST', '/cmd', body);
+    const once = await fetch(`${base}/cmd`, { method: 'POST', body, headers: { 'x-bridge-auth': hdr } });
+    const again = await fetch(`${base}/cmd`, { method: 'POST', body, headers: { 'x-bridge-auth': hdr } });
+    assert(once.status === 200 && (await once.json()).result === 'pong' && again.status === 401, 'auth: a signed request runs once; replaying its header → 401');
+    const swapped = await fetch(`${base}/cmd`, { method: 'POST', body: JSON.stringify({ type: 'tabs' }), headers: { 'x-bridge-auth': await sign('POST', '/cmd', body) } });
+    assert(swapped.status === 401, 'auth: a signature over one body does not cover another');
+    const rerouted = await fetch(`${base}/stop`, { method: 'POST', headers: { 'x-bridge-auth': await sign('POST', '/cmd', '') } });
+    assert(rerouted.status === 401 && JSON.parse((await cli('health')).stdout).ok === true, 'auth: a signature for /cmd does not stop the server');
+    assert((await fetch(`${base}/auth?c=short`)).status === 400, 'auth: a malformed client nonce → 400');
+    // A MAC of 43 latin1 characters is 86 UTF-8 bytes: a character-length
+    // check let it reach timingSafeEqual, which threw and killed the server.
+    for (const [method, path] of [['GET', '/log'], ['POST', '/cmd']]) {
+      const { s } = await (await fetch(`${base}/auth?c=${nonce()}`)).json();
+      const status = await new Promise((resolve) => {
+        const sock = net.connect(PORT, '127.0.0.1', () =>
+          sock.write(Buffer.concat([Buffer.from(`${method} ${path} HTTP/1.1\r\nHost: 127.0.0.1:${PORT}\r\nContent-Length: 2\r\nConnection: close\r\nx-bridge-auth: ${s}.`), Buffer.alloc(43, 0xe9), Buffer.from('\r\n\r\n{}')]))
+        );
+        let out = '';
+        sock.on('data', (c) => (out += c));
+        sock.on('close', () => resolve(Number(out.split(' ')[1]) || 0));
+        sock.on('error', () => resolve(0));
+      });
+      assert(status === 401 && JSON.parse((await cli('health')).stdout).ok === true, `auth: a non-ASCII signature on ${path} → 401, the server survives`, `status ${status}`);
+    }
+    const pageAuth = await fetch(`${base}/auth?c=${nonce()}`, { headers: { origin: 'https://evil.example' } });
+    assert(pageAuth.status === 403, 'auth: /auth refuses browser pages like every control route');
+
+    // A CLI with another key (another OS user's, or a guess) refuses the real server before sending the command.
+    const otherState = join(scratch, 'other-user-state');
+    fs.mkdirSync(otherState, { mode: 0o700 });
+    fs.writeFileSync(join(otherState, 'key'), crypto.randomBytes(32).toString('base64url'), { mode: 0o600 });
+    const lastSeq = async () => (await (await authed('/log')).json()).lines.at(-1)?.seq;
+    const before = await lastSeq();
+    const wrong = await cliRaw(['eval', 'example.com', 'secret-payload'], null, { BRIDGE_STATE_DIR: otherState });
+    const after = await lastSeq();
+    assert(wrong.status === 1 && wrong.stderr.includes("couldn't prove it is this OS user's chrome-bridge server") && wrong.stderr.includes('stop && node cli.mjs start') && before === after, 'auth: a CLI holding another key refuses to send, and nothing ran', wrong.stderr);
+
+    // A key other users could read is replaced at the very next request — the
+    // old one may have leaked, so it must stop vouching for anything.
+    if (process.platform !== 'win32') {
+      const leaked = fs.readFileSync(join(stateDirectory, 'key'), 'utf8');
+      fs.chmodSync(join(stateDirectory, 'key'), 0o644);
+      const open = await cli('tabs');
+      const now = fs.readFileSync(join(stateDirectory, 'key'), 'utf8');
+      assert(open.status === 0 && now !== leaked && (fs.statSync(join(stateDirectory, 'key')).mode & 0o777) === 0o600, 'auth: a key other OS users could read is replaced (0600) on the next command, no step', open.stdout + open.stderr);
+    }
+
+    // Deleted under a running server: the next request recreates it, no restart.
+    fs.rmSync(join(stateDirectory, 'key'));
+    const healed = await cli('tabs');
+    assert(healed.status === 0 && fs.existsSync(join(stateDirectory, 'key')), 'auth: a key deleted under a running server comes back on the next command', healed.stdout + healed.stderr);
+  }
+
+  // An impostor on the port: it answers /auth with a proof it can't make. The
+  // CLI must refuse before the command body — a fill value, eval code — leaves.
+  {
+    const got = [];
+    let weird = false;
+    const impostor = http.createServer((req, res) => {
+      let b = '';
+      req.on('data', (c) => (b += c));
+      req.on('end', () => {
+        got.push(`${req.method} ${req.url.split('?')[0]} ${b}`);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(req.url.startsWith('/auth') ? JSON.stringify({ s: nonce(), p: weird ? 'é'.repeat(43) : nonce() + nonce() }) : JSON.stringify({ ok: true, result: 'forged' }));
+      });
+    });
+    await new Promise((r) => impostor.listen(0, '127.0.0.1', r));
+    try {
+      const port = String(impostor.address().port);
+      const fill = await cliRaw(['fill', 'example.com', '#password', 'hunter2'], null, { BRIDGE_PORT: port });
+      const stop = await cliRaw(['stop'], null, { BRIDGE_PORT: port });
+      assert(fill.status === 1 && fill.stderr.includes("couldn't prove") && !fill.stdout.includes('forged'), 'auth: the CLI refuses an impostor on the port', fill.stdout + fill.stderr);
+      assert(stop.status === 1 && !stop.stdout.includes('stopped'), 'auth: stop does not report an impostor as stopped', stop.stdout + stop.stderr);
+      assert(got.every((l) => l.startsWith('GET /auth')) && !got.join().includes('hunter2'), 'auth: the impostor saw nonces only — never a command, a body or a /stop', got.join(' | '));
+      // A proof of non-ASCII characters must read as "couldn't prove", not a dropped connection.
+      weird = true;
+      const odd = await cliRaw(['tabs'], null, { BRIDGE_PORT: port });
+      assert(odd.status === 1 && odd.stderr.includes("couldn't prove") && !odd.stderr.includes('dropped'), 'auth: a non-ASCII proof is refused as unproven', odd.stderr);
+    } finally {
+      impostor.close();
+    }
+  }
+
+  // An updated checkout whose old server still runs: commands name the fix,
+  // and `start` replaces that server by itself (zero-touch update path).
+  {
+    let stops = 0;
+    const old = http.createServer((req, res) => {
+      if (req.url === '/health') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, extension: false, profiles: [], warn: [] }));
+        return;
+      }
+      if (req.url === '/stop') {
+        stops++;
+        res.end('{"ok":true}', () => old.close());
+        old.closeAllConnections?.();
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise((r) => old.listen(0, '127.0.0.1', r));
+    const port = String(old.address().port);
+    const oldState = join(scratch, 'update-state');
+    try {
+      const cmdOld = await cliRaw(['tabs'], null, { BRIDGE_PORT: port, BRIDGE_STATE_DIR: oldState });
+      assert(cmdOld.status === 1 && cmdOld.stderr.includes('predates local authentication') && cmdOld.stderr.includes('stop && node cli.mjs start'), 'auth: a command against a pre-auth server names the restart', cmdOld.stderr);
+      const st = await cliRaw(['start'], null, { BRIDGE_PORT: port, BRIDGE_STATE_DIR: oldState });
+      assert(st.status === 0 && stops === 1 && st.stdout.includes('replacing a server that predates local authentication'), 'auth: start replaces a pre-auth server with this checkout\'s', st.stdout + st.stderr);
+      const tabs = await cliRaw(['health'], null, { BRIDGE_PORT: port, BRIDGE_STATE_DIR: oldState });
+      assert(JSON.parse(tabs.stdout).ok === true && fs.existsSync(join(oldState, 'key')), 'auth: the replacement serves health and created its key', tabs.stdout + tabs.stderr);
+    } finally {
+      old.close();
+      spawnSync(process.execPath, [`${ROOT}/cli.mjs`, 'stop'], { env: { ...env, BRIDGE_PORT: port, BRIDGE_STATE_DIR: oldState } });
+    }
+  }
+
+  // At start, a key other OS users could read is locked down and REPLACED.
+  if (process.platform !== 'win32') {
+    const openState = join(scratch, 'open-state');
+    fs.mkdirSync(openState, { mode: 0o755 });
+    fs.chmodSync(openState, 0o755);
+    const leaked = crypto.randomBytes(32).toString('base64url');
+    fs.writeFileSync(join(openState, 'key'), leaked, { mode: 0o644 });
+    const port = String(await new Promise((r) => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); }));
+    const e2 = { ...env, BRIDGE_PORT: port, BRIDGE_STATE_DIR: openState };
+    const srv2 = spawn(process.execPath, [`${ROOT}/server.mjs`], { env: e2, stdio: 'pipe' });
+    await new Promise((r) => srv2.stdout.once('data', r));
+    try {
+      const k = fs.readFileSync(join(openState, 'key'), 'utf8');
+      assert((fs.statSync(openState).mode & 0o777) === 0o700 && (fs.statSync(join(openState, 'key')).mode & 0o777) === 0o600 && k !== leaked, 'auth: at start a readable key folder is locked down and its key replaced');
+    } finally {
+      srv2.kill();
+    }
+  }
 
   const evilWs = await new Promise((resolve) => {
     const s = net.connect(PORT, '127.0.0.1');
@@ -1604,7 +1777,8 @@ try {
     });
   assert((await logReq({ 'Sec-Fetch-Site': 'none', 'Sec-Fetch-Dest': 'document', 'Sec-Fetch-Mode': 'navigate' })) === 403, 'server: /log opened in a browser tab → 403');
   assert((await logReq({ 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Dest': 'empty', 'Sec-Fetch-Mode': 'cors' })) === 403, 'server: /log fetched by a page on the bridge\'s own origin → 403');
-  assert((await logReq({ 'Sec-Fetch-Mode': 'cors' })) === 200, 'server: /log still answers the CLI (Node fetch sends only sec-fetch-mode)');
+  assert((await logReq({ 'Sec-Fetch-Mode': 'cors' })) === 401, 'server: an unsigned /log read (CLI-shaped headers, no key) → 401');
+  assert((await authed('/log?since=0')).status === 200, 'server: /log still answers the signed CLI (Node fetch sends only sec-fetch-mode)');
 
   const rebindWs = await new Promise((resolve) => {
     const s = net.connect(PORT, '127.0.0.1');
@@ -1625,12 +1799,12 @@ try {
 
   // Page-influenced error text can't inject ANSI escapes or forged lines into
   // the activity feed (server.log / `watch` terminal).
-  await fetch(`http://127.0.0.1:${PORT}/cmd`, {
+  await authed(`/cmd`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ type: 'ansierr' }),
   });
-  const ansiLine = (await fetch(`http://127.0.0.1:${PORT}/log`).then((r) => r.json())).lines.find((a) => a.line.includes('ansierr'));
+  const ansiLine = (await authed(`/log`).then((r) => r.json())).lines.find((a) => a.line.includes('ansierr'));
   assert(ansiLine && !/[\x00-\x1f\x7f]/.test(ansiLine.line), 'server /log strips control chars from error text', JSON.stringify(ansiLine));
 
   // --- multi-profile routing: a second fake profile takes its own seat ---------
@@ -1688,7 +1862,7 @@ try {
     assert(openPinned.status === 0 && openPinned.stdout.includes('"url":"https://example.org/"'), 'multi-seat: open --profile routes', openPinned.stdout + openPinned.stderr);
 
     // the activity feed names who acted
-    const feed = (await fetch(`http://127.0.0.1:${PORT}/log`).then((r) => r.json())).lines;
+    const feed = (await authed(`/log`).then((r) => r.json())).lines;
     assert(feed.some((a) => a.line.includes('snap sample.org @beta')), 'feed: routed command carries the profile tag', JSON.stringify(feed.slice(-3)));
 
     // The exported replay of a routed command carries --profile (batch accepts
@@ -1730,7 +1904,7 @@ try {
     // --profile used to print as its 4-char id prefix in the feed ('@oak' for
     // oak-test) AND break the exported replay ('--profile oak' doesn't route).
     const pinnedTabs = await cli('tabs', '--profile', 'beta');
-    const feedPinned = (await fetch(`http://127.0.0.1:${PORT}/log`).then((r) => r.json())).lines;
+    const feedPinned = (await authed(`/log`).then((r) => r.json())).lines;
     const pinnedFeedLine = feedPinned.filter((a) => a.line.includes('tabs @')).slice(-1)[0]?.line || '';
     const histPath3 = scratchFile('chrome-bridge-selftest3.batch');
     await cli('history', '--batch', histPath3);
@@ -1757,7 +1931,7 @@ try {
     assert(namedSeat?.name === 'oak-test', 'health carries the profile name from the WS handshake', JSON.stringify(hvNamed.profiles));
     const namedSnap = await cli('snap', 'named.example');
     assert(namedSnap.status === 0, 'named-profile seat routes a unique match', namedSnap.stdout + namedSnap.stderr);
-    const feedNamed = (await fetch(`http://127.0.0.1:${PORT}/log`).then((r) => r.json())).lines;
+    const feedNamed = (await authed(`/log`).then((r) => r.json())).lines;
     assert(feedNamed.some((a) => a.line.includes('snap named.example @oak-test')), 'feed: human-readable profile name replaces the uuid prefix', JSON.stringify(feedNamed.slice(-3)));
     // --profile takes the id prefix OR the exact profile name — the feed shows
     // names, so the name is what a human reaches for first (found live: the
@@ -1775,7 +1949,7 @@ try {
     assert(JSON.stringify(hvOff.localOff) === '["oak-test"]', 'local-off: health names the switched-off profile', JSON.stringify(hvOff));
     const offProfile = await cli('--profile', 'oak-test', 'snap', 'named.example');
     assert(offProfile.status !== 0 && offProfile.stderr.includes("profile 'oak-test' has Local AI agents switched off") && offProfile.stderr.includes('⚙ Settings'), 'local-off: --profile names the switch, not a missing extension', offProfile.stdout + offProfile.stderr);
-    const offFeed = (await fetch(`http://127.0.0.1:${PORT}/log`).then((r) => r.json())).lines;
+    const offFeed = (await authed(`/log`).then((r) => r.json())).lines;
     assert(offFeed.some((a) => a.line.includes('Local AI agents switched off in the popup @oak-test')), 'local-off: the feed shows it', JSON.stringify(offFeed.slice(-3)));
     const ext4back = await wsClient(PORT, 'named-test', 'oak-test');
     await new Promise((r) => setTimeout(r, 100));
@@ -1916,7 +2090,7 @@ try {
     };
     const work = join(tmp, 'work');
     fs.mkdirSync(join(work, 'extension'), { recursive: true });
-    for (const f of ['cli.mjs', 'drift.mjs', 'extension/commands.js']) fs.copyFileSync(join(ROOT, f), join(work, f));
+    for (const f of ['cli.mjs', 'drift.mjs', 'localauth.mjs', 'extension/commands.js']) fs.copyFileSync(join(ROOT, f), join(work, f));
     const setV = (dir, v) => {
       fs.writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'x', version: v, type: 'module' }));
       fs.writeFileSync(join(dir, 'extension', 'manifest.json'), JSON.stringify({ version: v }));
@@ -2023,7 +2197,7 @@ try {
     const home = join(tmpU, 'home');
     const bridgeCopy = (dir) => {
       fs.mkdirSync(join(dir, 'extension'), { recursive: true });
-      for (const f of ['cli.mjs', 'drift.mjs', 'extension/commands.js']) fs.copyFileSync(join(ROOT, f), join(dir, f));
+      for (const f of ['cli.mjs', 'drift.mjs', 'localauth.mjs', 'extension/commands.js']) fs.copyFileSync(join(ROOT, f), join(dir, f));
       fs.writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'chrome-bridge', version: '1.0.0', type: 'module' }));
     };
     const runU = (dir, ...a) => spawnSync(process.execPath, [join(dir, 'cli.mjs'), 'uninstall', ...a], { encoding: 'utf8', env: { ...env, HOME: home, USERPROFILE: home } });
@@ -2036,10 +2210,21 @@ try {
       assert(
         dry.status === 0 && dry.stdout.includes('uninstall would:') && dry.stdout.includes('remove the agent skill link') && dry.stdout.includes(`delete ${fs.realpathSync(plain)}`) &&
           dry.stdout.includes('belongs to another folder') && dry.stdout.includes('uninstall --yes') && dry.stdout.includes('Remove Chrome Bridge') &&
+          dry.stdout.includes(`${stateDirectory} (the local key) — still used by `) && !dry.stdout.includes('remove the local key folder') &&
           fs.existsSync(plain) && fs.lstatSync(join(home, '.claude', 'skills', 'chrome-bridge')).isSymbolicLink(),
-        'uninstall (dry run): lists the skill link and the folder, leaves a foreign server running, names the next steps, changes nothing',
+        'uninstall (dry run): lists the skill link and the folder, keeps the key folder another checkout uses, leaves a foreign server running, names the next steps, changes nothing',
         dry.stdout + dry.stderr
       );
+      // The last checkout using the key folder takes it along.
+      {
+        const lonely = join(tmpU, 'lonely-state');
+        fs.mkdirSync(lonely, { mode: 0o700 });
+        fs.writeFileSync(join(lonely, 'key'), 'k'.repeat(43), { mode: 0o600 });
+        fs.writeFileSync(join(lonely, 'checkouts.json'), JSON.stringify([fs.realpathSync(plain), join(tmpU, 'gone')]));
+        const u = (...a) => spawnSync(process.execPath, [join(plain, 'cli.mjs'), 'uninstall', ...a], { encoding: 'utf8', env: { ...env, HOME: home, USERPROFILE: home, BRIDGE_STATE_DIR: lonely, BRIDGE_PORT: '1' } });
+        const d = u();
+        assert(d.status === 0 && d.stdout.includes(`remove the local key folder ${lonely}`) && fs.existsSync(join(lonely, 'key')), 'uninstall (dry run): lists the key folder when no other existing checkout uses it', d.stdout + d.stderr);
+      }
       const real = runU(plain, '--yes');
       let linkGone = false;
       try {
@@ -2192,8 +2377,14 @@ try {
   // `stop && start` never started (found live, 2026-11-09).
   {
     const seen = [];
+    // A server from before local authentication: no /auth route.
     const fake = http.createServer((req, res) => {
-      seen.push(`${req.method} ${req.url}`);
+      seen.push(`${req.method} ${req.url.split('?')[0]}`);
+      if (req.url.startsWith('/auth')) {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
     });
@@ -2208,7 +2399,7 @@ try {
         child.on('close', (status) => resolve({ status, stdout, stderr }));
       });
       await new Promise((r) => setTimeout(r, 100));
-      assert(out.status === 0 && out.stdout.trim() === 'stopped' && seen.join() === 'POST /stop', 'cli stop sends nothing after /stop (no completion report to the stopped server)', `${seen.join(', ')} | ${out.stdout}${out.stderr}`);
+      assert(out.status === 0 && out.stdout.trim() === 'stopped' && seen.join() === 'GET /auth,POST /stop', 'cli stop: a server that predates local authentication still stops (plain /stop), and nothing follows the /stop', `${seen.join(', ')} | ${out.stdout}${out.stderr}`);
     } finally {
       fake.close();
     }

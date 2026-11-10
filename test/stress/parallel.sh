@@ -19,6 +19,9 @@ S="$REPO/test/stress"
 OUT="$S/out/parallel"; mkdir -p "$OUT"
 CLI=(env BRIDGE_DIAGNOSTICS_TEST=1 node "$REPO/cli.mjs")
 CURL=(curl -H 'x-bridge-test: 1')
+# Raw POST /cmd, the body exactly as given (malformed on purpose), signed
+# through localauth.mjs — an unsigned one never reaches the parser (401).
+rawcmd() { node --input-type=module -e "import { bridgeFetch } from '$REPO/localauth.mjs'; const r = await bridgeFetch('http://127.0.0.1:9333', '/cmd', { method: 'POST', headers: { 'x-bridge-test': '1' }, body: process.argv[1], signal: AbortSignal.timeout(5000) }); console.log(await r.text());" "$1"; }
 FX="file://$S/fixtures"
 PASS=0; FAIL=0; SECTION="?"
 # markers that must NEVER appear in worker output (except where a section says so)
@@ -322,12 +325,12 @@ s_robust() {
   # {"type":"shot",...,"crop":"z"} used to crash the WHOLE server: pushAct ran
   # outside the route try/catch and CLI_LINES.shot did m.crop.join on a string
   # — the throw, inside an async 'end' handler, was an unhandled rejection.
-  "${CURL[@]}" -s -m 5 -X POST http://127.0.0.1:9333/cmd -d '{"type":"shot","urlMatch":"nope","crop":"z"}' >"$OUT/robust.log" 2>&1
+  rawcmd '{"type":"shot","urlMatch":"nope","crop":"z"}' >"$OUT/robust.log" 2>&1
   grep -q '"ok":false' "$OUT/robust.log" && ok "malformed crop gets a clean error" || bad "malformed crop response: $(head -c 120 "$OUT/robust.log")"
-  "${CURL[@]}" -s -m 5 -X POST http://127.0.0.1:9333/cmd -d '{"type":"eval","urlMatch":"x"}' >>"$OUT/robust.log" 2>&1   # no code field
-  "${CURL[@]}" -s -m 5 -X POST http://127.0.0.1:9333/cmd -d 'not json at all' >>"$OUT/robust.log" 2>&1
-  "${CURL[@]}" -s -m 5 -X POST http://127.0.0.1:9333/cmd -d '{"type":"bogus"}' >>"$OUT/robust.log" 2>&1
-  "${CURL[@]}" -s -m 5 -X POST http://127.0.0.1:9333/cmd -d '{"type":"wait","urlMatch":"x","text":123}' >>"$OUT/robust.log" 2>&1
+  rawcmd '{"type":"eval","urlMatch":"x"}' >>"$OUT/robust.log" 2>&1   # no code field
+  rawcmd 'not json at all' >>"$OUT/robust.log" 2>&1
+  rawcmd '{"type":"bogus"}' >>"$OUT/robust.log" 2>&1
+  rawcmd '{"type":"wait","urlMatch":"x","text":123}' >>"$OUT/robust.log" 2>&1
   local h; h=$("${CURL[@]}" -s -m 2 http://127.0.0.1:9333/health | grep -c '"ok":true')
   [ "$h" = 1 ] && ok "server survives a 5-hit malformed-input burst" || bad "server died on malformed input"
 }

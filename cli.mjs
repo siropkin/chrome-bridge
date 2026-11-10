@@ -9,6 +9,7 @@ import { dirname, join, resolve as resolvePath, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Script } from 'node:vm';
 import { updateTarget } from './drift.mjs';
+import { bridgeFetch, listCheckouts, LocalAuthError, stateDir } from './localauth.mjs';
 // The shared command grammar (registry, tokenizer, parse/render) — a classic
 // script the extension can load too, so it publishes a global, not exports.
 import './extension/commands.js';
@@ -37,11 +38,25 @@ let serverStopped = false;
 async function reportCompletion(type, started, error) {
   if (serverStopped) return;
   try {
-    await fetch(`${BASE}/diagnostics`, {
+    await bridgeFetch(BASE, '/diagnostics', {
       method: 'POST', headers: diagnosticHeaders(), signal: AbortSignal.timeout(500),
       body: JSON.stringify({ action: 'client', type, ok: !error && !process.exitCode, error, durationMs: Math.round(performance.now() - started) }),
     });
   } catch {}
+}
+
+// /stop, signed. A server that predates local authentication accepts the
+// plain request — it carries nothing, so `stop && start` still moves an
+// updated checkout onto its new code. null: nothing answered.
+async function stopServer() {
+  serverStopped = true;
+  try {
+    return await bridgeFetch(BASE, '/stop', { method: 'POST' });
+  } catch (e) {
+    if (e?.code === 'old') return fetch(`${BASE}/stop`, { method: 'POST' }).catch(() => null);
+    if (e instanceof LocalAuthError) fail(e.message);
+    return null;
+  }
 }
 
 const fail = (msg) => {
@@ -84,12 +99,13 @@ const imgDims = (b) => {
 async function cmd(msg, soft) {
   let res;
   try {
-    res = await fetch(`${BASE}/cmd`, {
+    res = await bridgeFetch(BASE, '/cmd', {
       method: 'POST',
       headers: diagnosticHeaders(),
       body: JSON.stringify(PROFILE ? { ...msg, profile: PROFILE } : msg),
     });
   } catch (e) {
+    if (e instanceof LocalAuthError) fail(e.message);
     // ECONNREFUSED = the server was never there. Anything else (socket hangup,
     // undici abort) = it DROPPED an in-flight command — different advice: the
     // command may have partially run, so check history before retrying.
@@ -403,8 +419,9 @@ const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
   start                             start the server (detached) if it's down
   stop                              stop the server
   uninstall [--yes]                 remove chrome-bridge from this computer: stop the server,
-                                    remove the agent skill (~/.claude/skills/chrome-bridge)
-                                    and delete this bridge folder. Without --yes it only lists
+                                    remove the agent skill (~/.claude/skills/chrome-bridge),
+                                    the local key folder (unless another bridge folder uses
+                                    it) and delete this bridge folder. Without --yes it only lists
                                     what it would remove. Never deletes someone's work: a git
                                     checkout with local edits, untracked files, a stash, other
                                     worktrees or commits origin doesn't have (any branch, tag or
@@ -531,7 +548,16 @@ async function runCommand(cmdName, args) {
       // spawned child would die on EADDRINUSE and start would lie 'started').
       const bridgeHealth = () => fetch(`${BASE}/health`).then((r) => r.json()).then((h) => (h?.ok === true ? h : null)).catch(() => null);
       const up = await bridgeHealth();
-      if (up) {
+      // A server from before local authentication (an updated checkout whose
+      // server wasn't restarted) answers health, but this CLI would refuse it
+      // on every command: replace it. The stop runs in a child process — a
+      // request racing the server's exit can crash this one (see serverStopped).
+      let replaced = false;
+      if (up && (await fetch(`${BASE}/auth?c=${'0'.repeat(22)}`).then((r) => r.status).catch(() => 0)) === 404) {
+        spawnSync(process.execPath, [fileURLToPath(import.meta.url), 'stop'], { env: process.env });
+        for (let i = 0; i < 20 && (await bridgeHealth()); i++) await new Promise((r) => setTimeout(r, 100));
+        replaced = true;
+      } else if (up) {
         // A bare 'already running' reads as fully ready while the extension
         // is disconnected — the fresh-start path below says it, this one too.
         print(up.extension ? 'already running — extension connected' : 'already running — extension not connected (if it was already loaded, run health again in a moment; else load extension/ at chrome://extensions)');
@@ -561,10 +587,11 @@ async function runCommand(cmdName, args) {
         await new Promise((r) => setTimeout(r, 250));
         health = await bridgeHealth();
       }
+      const started = 'started' + (replaced ? ', replacing a server that predates local authentication' : '') + ' (log: ' + logPath + ')';
       print(
         health?.extension
-          ? 'started (log: ' + logPath + ') — extension connected'
-          : 'started (log: ' + logPath + ') — server ready; extension not connected yet (if it was already loaded, run health again in a moment)'
+          ? started + ' — extension connected'
+          : started + ' — server ready; extension not connected yet (if it was already loaded, run health again in a moment)'
       );
       break;
     }
@@ -706,7 +733,7 @@ async function runCommand(cmdName, args) {
       const h = await fetch(`${BASE}/health`).then((r) => r.json()).catch(() => null);
       const samePath = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
       if (h?.ok && (!h.repo || samePath(String(h.repo).replace(/[\\/]$/, ''), repo)))
-        actions.push(['stop the bridge server', () => ((serverStopped = true), fetch(`${BASE}/stop`, { method: 'POST' }).catch(() => null))]);
+        actions.push(['stop the bridge server', () => stopServer()]);
       else if (h?.ok) kept.push(`the running bridge server belongs to another folder (${h.repo}) — left running`);
       // The agent skill: our symlink, or a copy of our skill.
       const skill = join(homedir(), '.claude', 'skills', 'chrome-bridge');
@@ -734,6 +761,14 @@ async function runCommand(cmdName, args) {
         } catch {}
         if (/^name:\s*chrome-bridge\s*$/m.test(md)) actions.push([`remove the agent skill copy ${skill}`, () => fs.rmSync(skill, { recursive: true, force: true })]);
         else kept.push(`${skill} is not a chrome-bridge skill — left as is`);
+      }
+      // This OS user's key folder (localauth.mjs) — shared by every checkout
+      // whose server ever started, so it goes only with the last of them.
+      const keyDir = stateDir();
+      if (fs.existsSync(keyDir)) {
+        const others = listCheckouts(keyDir).filter((p) => !samePath(p, repo) && fs.existsSync(join(p, 'cli.mjs')));
+        if (others.length) kept.push(`${keyDir} (the local key) — still used by ${others.join(', ')}`);
+        else actions.push([`remove the local key folder ${keyDir}`, () => fs.rmSync(keyDir, { recursive: true, force: true })]);
       }
       // The bridge folder itself, only when it is really ours and holds nothing
       // of anyone's. Every doubt keeps it: a git checkout must be clean (all
@@ -850,8 +885,7 @@ async function runCommand(cmdName, args) {
     }
 
     case 'stop': {
-      serverStopped = true;
-      const res = await fetch(`${BASE}/stop`, { method: 'POST' }).catch(() => null);
+      const res = await stopServer();
       // Nothing-to-stop is success for the caller's purpose: setup texts tell
       // agents (and install.sh tells humans) `stop && start`, and a fresh
       // machine must not have the first half of that fail with exit 1.
@@ -883,7 +917,15 @@ async function runCommand(cmdName, args) {
     // (you already see command results). Ctrl-C to exit.
     case 'watch': {
       let since = 0;
-      const poll = () => fetch(`${BASE}/log?since=${since}`).then((r) => r.json()).catch(() => null);
+      // A refused identity ends the feed with its reason (a server down
+      // mid-watch is just a gap: the loop rides out restarts).
+      const poll = () =>
+        bridgeFetch(BASE, `/log?since=${since}`)
+          .then((r) => r.json())
+          .catch((e) => {
+            if (e instanceof LocalAuthError) fail(e.message);
+            return null;
+          });
       const first = await poll();
       if (!first) fail('bridge server not running — start it: node cli.mjs start');
       let boot = first.boot;
@@ -928,8 +970,9 @@ async function runCommand(cmdName, args) {
         fail('usage: history [match] [-n N] [--batch out]');
       let res;
       try {
-        res = await fetch(`${BASE}/log`).then((r) => r.json());
-      } catch {
+        res = await bridgeFetch(BASE, '/log').then((r) => r.json());
+      } catch (e) {
+        if (e instanceof LocalAuthError) fail(e.message);
         fail('bridge server not running — start it: node cli.mjs start');
       }
       let lines = res.lines.filter((a) => !match || a.line.includes(match));

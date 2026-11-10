@@ -224,8 +224,9 @@ update [--check]                  bring this checkout to the code matching the c
 start                             start the server (detached) if it's down
 stop                              stop the server
 uninstall [--yes]                 remove chrome-bridge from this computer: stop the server,
-                                  remove the agent skill (~/.claude/skills/chrome-bridge)
-                                  and delete this bridge folder. Without --yes it only lists
+                                  remove the agent skill (~/.claude/skills/chrome-bridge),
+                                  the local key folder (unless another bridge folder uses
+                                  it) and delete this bridge folder. Without --yes it only lists
                                   what it would remove. Never deletes someone's work: a git
                                   checkout with local edits, untracked files, a stash, other
                                   worktrees or commits origin doesn't have (any branch, tag or

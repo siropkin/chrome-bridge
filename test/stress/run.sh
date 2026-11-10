@@ -220,8 +220,9 @@ s_interact() {
   "${CLI[@]}" upload upload.html '#hidden' "$OUT/up.txt" --diff >>"$OUT/03-upload.log" 2>&1
   assert_grep "upload hidden input" "$OUT/03-upload.log" 'uploaded 1 file\(s\) to #hidden'
   # Cloud Bridge's form (no disk on that side): bytes, set in the page as real
-  # Files through a DataTransfer. Raw /cmd, since the CLI only sends paths.
-  curl -sS -m 30 -H 'Content-Type: application/json' --data "{\"type\":\"upload\",\"urlMatch\":\"upload.html\",\"target\":\"#plain\",\"profile\":\"$P1\",\"files\":[{\"name\":\"bytes.txt\",\"mimeType\":\"text/plain\",\"data\":\"Ynl0ZXMgZnJvbSB0aGUgY2xvdWQ=\"}]}" "http://127.0.0.1:${BRIDGE_PORT:-9333}/cmd" >>"$OUT/03-upload.log" 2>&1
+  # Files through a DataTransfer. Raw /cmd, since the CLI only sends paths —
+  # signed through localauth.mjs (an unsigned request gets 401).
+  node --input-type=module -e "import { bridgeFetch } from '$REPO/localauth.mjs'; const r = await bridgeFetch('http://127.0.0.1:${BRIDGE_PORT:-9333}', '/cmd', { method: 'POST', headers: { 'content-type': 'application/json' }, body: process.argv[1], signal: AbortSignal.timeout(30000) }); console.log(await r.text());" "{\"type\":\"upload\",\"urlMatch\":\"upload.html\",\"target\":\"#plain\",\"profile\":\"$P1\",\"files\":[{\"name\":\"bytes.txt\",\"mimeType\":\"text/plain\",\"data\":\"Ynl0ZXMgZnJvbSB0aGUgY2xvdWQ=\"}]}" >>"$OUT/03-upload.log" 2>&1
   assert_grep "upload byte files (Cloud Bridge form)" "$OUT/03-upload.log" 'uploaded 1 file\(s\) to #plain: bytes.txt'
   "${CLI[@]}" eval upload.html "document.getElementById('out').textContent" >>"$OUT/03-upload.log"
   assert_grep "page saw both files" "$OUT/03-upload.log" 'hidden change'

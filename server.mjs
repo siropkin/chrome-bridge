@@ -2,7 +2,7 @@
 // chrome-bridge server — zero dependencies, Node >= 18.
 // One port, two faces:
 //   ws://127.0.0.1:9333/ws   — the Chrome extension connects here
-//   POST 127.0.0.1:9333/cmd  — the CLI (or any agent) sends commands here
+//   POST 127.0.0.1:9333/cmd  — the CLI (or any agent) sends commands here, signed (localauth.mjs)
 //   GET  127.0.0.1:9333/health
 import http from 'node:http';
 import crypto from 'node:crypto';
@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createDiagnostics } from './diagnostics.mjs';
 import { driftWarnings } from './drift.mjs';
+import { createGuard, ensureKey, registerCheckout, stateDir, UNAUTHENTICATED } from './localauth.mjs';
 
 const diagnostics = createDiagnostics(
   process.env.BRIDGE_DIAGNOSTICS_DIR || fileURLToPath(new URL('./.diagnostics/', import.meta.url)),
@@ -54,6 +55,23 @@ const LOOPBACK_HOST = /^(127\.0\.0\.1|localhost)(:\d+)?$/;
 const SEAT_VERSION = /^\d{1,5}(\.\d{1,5}){0,3}$/;
 const SEAT_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 const SEAT_ID = /^[A-Za-z0-9-]{1,64}$/;
+
+// Local authentication (localauth.mjs): /cmd, /diagnostics, /log and /stop
+// need a request signed with this OS user's key — 127.0.0.1 is reachable by
+// every user on the computer. Fail at boot, not on the first command, when the
+// key folder can't be used.
+const auth = createGuard();
+try {
+  ensureKey();
+  registerCheckout(fileURLToPath(new URL('.', import.meta.url)).replace(/[\\/]$/, ''));
+} catch (e) {
+  console.error(`[bridge] can't use the local key folder ${stateDir()}: ${e.message}`);
+  process.exit(1);
+}
+const refuseUnsigned = (res) => {
+  res.writeHead(401, { 'content-type': 'application/json' });
+  res.end(JSON.stringify({ ok: false, error: UNAUTHENTICATED }));
+};
 
 // server.log holds operational notices only. All start paths share this
 // legacy boot-time cap; diagnostic events have their own rolling size limit.
@@ -763,6 +781,26 @@ const server = http.createServer((req, res) => {
     );
     return;
   }
+  // Challenge for a signed request (localauth.mjs). Answers only a non-browser
+  // client, like every other control route.
+  if (req.method === 'GET' && req.url.startsWith('/auth?')) {
+    if (req.headers.origin || req.headers['sec-fetch-site'] || req.headers['sec-fetch-dest']) {
+      res.writeHead(403);
+      res.end();
+      return;
+    }
+    let challenge;
+    try {
+      challenge = auth.challenge(new URL(req.url, 'http://x').searchParams.get('c'));
+    } catch (e) {
+      res.writeHead(500, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: `can't use the local key folder ${stateDir()}: ${e.message}` }));
+      return;
+    }
+    res.writeHead(challenge ? 200 : 400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(challenge || { ok: false, error: 'c must be a 16-64 character base64url nonce' }));
+    return;
+  }
   if (req.method === 'POST' && (req.url === '/cmd' || req.url === '/diagnostics')) {
     // Drive-by protection: a browser page's fetch always carries Origin and
     // Sec-Fetch-* headers; the CLI (Node fetch) and curl never do. Reject
@@ -796,7 +834,9 @@ const server = http.createServer((req, res) => {
         return;
       }
       // Decode once: a multi-byte character can straddle two chunks.
-      const body = Buffer.concat(chunks).toString('utf8');
+      const raw = Buffer.concat(chunks);
+      if (!auth.verify(req.headers['x-bridge-auth'], req.method, req.url, raw)) return refuseUnsigned(res);
+      const body = raw.toString('utf8');
       let msg, out;
       const t0 = Date.now();
       const meta = {
@@ -860,6 +900,7 @@ const server = http.createServer((req, res) => {
       res.end();
       return;
     }
+    if (!auth.verify(req.headers['x-bridge-auth'], req.method, req.url, '')) return refuseUnsigned(res);
     const since = Number(new URL(req.url, 'http://x').searchParams.get('since') || 0);
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ boot: bootId, lines: activity.filter((a) => a.seq > since) }));
@@ -872,6 +913,7 @@ const server = http.createServer((req, res) => {
       res.end();
       return;
     }
+    if (!auth.verify(req.headers['x-bridge-auth'], req.method, req.url, '')) return refuseUnsigned(res);
     res.writeHead(200, { 'content-type': 'application/json' });
     console.log('[bridge] stop requested — exiting');
     // Exit the moment the response is handed to the kernel, not 50ms later —

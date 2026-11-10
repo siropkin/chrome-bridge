@@ -121,7 +121,7 @@ table "1. Playa Phone (playaphone.com) 122 poin… hide | 41 comments" @e14
   link "41 comments" @e21
 ```
 
-Writing your own agent loop? Skip the CLI and send JSON to `POST http://127.0.0.1:9333/cmd`, for example `{"type": "snap", "urlMatch": "…"}`.
+Writing your own agent loop? Skip the CLI and send JSON to `POST http://127.0.0.1:9333/cmd`, for example `{"type": "snap", "urlMatch": "…"}`, signed with your account's local key (unsigned requests get `401`). From Node: `import { bridgeFetch } from '<repo>/localauth.mjs'`, then `bridgeFetch('http://127.0.0.1:9333', '/cmd', { method: 'POST', body: JSON.stringify({ type: 'snap', urlMatch: '…' }) })`. From another language, the two-step protocol is described at the top of [`localauth.mjs`](localauth.mjs).
 
 ## Example workflows
 
@@ -184,7 +184,7 @@ Since Chrome 136 (May 2025), Chrome ignores `--remote-debugging-port` on your de
 
 You're giving an agent your logged-in browser, so the design assumes you want to watch it work.
 
-- **Local only.** The server listens on `127.0.0.1` and rejects requests that come from web pages, so a site you visit can't drive it. **Any local process can**, though, including another user account on the same computer: nothing authenticates the local connection yet, so on a shared computer someone else could drive your Chrome (and `upload` your files) while the bridge runs, or start their own server on port 9333 while yours is stopped. Use it on a computer only you sign in to. Unload the extension at `chrome://extensions` when you're not using it.
+- **Local only.** The server listens on `127.0.0.1` and rejects requests that come from web pages, so a site you visit can't drive it. Commands must also be signed with a key only your user account can read, created automatically when the server first starts (see *Local key* under Install detail). So a program run by **another user account** on the same computer can't send commands, and the CLI won't send yours to a program on port 9333 that can't prove it holds the same key. Programs you run yourself can always drive the bridge. Not covered yet: the extension's own connection to the server. Until that ships, another account could pose as the server to your extension while yours is stopped. On a computer other people sign in to, unload the extension at `chrome://extensions` when you're not using it.
 - **Readable code.** The whole extension is one unminified file (`extension/background.js`) plus a manifest. The Web Store build is the same files.
 - **Page content is untrusted.** Anything the bridge returns may contain prompt injection; the rules agents follow are in [the skill](.claude/skills/chrome-bridge/SKILL.md). Be careful with `upload`: it reads any local file the agent names into the page. Never let a page decide what gets attached.
 - **Exported history leaves out secrets.** `history --batch` comments out typed and pasted text, dialog answers and upload paths.
@@ -233,6 +233,8 @@ node cli.mjs extreload   # unpacked install only, when health asks for it
 
 **Server stopped.** If the server dies or the machine reboots, the agent's health check fails and the agent restarts it with `node cli.mjs start`.
 
+**Local key.** The server creates a random key the first time it starts, readable only by your user account: `~/Library/Application Support/chrome-bridge/` on macOS, `~/.config/chrome-bridge/` on Linux (`$XDG_CONFIG_HOME` if set), `%LOCALAPPDATA%\chrome-bridge\` on Windows. The CLI signs every command with it, and you never handle it. A key other accounts could read is replaced on the next command, and a deleted one comes back. If a command says the server *predates local authentication* (you updated the checkout but the old server still runs) or *couldn't prove it is this OS user's chrome-bridge server*, run `node cli.mjs stop && node cli.mjs start`. `start` replaces an old server by itself.
+
 **Port.** Everything uses `127.0.0.1:9333`. `BRIDGE_PORT` moves the server and CLI, but the extension always connects to 9333, so you'd have to edit `extension/background.js` too. If `server.log` shows `EADDRINUSE`, something else holds 9333: find it with `lsof -i :9333`. It's often an old server from another checkout; `node <that-repo>/cli.mjs stop` frees it.
 
 **Windows.** `install.sh` needs bash (Git Bash works). The bridge itself is plain Node, so `node server.mjs` and every `cli.mjs` command work anywhere.
@@ -247,7 +249,7 @@ node cli.mjs extreload   # unpacked install only, when health asks for it
 
 Toolbar popup → ⚙ → **Remove Chrome Bridge**:
 
-1. **Copy uninstall prompt** and paste it into your AI agent. It runs `node cli.mjs uninstall`, shows you what it would remove (the local server, the agent skill in `~/.claude/skills`, the bridge folder with its logs and settings), and removes it once you agree (`uninstall --yes`). Nothing of yours is deleted: a git checkout with local edits, untracked files, a stash, other worktrees or commits origin doesn't have (on any branch, tag or a detached HEAD) is kept and listed, and so is a bridge folder inside another git project or a submodule. From a download without git, your saved `recipes/` are moved next to it first.
+1. **Copy uninstall prompt** and paste it into your AI agent. It runs `node cli.mjs uninstall`, shows you what it would remove (the local server, the agent skill in `~/.claude/skills`, the bridge folder with its logs and settings, and the local key folder unless another bridge folder still uses it), and removes it once you agree (`uninstall --yes`). Nothing of yours is deleted: a git checkout with local edits, untracked files, a stash, other worktrees or commits origin doesn't have (on any branch, tag or a detached HEAD) is kept and listed, and so is a bridge folder inside another git project or a submodule. From a download without git, your saved `recipes/` are moved next to it first.
 2. **Remove extension**: Chrome asks you to confirm. This also deletes everything the extension stored, including a Cloud Bridge sign-in.
 
 ## Development
