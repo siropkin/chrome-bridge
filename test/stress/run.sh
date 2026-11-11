@@ -703,6 +703,18 @@ s_refs() {
   "${CLI[@]}" press "x=refs" Enter 'p' >"$OUT/refs-noop-press.log" 2>&1
   assert_grep "ignored press says so and names --trusted" "$OUT/refs-noop-press.log" 'no observable page effect.*--trusted'
   "${CLI[@]}" close "x=refs" >/dev/null 2>&1
+  # A handler that re-renders its own container removes the element it was
+  # dispatched on before the effect check looks: that IS an effect. Read as
+  # "no observable page effect … retry with --trusted", the advice doubled the
+  # action (found on Cloud Bridge's Activity page: Details opened, then closed).
+  "${CLI[@]}" open "$FX/rerender.html?x=refs" --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" click "fixtures/rerender.html?x=refs" '#toggle' >"$OUT/refs-rerender.log" 2>&1
+  assert_grep "click that re-renders its own button is an effect" "$OUT/refs-rerender.log" '^clicked #toggle$'
+  "${CLI[@]}" press "fixtures/rerender.html?x=refs" Enter '#row' >"$OUT/refs-rerender-press.log" 2>&1
+  assert_grep "press that re-renders its own row is an effect" "$OUT/refs-rerender-press.log" '^pressed Enter on <p>$'
+  "${CLI[@]}" eval "fixtures/rerender.html?x=refs" "document.getElementById('row').textContent" >"$OUT/refs-rerender-state.log" 2>&1
+  assert_grep "each ran once (no double toggle)" "$OUT/refs-rerender-state.log" '^Row$'
+  "${CLI[@]}" close "fixtures/rerender.html?x=refs" >/dev/null 2>&1
   # #51: a click whose real result is a blocking modal must say so — the app
   # can clear its composer (looking sent) while the message sits behind the
   # dialog, and a later reload loses it.

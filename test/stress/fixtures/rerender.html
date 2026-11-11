@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>stress rerender</title>
+</head>
+<body>
+  <h1>Handlers that re-render their own list</h1>
+  <!-- Like a React list or Cloud Bridge's Activity page: the handler rebuilds
+       the container, so the element that took the click or key is gone
+       before a MutationObserver callback runs. -->
+  <div id="list"></div>
+  <script>
+    let open = false;
+    const list = document.getElementById('list');
+    const render = () => {
+      const b = document.createElement('button');
+      b.id = 'toggle';
+      b.textContent = open ? 'Hide details' : 'Details';
+      b.onclick = () => { open = !open; render(); };
+      const p = document.createElement('p');
+      p.id = 'row';
+      p.tabIndex = 0;
+      p.textContent = open ? 'Row (open)' : 'Row';
+      p.onkeydown = (e) => { if (e.key === 'Enter') { open = !open; render(); } };
+      list.replaceChildren(b, p);
+    };
+    render();
+  </script>
+</body>
+</html>

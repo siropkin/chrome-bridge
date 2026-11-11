@@ -3507,7 +3507,9 @@ const clickSrc = (target, dbl) => `(async () => {
       // ON/INSIDE the target count. Ceiling: a click whose SOLE effect is a
       // class toggle on an ancestor (theme switch on <html>) now warns.
       if (m.type === 'attributes' && !el.contains(t)) continue;
-      if (el.contains(t) || t === document.body || t === document.documentElement || t.contains?.(el)) { mutated = true; break; }
+      // A handler that re-rendered el's container took el out of the page before
+      // this callback ran (t no longer contains it): the removal is the effect.
+      if (el.contains(t) || t === document.body || t === document.documentElement || t.contains?.(el) || [...m.removedNodes].some((n) => n === el || n.contains?.(el))) { mutated = true; break; }
     }
   });
   mo.observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true });
@@ -4516,7 +4518,9 @@ const pressSrc = (keyIn, target) => `(async () => {
       // Same ambient-churn filter as click: ancestor class/style mutations
       // are constant on SPA shells — only attributes ON/INSIDE el count.
       if (m.type === 'attributes' && !el.contains(t)) continue;
-      if (el.contains(t) || t === document.body || t === document.documentElement || t.contains?.(el)) { mutated = true; break; }
+      // A handler that re-rendered el's container took el out of the page before
+      // this callback ran (t no longer contains it): the removal is the effect.
+      if (el.contains(t) || t === document.body || t === document.documentElement || t.contains?.(el) || [...m.removedNodes].some((n) => n === el || n.contains?.(el))) { mutated = true; break; }
     }
   });
   mo.observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true });
