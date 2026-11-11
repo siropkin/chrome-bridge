@@ -107,12 +107,8 @@ const KEYLESS = {
   missing: 'the local key was missing when the extension asked — the bridge recreated it; the extension retries by itself',
   other: "the extension couldn't read the local key — restart the bridge: `cli.mjs stop && cli.mjs start`",
 };
-// Seats from before extension authentication (< 1.34) — accepted until E1.
-const LEGACY_WARN = (label, v) =>
-  `profile ${label} runs chrome-bridge extension ${v || '(unknown version)'}, which can't prove itself to this server — until it updates to 1.34 or later, another account on this computer could pose as it or as this server; update it (Chrome Web Store: chrome://extensions → Update; unpacked: \`cli.mjs extreload\`)`;
 function authWarnings() {
   const out = [];
-  for (const [pid, s] of seats) if (s.legacy && s.socket && !s.socket.destroyed) out.push({ pid, text: LEGACY_WARN(s.name || pid.slice(0, 4), s.v) });
   for (const [who, k] of keyless) {
     if (Date.now() - k.at > 120_000) keyless.delete(who);
     // pid of its own: rides /cmd replies only when a command found no profile.
@@ -683,8 +679,7 @@ const server = http.createServer((req, res) => {
       JSON.stringify({
         ok: true,
         extension: !![...seats.values()].find((s) => s.socket && !s.socket.destroyed),
-        // legacy: an extension from before 1.34 that didn't prove itself (accepted until E1).
-        profiles: [...seats.entries()].map(([pid, s]) => ({ id: pid, v: s.v, ...(s.name ? { name: s.name } : {}), ...(s.install ? { install: s.install } : {}), ...(s.legacy ? { legacy: true } : {}) })),
+        profiles: [...seats.entries()].map(([pid, s]) => ({ id: pid, v: s.v, ...(s.name ? { name: s.name } : {}), ...(s.install ? { install: s.install } : {}) })),
         // Profiles the human switched off for local agents (popup → ⚙ Settings).
         ...(localOff.size ? { localOff: [...localOff.keys()] } : {}),
         // Drift warnings (the CLI prints them to stderr) — the same texts
@@ -872,18 +867,12 @@ server.on('upgrade', (req, socket) => {
   const install = u.searchParams.get('install') === 'store' ? 'store' : u.searchParams.get('install') === 'dev' ? 'dev' : null;
   // When this loaded instance last (re)loaded — feeds currentDrift().
   const boot = Number(u.searchParams.get('boot')) || null;
-  // All id-less clients (old extensions, raw test sockets) share one 'anon'
-  // seat: a second id-less connection is the same legacy browser reconnecting
-  // (SW race) — it gets the seat-taken bounce, not a second seat posing as a
-  // second profile.
-  const id = u.searchParams.get('id') || 'anon';
-  // Extension authentication (localauth.mjs): an extension that sends ?c=
-  // (1.34+) must answer this server's proof before it gets a seat — another
+  const id = u.searchParams.get('id');
+  // Extension authentication (localauth.mjs): the extension sends its nonce
+  // (?c=) and must answer this server's proof before it gets a seat — another
   // OS user's program can't, so it never receives this user's commands.
-  // Without ?c= it's an extension from before 1.34: seated as before, flagged
-  // legacy with a ⚠ in health (the grace ends in E1).
   const cn = u.searchParams.get('c');
-  if ((v !== null && !SEAT_VERSION.test(v)) || (name !== null && !SEAT_NAME.test(name)) || !SEAT_ID.test(id) || (cn !== null && !isNonce(cn))) {
+  if ((v !== null && !SEAT_VERSION.test(v)) || (name !== null && !SEAT_NAME.test(name)) || id === null || !SEAT_ID.test(id) || cn === null || !isNonce(cn)) {
     console.log(`[bridge] seat refused — malformed handshake (v, name, id or c)`);
     socket.destroy();
     return;
@@ -904,15 +893,13 @@ server.on('upgrade', (req, socket) => {
     socket.destroy();
     return;
   }
-  let authKey = null;
-  if (cn !== null) {
-    try {
-      authKey = ensureKey();
-    } catch (e) {
-      console.log(`[bridge] seat refused — can't use the local key folder ${stateDir()}: ${e.message}`);
-      socket.destroy();
-      return;
-    }
+  let authKey;
+  try {
+    authKey = ensureKey();
+  } catch (e) {
+    console.log(`[bridge] seat refused — can't use the local key folder ${stateDir()}: ${e.message}`);
+    socket.destroy();
+    return;
   }
   const accept = crypto.createHash('sha1').update(key + WS_GUID).digest('base64');
   socket.write(
@@ -924,8 +911,7 @@ server.on('upgrade', (req, socket) => {
   socket.setNoDelay(true);
   const sn = nonce();
   let authTimer = null;
-  // One seat per profile, taken only once the extension proved itself (or as
-  // legacy). A duplicate id is the SAME profile's service-worker reconnect
+  // One seat per profile, taken only once the extension proved itself. A duplicate id is the SAME profile's service-worker reconnect
   // race — bounce it with a seat-taken frame (the SW backs off and lets its
   // 30s keepalive alarm re-probe) instead of evicting the live socket.
   const takeSeat = () => {
@@ -939,7 +925,7 @@ server.on('upgrade', (req, socket) => {
     keyless.delete(name || id.slice(0, 8));
     seats.set(id, seat);
     seat.ready = true;
-    console.log(`[bridge] extension connected origin=${origin || 'none'} v=${v || '?'} id=${id} auth=${seat.legacy ? 'none (extension before 1.34)' : 'key'}`);
+    console.log(`[bridge] extension connected origin=${origin || 'none'} v=${v || '?'} id=${id}`);
   };
   const seat = {
     pid: id,
@@ -948,7 +934,6 @@ server.on('upgrade', (req, socket) => {
     install,
     boot,
     socket,
-    legacy: cn === null,
     ready: false,
     nextId: 1,
     pending: new Map(),
@@ -1039,7 +1024,6 @@ server.on('upgrade', (req, socket) => {
   socket.on('end', onGone);
   socket.on('close', onGone);
   socket.on('error', onGone);
-  if (seat.legacy) return takeSeat();
   socket.write(encodeFrame(JSON.stringify({ type: 'auth', s: sn, p: mac(authKey, 'server', cn, sn) })));
   authTimer = setTimeout(() => {
     if (seat.ready) return;

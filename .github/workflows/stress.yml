@@ -51,8 +51,8 @@ jobs:
       # Also proves local authentication against real Chrome: Chrome starts
       # AFTER the server with its own --user-data-dir, so the extension's first
       # dial has no key (&nokey=not-found); the server finds that folder in ps,
-      # registers its native host there, and the retry must authenticate. A
-      # legacy (unauthenticated) seat fails the job.
+      # registers its native host there, and the retry must authenticate (the
+      # server seats no extension that didn't).
       # A fresh profile has Developer mode off, and Chrome disables an
       # unpacked extension when it reloads then — the doctor section's
       # extreload never came back (its follow-up checks passed vacuously on
@@ -65,7 +65,6 @@ jobs:
         run: |
           for i in $(seq 1 30); do
             if node cli.mjs health 2>/dev/null | grep -q '"extension":true'; then
-              node cli.mjs profiles | grep -q '"legacy":true' && { echo "extension seated WITHOUT authentication"; node cli.mjs health; exit 1; }
               exit 0
             fi
             sleep 3
@@ -103,7 +102,7 @@ jobs:
   # for the key). Chrome runs a non-.exe native host through cmd.exe, finds it
   # through HKCU\Software\Google\Chrome\NativeMessagingHosts, and allows the
   # unpacked extension whose id is the SHA-256 of its UTF-16 path
-  # (nativehost.mjs). authsmoke.mjs: authenticated seat (not legacy) → a
+  # (nativehost.mjs). authsmoke.mjs: authenticated seat → a
   # command round trip → extreload comes back authenticated → the host
   # registration names this checkout's id → unregister removes the registry
   # values, register brings them back.

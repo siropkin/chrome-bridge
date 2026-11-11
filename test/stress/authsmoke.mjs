@@ -1,6 +1,6 @@
 // Local authentication against a real Chrome, on any OS: the extension got
 // the key through the native messaging host and took an authenticated seat
-// (not legacy), a command makes the round trip, and after `extreload` the new
+// (the only kind the server gives), a command makes the round trip, and after `extreload` the new
 // worker authenticates again. CI's Windows job runs it — the Windows host
 // (.cmd through cmd.exe, HKCU registry, the unpacked id from the UTF-16 path)
 // has no other end-to-end check; run.sh is bash- and macOS/Linux-shaped.
@@ -61,7 +61,7 @@ if (!profile && h.profiles.length > 1) {
   process.exit(1);
 }
 profile = seat.name;
-seat.legacy ? bad(`profile ${profile} seated with local authentication`, JSON.stringify(h)) : ok(`profile ${profile} seated with local authentication (v${seat.v})`);
+ok(`profile ${profile} seated with local authentication (v${seat.v})`);
 
 // 2. A command round trip through the signed CLI → server → extension.
 const roundTrip = (tag) => {
@@ -89,7 +89,7 @@ h = await health();
 const again = seatOf(h);
 if (!back || !again) bad('extension came back after extreload within 60s', JSON.stringify(h));
 else {
-  again.legacy ? bad('reloaded worker seated with local authentication', JSON.stringify(again)) : ok('reloaded worker seated with local authentication');
+  ok('reloaded worker seated with local authentication');
   roundTrip('after extreload');
 }
 
