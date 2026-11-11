@@ -197,6 +197,14 @@ test('close --all validates every reclaim before removing any tab without markin
   // The owning link closes it like before.
   assert.deepEqual({ ...(await context.close({ type: 'close', all: true, urlMatch: 'example', _link: 'cloud' })) }, { closed: 1 });
   assert.deepEqual(removed, [9]);
+  // Asked first (D3b): only the tabs the person allowed closing, never one that matched since.
+  removed.length = 0;
+  context.drivenTabs.clear();
+  context.chrome.tabs.query = async () => [{ id: 7 }, { id: 8 }, { id: 9 }];
+  assert.deepEqual({ ...(await context.close({ type: 'close', all: true, urlMatch: 'example', _link: 'cloud', _askTabs: [7, 9] })) }, { closed: 2 });
+  assert.deepEqual(removed, [7, 9]);
+  await assert.rejects(context.close({ type: 'close', all: true, urlMatch: 'example', _link: 'cloud', _askTabs: [] }), /^Error: no tab matching "example" — already closed\?/);
+  assert.deepEqual(removed, [7, 9]);
 });
 
 test('cloud links reach public web pages only: no localhost, LAN, *.local or file: (S1, decision cloud-private-net)', () => {
@@ -246,7 +254,7 @@ test('cloud links neither act on nor read a tab that ended up off-limits, whatev
   assert.equal(await context.offLimitsLanding(9), null, 'the local link keeps its reach');
   // Tripwires: every place that resolves a tab or snaps a page it navigated to.
   const findTabSrc = source.slice(source.indexOf('async function findTab(msg) {'), source.indexOf('async function cmdFetch('));
-  assert.match(findTabSrc, /assertLinkMayDrive\(matches\[0\]\.id, msg\);\n\s*refuseOffLimitsTab\(matches\[0\], msg\);/);
+  assert.match(findTabSrc, /assertLinkMayDrive\(tab\.id, msg\);\n\s*refuseOffLimitsTab\(tab, msg\);/);
   const landings = source.match(/const offLimits = await offLimitsLanding\(tabI?d?\.?i?d?\);\n\s*if \(offLimits\) return [^\n]+\n\s*const (wall|snap) = await runEval/g) || [];
   assert.equal(landings.length, 3, 'the --diff verdict, nav --diff and wait --human check before reading the page');
   const fetchSrcCode = source.slice(source.indexOf('async function cmdFetch('), source.indexOf("Network.loadNetworkResource', {"));
@@ -1147,6 +1155,157 @@ test('wait --js timeout names the last value or the last error', async () => {
   await assert.rejects(vm.runInContext(waitJsSrc({ js: 'n', timeout: 50 }), page), /\(last value: 0\)/);
 });
 
+// --- Ask (D3b): the question window, with fake chrome.windows and the page's messages.
+const askSource = source.slice(source.indexOf('// --- Ask: the person'), source.indexOf('// --- Commands ---'));
+function askFakes({ create } = {}) {
+  const windows = [];
+  const removed = [];
+  const updated = [];
+  let nextId = 100;
+  let onRemoved = () => {};
+  let onMessage = () => {};
+  const chrome = {
+    windows: {
+      getLastFocused: async () => ({ id: 1, left: 100, top: 50, width: 1200, height: 800 }),
+      create: async (o) => {
+        if (create) await create(o);
+        const w = { id: nextId++, ...o };
+        windows.push(w);
+        return w;
+      },
+      update: async (id, o) => updated.push([id, o]),
+      remove: async (id) => removed.push(id),
+      onRemoved: { addListener: (fn) => { onRemoved = fn; } },
+    },
+    runtime: { id: 'ext', getURL: (p) => 'chrome-extension://ext/' + p, onMessage: { addListener: (fn) => { onMessage = fn; } } },
+  };
+  // A message from the page in window w (or from any sender), answered like Chrome does.
+  const send = (msg, sender) => new Promise((resolve) => { onMessage(msg, sender, resolve); });
+  const page = (w, msg) => send({ ...msg, id: msg.id ?? w.url.split('#')[1] }, { id: 'ext', url: w.url, tab: { windowId: w.id } });
+  return { chrome, windows, removed, updated, send, page, raw: (msg, sender, cb) => onMessage(msg, sender, cb), close: (id) => onRemoved(id) };
+}
+
+function askHarness(opts) {
+  const fakes = askFakes(opts);
+  const timers = [];
+  const logs = [];
+  const tabsRemoved = [];
+  let n = 0;
+  const leftover = [{ id: 40, url: 'chrome-extension://ext/ask.html#gone' }, { id: 41, url: 'https://example.com/' }];
+  const context = vm.createContext({
+    chrome: { ...fakes.chrome, tabs: { query: async () => leftover, remove: async (id) => tabsRemoved.push(id) } },
+    crypto: { randomUUID: () => 'q' + ++n },
+    setTimeout: (fn, ms) => timers.push({ fn, ms }), clearTimeout() {},
+    logLine: (line) => logs.push(line), errMsg: (e) => String(e?.message ?? e),
+  });
+  vm.runInContext(askSource, context);
+  const flush = async () => {
+    for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+  };
+  return { ...fakes, context, timers, logs, tabsRemoved, flush };
+}
+const ASKED = { app: 'Claude', command: 'eval', title: 'Run its own code in a page, including while waiting', site: 'github.com', line: 'eval github "document.title"', settingsUrl: 'https://hub.example/app/settings?profile=a1' };
+
+test('ask window (D3b): one question at a time, in front over the window last used; its page reads it and answers once, then the window closes', { timeout: 10_000 }, async () => {
+  const h = askHarness();
+  const first = h.context.askUser({ ...ASKED, socket: { readyState: 1 } });
+  const second = h.context.askUser({ ...ASKED, command: 'click', title: 'Click', site: null, line: 'click github @e5' });
+  await h.flush();
+  assert.equal(h.windows.length, 1, 'one window at a time');
+  const [w] = h.windows;
+  assert.deepEqual(plain(w), { id: 100, url: 'chrome-extension://ext/ask.html#q1', type: 'popup', focused: true, width: 460, height: 360, left: 470, top: 197 });
+  assert.deepEqual(plain(h.updated), [[100, { drawAttention: true }]]);
+  const view = plain(await h.page(w, { type: 'ask-get' }));
+  assert.ok(view.expires > Date.now() + 40000 && view.expires <= Date.now() + 45000, '45 seconds to answer: inside an AI app\'s 60s call, with time left for the step');
+  assert.deepEqual(view, { ok: true, ...ASKED, expires: view.expires }, 'everything the window shows, and never the hub connection');
+  assert.deepEqual(plain(await h.page(w, { type: 'ask-answer', answer: 'once' })), { ok: true });
+  assert.equal(await first, 'once');
+  await h.flush();
+  assert.deepEqual(h.removed, [100]);
+  assert.deepEqual(plain(await h.page(w, { type: 'ask-answer', answer: 'once' })), { ok: false }, 'answered once only');
+  assert.equal(h.windows.length, 2, 'the next question shows once the first is answered');
+  assert.equal((await h.page(h.windows[1], { type: 'ask-get' })).site, null);
+  await h.page(h.windows[1], { type: 'ask-answer', answer: 'deny' });
+  assert.equal(await second, 'deny');
+});
+
+test('ask window (D3b): no answer within its 45 seconds, a closed window or a dropped hub connection is a no; a sixth question waiting is refused at once', { timeout: 10_000 }, async () => {
+  const h = askHarness();
+  const [s1, s2] = [{ readyState: 1 }, { readyState: 1 }];
+  const asked = [s1, s2, s1, s2, s2].map((socket) => h.context.askUser({ ...ASKED, socket }));
+  assert.equal(await h.context.askUser({ ...ASKED, socket: s2 }), 'busy');
+  await h.flush();
+  assert.deepEqual(h.timers.map((t) => t.ms), [45000, 45000, 45000, 45000, 45000], 'each its own 45 seconds, from when it was asked');
+  h.timers[1].fn(); // the second runs out while it waits, unseen
+  assert.equal(await asked[1], 'timeout');
+  h.context.askCancel(s1); // its hub connection dropped: the shown one and the third go
+  assert.deepEqual([await asked[0], await asked[2]], ['gone', 'gone']);
+  await h.flush();
+  assert.deepEqual(h.removed, [100]);
+  assert.deepEqual(h.windows.map((w) => w.url.split('#')[1]), ['q1', 'q4'], 'no window flashed up for a question that went with it');
+  h.close(101);
+  assert.equal(await asked[3], 'closed');
+  await h.flush();
+  h.timers[4].fn(); // the last runs out while shown: its window goes
+  assert.equal(await asked[4], 'timeout');
+  await h.flush();
+  assert.deepEqual(h.removed, [100, 101, 102]);
+  assert.equal(h.windows.length, 3);
+});
+
+test('ask window (D3b): a question belongs to its call — none on a closed hub connection, none with under 5 seconds of the call\'s time left, otherwise only the time left (review: a batch asked after its AI app gave up)', { timeout: 10_000 }, async () => {
+  const h = askHarness();
+  assert.equal(await h.context.askUser({ ...ASKED, socket: { readyState: 3 } }), 'gone', 'the AI app was already told the call failed');
+  assert.equal(await h.context.askUser({ ...ASKED, socket: { readyState: 1 }, deadline: Date.now() + 4000 }), 'late');
+  const pending = h.context.askUser({ ...ASKED, socket: { readyState: 1 }, deadline: Date.now() + 20_000 });
+  await h.flush();
+  assert.equal(h.windows.length, 1, 'only the call with time left got a window');
+  assert.ok(h.timers[0].ms > 19_000 && h.timers[0].ms <= 20_000, `the call's time left, not 45s (${h.timers[0].ms})`);
+  const view = await h.page(h.windows[0], { type: 'ask-get' });
+  assert.ok(view.expires <= Date.now() + 20_000, 'the window counts down the same time');
+  h.timers[0].fn();
+  assert.equal(await pending, 'timeout');
+});
+
+test('ask window (D3b): only the question\'s own page, in the window shown for it, can read or answer it', { timeout: 10_000 }, async () => {
+  const h = askHarness();
+  const pending = h.context.askUser(ASKED);
+  await h.flush();
+  const [w] = h.windows;
+  const page = { id: 'ext', url: w.url, tab: { windowId: w.id } };
+  for (const [msg, sender, why] of [
+    [{ type: 'ask-answer', id: 'q1', answer: 'once' }, { ...page, url: 'https://github.com/' }, "a content script (its sender.url is its page's)"],
+    [{ type: 'ask-get', id: 'q1' }, { ...page, url: 'https://github.com/' }, 'a content script reading it'],
+    [{ type: 'ask-answer', id: 'q1', answer: 'once' }, { ...page, id: 'another-extension' }, 'another extension'],
+    [{ type: 'ask-answer', id: 'q1', answer: 'once' }, { ...page, tab: { windowId: 999 } }, 'the page opened in another window'],
+    [{ type: 'ask-answer', id: 'q1', answer: 'once' }, { id: 'ext', url: 'chrome-extension://ext/popup.html' }, 'the toolbar popup'],
+    [{ type: 'ask-answer', id: 'q1', answer: 'always' }, page, 'not an answer this window offers'],
+    [{ type: 'ask-answer', id: 'q9', answer: 'once' }, page, 'another question'],
+  ])
+    assert.deepEqual(plain(await h.send(msg, sender)), { ok: false }, why);
+  // The popup's own messages are its listener's: this one neither answers nor holds them.
+  let responded = false;
+  assert.equal(h.raw({ type: 'bridge-state' }, { id: 'ext', url: 'chrome-extension://ext/popup.html' }, () => { responded = true; }), undefined);
+  assert.equal(responded, false);
+  await h.page(w, { type: 'ask-answer', answer: 'deny' });
+  assert.equal(await pending, 'deny', 'still waiting for its own page');
+});
+
+test('ask window (D3b): a window Chrome can\'t open is a no, named in the log; a restarted worker closes windows whose questions it lost; each no tells the AI app what happened and what next', { timeout: 10_000 }, async () => {
+  const h = askHarness({ create: async () => { throw new Error('No current window'); } });
+  await h.flush();
+  assert.deepEqual(h.tabsRemoved, [40], 'only the old question windows');
+  assert.equal(await h.context.askUser(ASKED), 'failed');
+  assert.match(h.logs.join('\n'), /ask: the question window did not open — No current window/);
+  const { context } = h;
+  assert.equal(context.askRefusal(ASKED, 'deny'), "The user said no when Chrome asked them to allow eval on github.com, so nothing ran. Don't run it again; do the task another way, or ask the user in the chat.");
+  assert.equal(context.askRefusal(ASKED, 'timeout'), "eval is set to Ask in the user's Cloud Bridge settings: Chrome asked the user to allow eval on github.com, and no answer came in time (Chrome waits up to 45 seconds), so nothing ran. Ask the user in the chat to watch for the chrome-bridge window in Chrome and answer it, then try again.");
+  assert.equal(context.askRefusal(ASKED, 'late'), "eval is set to Ask in the user's Cloud Bridge settings, and this call already spent its time waiting for the user's answers in Chrome, so eval on github.com didn't run. Run it, and anything after it, in a new call.");
+  assert.equal(context.askRefusal({ ...ASKED, site: null }, 'closed'), "The user closed Chrome's question about eval without answering, so nothing ran. Ask the user in the chat before trying again.");
+  assert.equal(context.askRefusal(ASKED, 'busy'), "5 questions are already waiting for the user's answer in Chrome, so nothing ran. Wait for those answers, call one step at a time, then try again.");
+  assert.equal(context.askRefusal(ASKED, 'failed'), "eval is set to Ask in the user's Cloud Bridge settings, but Chrome couldn't show the user its question, so nothing ran. Ask the user to try again, or to allow eval there (https://hub.example/app/settings?profile=a1).");
+});
+
 // --- Links (A2): the real Links section in a vm with a fake WebSocket.
 const linksSource = source.slice(source.indexOf('// --- Links ---'), source.indexOf('// --- Driven-tab marking'));
 
@@ -1190,6 +1349,7 @@ function linksHarness({ profileId = 'pid', owners = new Map(), driven = [], idRe
   const created = [];
   const badge = [];
   const intervals = [];
+  const ask = askFakes();
   const context = vm.createContext({
     WS_URL: 'ws://127.0.0.1:9333/ws', BOOT_TS_P: Promise.resolve(123), PROFILE_ID: profileId, PROFILE_NAME: profileId ? 'oak' : '', INSTALL_TYPE: 'dev',
     idReady, installReady: Promise.resolve(), WebSocket: FakeWS, crypto: { randomUUID: () => 'req-1', getRandomValues: (a) => webcrypto.getRandomValues(a), subtle: webcrypto.subtle }, atob,
@@ -1197,9 +1357,10 @@ function linksHarness({ profileId = 'pid', owners = new Map(), driven = [], idRe
     setInterval: (fn, ms) => intervals.push({ fn, ms }) && intervals.length, clearInterval() {},
     URL, fetch: fetchImpl, AbortSignal, btoa, TextEncoder,
     chrome: {
-      runtime: { getManifest: () => ({ version: '9.9.9' }), sendNativeMessage: async (host, msg) => (nativeHost ? nativeHost(host, msg) : { k: LOCAL_KEY }) }, alarms: { create() {}, onAlarm: { addListener: (fn) => { alarm = fn; } } },
+      runtime: { ...ask.chrome.runtime, getManifest: () => ({ version: '9.9.9' }), sendNativeMessage: async (host, msg) => (nativeHost ? nativeHost(host, msg) : { k: LOCAL_KEY }) }, alarms: { create() {}, onAlarm: { addListener: (fn) => { alarm = fn; } } },
       storage: { local: { get: async (k) => (k === 'localAgents' && localRead ? { localAgents: await localRead } : { [k]: storage[k] }), set: async (o) => Object.assign(storage, structuredClone(o)) } },
-      tabs: { create: async (o) => created.push(o), get: tabsGet },
+      tabs: { create: async (o) => created.push(o), get: tabsGet, query: async () => [] },
+      windows: ask.chrome.windows,
       action: { setBadgeText: async (o) => badge.push(['text', o.text]), setBadgeBackgroundColor: async () => {}, setTitle: async (o) => badge.push(['title', o.title]) },
     },
     logLine: (line) => logs.push(line), drivenTabs, ownerOf: (tabId) => (drivenTabs.has(tabId) ? owners.get(tabId) || 'local' : null),
@@ -1213,10 +1374,11 @@ function linksHarness({ profileId = 'pid', owners = new Map(), driven = [], idRe
   vm.runInContext(source.slice(source.indexOf('const NAME_WORDS'), source.indexOf('const idReady')), context); // setProfileId
   // runCommand withholds replies from cloud tabs now on localhost/LAN (the off-limits helpers).
   vm.runInContext(source.slice(source.indexOf('function privateHost('), source.indexOf('// --- end off-limits')), context);
+  vm.runInContext(askSource, context); // the cloud arm asks the person before a step set to Ask
   vm.runInContext(linksSource + '\nthis.links = links; this.linkOpen = linkOpen; this.cloudState = cloudState; this.cloudPair = cloudPair; this.cloudSignOut = cloudSignOut; this.cloudHeartbeatCheck = cloudHeartbeatCheck; this.connect = connect; this.setLocal = (on) => { localOn = on; }; this.localAuthState = () => localAuth;', context);
   const flush = () => new Promise((r) => setImmediate(r));
   const fire = (ms) => timers.splice(0).filter((t) => t.ms === ms || (timers.push(t), false)).forEach((t) => t.fn());
-  return { context, sockets, timers, handled, painted, logs, flush, fire, alarm: () => alarm(), storage, created, intervals, badge };
+  return { context, sockets, timers, handled, painted, logs, flush, fire, alarm: () => alarm(), storage, created, intervals, badge, ask };
 }
 
 test('a web-page tab Chrome refuses as "another extension\'s page" is named a stuck tab with its remedy, not sent hunting for an extension (found live, 2026-11-10)', async () => {
@@ -1330,7 +1492,7 @@ test('links: every link strips caller _fields, tags _link and replies on the rec
   await h.flush();
   const local = h.sockets[0];
   await local.open();
-  await local.recv({ id: 1, type: 'snap', urlMatch: 'x', _tabId: 99, _pill: true, _markedByMe: true, _warn: 'forged', _link: 'cloud' });
+  await local.recv({ id: 1, type: 'snap', urlMatch: 'x', _tabId: 99, _pill: true, _markedByMe: true, _warn: 'forged', _link: 'cloud', _ask: { command: 'snap' }, _askAt: { tabId: 99, host: 'x' }, _askTabs: [99] });
   assert.deepEqual(h.handled[0], { id: 1, type: 'snap', urlMatch: 'x', _link: 'local' });
   assert.deepEqual(local.sent, [{ id: 1, ok: true, result: 'ok' }], 'a forged _warn never reaches the reply');
   // A second link runs at the same time and keeps its own replies.
@@ -1678,6 +1840,123 @@ test('findTab: a bare number that is a live tab\'s id says to write id:<n> (it r
   assert.deepEqual(marked, [8], 'only the id: form claimed a tab');
 });
 
+// --- Ask gate (D3b): askGate + findTab with the real question window ---------
+function gateHarness({ driven = [], owners = [], reclaimed = [], extra = [] } = {}) {
+  const fakes = askFakes();
+  const marked = [];
+  const tabs = [{ id: 7, url: 'https://a.test/x', title: 'A' }, { id: 8, url: 'https://b.test/', title: 'B' }, { id: 9, url: 'https://c.test/', title: 'C' }, ...extra];
+  let n = 0;
+  const context = vm.createContext({
+    URL, drivenTabs: new Set(driven), tabOwner: new Map(owners), humanReclaimed: new Map(reclaimed.map((id) => [id, Date.now()])),
+    links: new Map([['local', { label: 'local' }], ['cloud', { label: 'cloud' }]]),
+    localOn: true, LOCAL_OFF_ERROR: 'Local AI agents was switched off',
+    persist() {}, setFavicon: async () => {}, recordActivity() {},
+    markTab: async (tabId) => { context.drivenTabs.add(tabId); marked.push(tabId); },
+    chrome: { ...fakes.chrome, tabs: { query: async () => tabs, remove: async () => {} } },
+    crypto: { randomUUID: () => 'q' + ++n }, setTimeout: () => 0, clearTimeout() {}, logLine() {}, errMsg: (e) => String(e?.message ?? e),
+  });
+  const offSource = source.slice(source.indexOf('function privateHost('), source.indexOf('// --- end off-limits'));
+  const findTabSource = source.slice(source.indexOf('const CROSS_LINK_READS'), source.indexOf('async function cmdFetch('));
+  vm.runInContext(offSource + '\n' + askSource + '\n' + findTabSource, context);
+  const flush = async () => {
+    for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+  };
+  // The person answers the newest window; resolves with what it asked about.
+  const answer = async (value) => {
+    await flush();
+    const w = fakes.windows.at(-1);
+    const view = plain(await fakes.page(w, { type: 'ask-get' }));
+    await fakes.page(w, { type: 'ask-answer', answer: value });
+    return view;
+  };
+  return { ...fakes, context, tabs, marked, flush, answer };
+}
+const QUESTION = { app: 'Claude', command: 'click', title: 'Click', line: 'click a.test @e1', settingsUrl: '' };
+
+test('ask gate (D3b): the question names the tab\'s website; yes runs the command on that very tab, no runs nothing and claims nothing', { timeout: 10_000 }, async () => {
+  const h = gateHarness();
+  const msg = { type: 'click', urlMatch: 'a.test', _link: 'cloud', _ask: QUESTION };
+  const gate = h.context.askGate(msg);
+  assert.equal((await h.answer('once')).site, 'a.test');
+  await gate;
+  assert.equal((await h.context.findTab(msg)).id, 7);
+  assert.deepEqual(h.marked, [7]);
+  const denied = { type: 'click', urlMatch: 'b.test', _link: 'cloud', _ask: QUESTION };
+  const no = h.context.askGate(denied);
+  await h.answer('deny');
+  await assert.rejects(no, (e) => e.message === "The user said no when Chrome asked them to allow click on b.test, so nothing ran. Don't run it again; do the task another way, or ask the user in the chat.");
+  assert.deepEqual(h.marked, [7], 'nothing claimed');
+  // No question (Allow, or any local command): nothing is asked.
+  await h.context.askGate({ type: 'click', urlMatch: 'c.test', _link: 'cloud' });
+  assert.equal(h.windows.length, 2);
+  // handle() asks right after its address checks, before anything else runs: every command passes it.
+  const prelude = source.slice(source.indexOf('async function handle(msg) {'), source.indexOf("  if (msg.type === 'ping') {"));
+  assert.match(prelude, /\n  refuseOffLimits\(msg\);\n(?:[ \t]*\/\/[^\n]*\n)*[ \t]*await askGate\(msg\);\n\s*$/);
+});
+
+test('ask gate (D3b): nobody is asked about a command that can\'t run — no tab, several, a tab the person took back, another link\'s, an off-limits one', { timeout: 10_000 }, async () => {
+  const h = gateHarness({ driven: [8], owners: [[8, 'local']], reclaimed: [9], extra: [{ id: 10, url: 'http://localhost:3000/', title: 'L' }] });
+  for (const [urlMatch, error] of [
+    ['zzz', /^Error: no tab matching "zzz"/],
+    ['.test', /^Error: ⚠ 3 tabs match "\.test"/],
+    ['c.test', /the human released this tab via ⏏/],
+    ['b.test', /driven through the local link/],
+    ['id:10', /^Error: this tab is on localhost:3000/],
+    ['--diff', /is a flag, not a tab match/],
+  ])
+    await assert.rejects(h.context.askGate({ type: 'click', urlMatch, _link: 'cloud', _ask: QUESTION }), error, urlMatch);
+  assert.equal(h.windows.length, 0);
+});
+
+test('ask gate (D3b): after the yes, the tab having moved to another website, or another tab matching now, runs nothing', { timeout: 10_000 }, async () => {
+  const h = gateHarness();
+  const msg = { type: 'click', urlMatch: 'a.test', _link: 'cloud', _ask: QUESTION };
+  const gate = h.context.askGate(msg);
+  await h.flush();
+  h.tabs[0].url = 'https://a.test.evil.example/x'; // still matches "a.test"
+  await h.answer('once');
+  await gate;
+  await assert.rejects(h.context.findTab(msg), (e) => e.message === "while the user was answering Chrome's question, the tab went to a.test.evil.example, so nothing ran: they allowed it for a.test. Run the command again; the user is asked again.");
+  const snap = { type: 'snap', urlMatch: 'b.test', _link: 'cloud', _ask: { ...QUESTION, command: 'snap' } };
+  const again = h.context.askGate(snap);
+  await h.flush();
+  h.tabs.splice(1, 1, { id: 11, url: 'https://b.test/', title: 'B' }); // closed, and opened again
+  await h.answer('once');
+  await again;
+  await assert.rejects(h.context.findTab(snap), /^Error: while the user was answering Chrome's question, "b\.test" now matches another tab, so nothing ran: they allowed it for b\.test\./);
+  assert.deepEqual(h.marked, []);
+});
+
+test('ask gate (D3b): open, nav and fetch ask about where they go (nav and fetch stay on their tab); a step on no single website asks without one; close --all asks about the tabs it will close', { timeout: 10_000 }, async () => {
+  const h = gateHarness();
+  let gate = h.context.askGate({ type: 'open', url: 'https://News.example/x', _link: 'cloud', _ask: QUESTION });
+  assert.equal((await h.answer('once')).site, 'news.example');
+  await gate;
+  const nav = { type: 'navigate', urlMatch: 'a.test', url: 'https://b.example/', _link: 'cloud', _ask: QUESTION };
+  gate = h.context.askGate(nav);
+  assert.equal((await h.answer('once')).site, 'b.example');
+  await gate;
+  assert.deepEqual(plain(nav._askAt), { tabId: 7, host: 'a.test' }, 'pinned to the tab it moves');
+  const fetch = { type: 'fetch', urlMatch: 'c.test', url: 'https://api.c.test/v1', _link: 'cloud', _ask: QUESTION };
+  gate = h.context.askGate(fetch);
+  assert.equal((await h.answer('once')).site, 'api.c.test');
+  await gate;
+  assert.deepEqual(plain(fetch._askAt), { tabId: 9, host: 'c.test' });
+  gate = h.context.askGate({ type: 'tabs', _link: 'cloud', _ask: QUESTION });
+  assert.equal((await h.answer('once')).site, null);
+  await gate;
+  const all = { type: 'close', all: true, urlMatch: '.test', _link: 'cloud', _ask: QUESTION };
+  gate = h.context.askGate(all);
+  assert.equal((await h.answer('once')).site, null, 'three websites: none named');
+  await gate;
+  assert.deepEqual(plain(all._askTabs), [7, 8, 9]);
+  const one = { type: 'close', all: true, urlMatch: 'a.test', _link: 'cloud', _ask: QUESTION };
+  gate = h.context.askGate(one);
+  assert.equal((await h.answer('once')).site, 'a.test');
+  await gate;
+  assert.equal(h.windows.length, 6);
+});
+
 // --- Cloud arm: the hub link speaks MCP over the same commands ---------------
 const plain = (v) => JSON.parse(JSON.stringify(v)); // vm-realm objects fail deepStrictEqual's prototype check
 // What the AI app gets: the hub keeps _meta (the Activity page's report) and never forwards it.
@@ -1692,9 +1971,9 @@ async function cloudArm(opts = {}) {
   const ws = h.sockets.find((s) => s.url.includes('/arm'));
   ws.open();
   let n = 0;
-  const call = async (name, args) => {
+  const call = async (name, args, meta) => {
     const id = ++n;
-    await ws.recv({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } });
+    await ws.recv({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args, ...(meta ? { _meta: meta } : {}) } });
     await h.flush();
     const reply = ws.sent.find((m) => m.id === id);
     assert.ok(reply, 'tools/call must be answered');
@@ -1939,12 +2218,12 @@ test('cloud: refusals name the next step and run nothing', async () => {
   assert.match(text(await call('chrome', { command: 'frobnicate x' })), /^Unknown command: frobnicate\. Commands: tabs, /);
   assert.match(text(await call('chrome', { command: '--profile elm tabs' })), /--profile elm is not this Chrome \("oak"\)/);
   assert.match(text(await call('chrome', { command: '--profile --x tabs' })), /^--profile needs an id or name: pick the Chrome with the tool's profile argument instead$/, 'no cli.mjs in cloud errors');
-  await ws.recv({ jsonrpc: '2.0', method: 'arm/policy', params: { commands: { click: 'off', eval: 'ask' }, settingsUrl: 'https://hub.example/app/settings?profile=a1' } });
+  await ws.recv({ jsonrpc: '2.0', method: 'arm/policy', params: { commands: { click: 'off', eval: 'off' }, settingsUrl: 'https://hub.example/app/settings?profile=a1' } });
   await flush();
   const off = await call('chrome', { command: 'click github @e1' });
   assert.equal(off.isError, true);
   assert.equal(text(off), "click is turned off for this Chrome profile in the user's Cloud Bridge settings, so nothing ran. Do the task without it, or ask the user to allow it there (https://hub.example/app/settings?profile=a1).");
-  assert.match(text(await call('chrome', { command: 'wait github --js "1"' })), /^eval needs the user's confirmation/, 'wait --js runs page code: eval\'s rule covers it');
+  assert.match(text(await call('chrome', { command: 'wait github --js "1"' })), /^eval is turned off for this Chrome profile/, 'wait --js runs page code: eval\'s rule covers it');
   assert.equal(text(await call('chrome', { command: 'wait github --text Saved' })), 'ok', 'wait without --js is not page code');
   assert.deepEqual(handled.map((m) => m.type), ['wait']);
 });
@@ -2207,6 +2486,123 @@ test('cloud: the open/close/release the arm runs itself obey the policy too (rev
   const d = await call('chrome', { command: 'doctor --fix' });
   assert.match(text(d), /"fixed":"release failed: release is turned off/);
   assert.deepEqual(handled.map((m) => m.type), ['fetch', 'doctor'], 'no open, no release ran');
+});
+
+// Ask (D3b): the question each command carries to askGate (handle is stubbed here).
+const question = (msg) => {
+  if (!msg._ask) return null;
+  const { socket, deadline, ...rest } = msg._ask;
+  return { ...plain(rest), socket: !!socket };
+};
+test('cloud Ask (D3b): a command set to Ask carries its question — the AI app, the command in people\'s words, the line it would run; wait --js asks under eval; Allow, Off and the local link never ask', { timeout: 10_000 }, async () => {
+  const h = await cloudArm();
+  const { call, handled, ws, flush, text } = h;
+  const settingsUrl = 'https://hub.example/app/settings?profile=a1';
+  await ws.recv({ jsonrpc: '2.0', method: 'arm/policy', params: { commands: { eval: 'ask', fill: 'ask', click: 'off' }, settingsUrl } });
+  await flush();
+  const started = Date.now();
+  await call('chrome', { command: 'eval github "document.title"' }, { clientName: '  Claude  ', client: 'c1' });
+  const { deadline } = handled[0]._ask;
+  assert.ok(deadline >= started + 45000 && deadline <= Date.now() + 45000, 'one budget for the call\'s questions: 45s from when it came in');
+  assert.deepEqual(question(handled[0]), { app: 'Claude', command: 'eval', title: 'Run its own code in a page, including while waiting', line: 'eval github document.title', settingsUrl, socket: true });
+  assert.equal(handled[0]._ask.socket, ws, 'the hub connection it came on (askCancel)');
+  await call('chrome_fill', { tab: 'github', target: '@e5', value: 'hunter2' });
+  assert.deepEqual(question(handled[1]), { app: 'An AI app', command: 'fill', title: 'Fill in fields, replacing what is there', line: 'fill github @e5 --diff -- "***"', settingsUrl, socket: true }, 'a typed value never shows; the AI app gave no name');
+  await call('chrome', { command: 'wait github --js "document.readyState === \'complete\'"' });
+  assert.equal(handled[2]._ask.command, 'eval', 'wait --js runs page code: eval\'s rule asks');
+  assert.match(handled[2]._ask.line, /^wait github --js /);
+  await call('chrome', { command: 'wait github --text Saved' });
+  assert.equal(question(handled[3]), null, 'wait without page code is wait\'s own rule (Allow)');
+  assert.match(text(await call('chrome', { command: 'click github @e1' })), /^click is turned off/);
+  assert.equal(handled.length, 4, 'Off is refused before anything runs, never asked');
+  // wait set to Ask asks for its --js too, with eval allowed (review: it ran unasked).
+  await ws.recv({ jsonrpc: '2.0', method: 'arm/policy', params: { commands: { wait: 'ask' }, settingsUrl } });
+  await flush();
+  await call('chrome', { command: 'wait github --js "window.ready"' });
+  await call('chrome', { command: 'wait github --text Saved' });
+  assert.deepEqual([handled[4]._ask?.command, handled[5]._ask?.command], ['wait', 'wait']);
+  handled.length = 4;
+  // The local link never asks, whatever the hub's rules.
+  const local = h.sockets.find((s) => s.url.startsWith('ws://127.0.0.1'));
+  await local.open();
+  await flush();
+  await local.recv({ id: 1, type: 'eval', urlMatch: 'github', code: '1' });
+  assert.deepEqual(handled.at(-1), { id: 1, type: 'eval', urlMatch: 'github', code: '1', _link: 'local' });
+});
+
+test('cloud Ask (D3b): fetch\'s scratch tab and doctor --fix\'s releases ask once for the whole of it; a no opens, closes and releases nothing', { timeout: 10_000 }, async () => {
+  const handle = (msg) => {
+    if (msg.type === 'fetch' && msg.urlMatch !== 'id:5') throw new Error(`no tab matching "${msg.urlMatch}"`);
+    if (msg.type === 'open') return { id: 5 };
+    if (msg.type === 'fetch') return { status: 200, ct: 'application/json', body: '{"a":1}' };
+    if (msg.type === 'doctor') return { rows: [{ id: 3, url: 'https://a/', grouped: true }, { id: 4, url: 'https://b/', driven: true }, { id: 6, url: 'https://c/', status: '⏳' }], stale: [] };
+    return 'ok';
+  };
+  const h = await cloudArm({ handle });
+  const settle = async () => {
+    for (let i = 0; i < 6; i++) await h.flush();
+  };
+  const answer = async (value) => {
+    await settle();
+    const w = h.ask.windows.at(-1);
+    const view = plain(await h.ask.page(w, { type: 'ask-get' }));
+    await h.ask.page(w, { type: 'ask-answer', answer: value });
+    return view;
+  };
+  await h.ws.recv({ jsonrpc: '2.0', method: 'arm/policy', params: { commands: { fetch: 'ask', open: 'ask', close: 'ask', release: 'ask' } } });
+  await h.flush();
+  let pending = h.call('chrome', { command: 'fetch api.example.com https://api.example.com/v1' }, { clientName: 'Claude' });
+  const view = await answer('once');
+  assert.deepEqual([view.app, view.command, view.site, view.line], ['Claude', 'fetch, open and close', 'api.example.com', 'fetch api.example.com https://api.example.com/v1\n# in a new tab on api.example.com, closed after']);
+  assert.equal((await pending).isError, false);
+  assert.deepEqual(h.handled.map((m) => [m.type, !!m._ask]), [['fetch', true], ['open', false], ['fetch', false], ['close', false]], 'the first try found no tab and asked nothing; then one question for all of it');
+  assert.equal(h.ask.windows.length, 1);
+  h.handled.length = 0;
+  pending = h.call('chrome', { command: 'fetch zzz https://evil.example/x --keep' });
+  assert.deepEqual((await answer('deny')).command, 'fetch and open', '--keep: no close to ask about');
+  const refused = await pending;
+  assert.equal(refused.isError, true);
+  assert.equal(h.text(refused), 'no tab matching "zzz"\nThe user said no when Chrome asked them to allow fetch and open on evil.example, so nothing ran. Don\'t run it again; do the task another way, or ask the user in the chat.');
+  assert.deepEqual(h.handled.map((m) => m.type), ['fetch'], 'no tab opened');
+  pending = h.call('chrome', { command: 'doctor --fix' });
+  const doctor = await answer('deny');
+  assert.deepEqual([doctor.command, doctor.title, doctor.site, doctor.line], ['release', 'Hand a tab back to you', null, 'release id:3\nrelease id:6']);
+  const rows = JSON.parse(h.text(await pending));
+  const no = 'release failed: The user said no when Chrome asked them to allow release, so nothing ran. Don\'t run it again; do the task another way, or ask the user in the chat.';
+  assert.deepEqual(rows.map((r) => [r.id, r.fixed]), [[3, no], [6, no]]);
+  assert.ok(!h.handled.some((m) => m.type === 'release'), 'nothing released');
+  assert.equal(h.ask.windows.length, 3, 'one question per call');
+});
+
+test('cloud Ask (D3b): a question asked after the call\'s hub connection closed is never shown — it carries that connection, not the link\'s next one (review)', { timeout: 10_000 }, async () => {
+  let ws;
+  const handle = (msg) => {
+    if (msg.type !== 'doctor') return 'ok';
+    ws.drop(); // the connection goes while doctor runs
+    return { rows: [{ id: 3, url: 'https://a/', grouped: true }], stale: [] };
+  };
+  const h = await cloudArm({ handle });
+  ws = h.ws;
+  await ws.recv({ jsonrpc: '2.0', method: 'arm/policy', params: { commands: { release: 'ask' } } });
+  await ws.recv({ jsonrpc: '2.0', id: 'd1', method: 'tools/call', params: { name: 'chrome', arguments: { command: 'doctor --fix' } } });
+  await h.flush();
+  assert.equal(h.ask.windows.length, 0, 'nobody to tell: no question');
+  assert.deepEqual(h.handled.map((m) => m.type), ['doctor'], 'nothing released');
+  const reply = ws.sent.find((m) => m.id === 'd1');
+  assert.match(reply.result.content[0].text, /"fixed":"release failed: Cloud Bridge disconnected while Chrome asked the user to allow release, so nothing ran\."/);
+});
+
+test('cloud Ask (D3b): the hub connection dropping takes its waiting question with it — nothing runs once its AI app has been told the call failed', { timeout: 10_000 }, async () => {
+  const h = await cloudArm({ handle: (msg) => { if (msg.type === 'fetch') throw new Error('no tab matching "x"'); return { id: 5 }; } });
+  await h.ws.recv({ jsonrpc: '2.0', method: 'arm/policy', params: { commands: { open: 'ask' } } });
+  const pending = h.ws.recv({ jsonrpc: '2.0', id: 'f1', method: 'tools/call', params: { name: 'chrome', arguments: { command: 'fetch x https://x.example/' } } });
+  for (let i = 0; i < 6; i++) await h.flush();
+  assert.equal(h.ask.windows.length, 1);
+  h.ws.drop();
+  await pending;
+  await h.flush();
+  assert.deepEqual(h.ask.removed, [h.ask.windows[0].id]);
+  assert.deepEqual(h.handled.map((m) => m.type), ['fetch'], 'no tab opened');
 });
 
 test('cloud: an empty address never falls back to the stored hub (review finding)', async () => {

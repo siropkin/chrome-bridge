@@ -1103,9 +1103,12 @@ try {
     // heuristic, and returning a warning after dispatch is too late for a
     // mutating command. Keep the refusal before _tabId/marking as a source
     // tripwire; the real-browser fixture below proves neither counter moves.
+    // The refusal lives in pickTab, which findTab (and askGate, D3b) picks with first.
+    const pickTabBlock = bg.slice(bg.indexOf('function pickTab('), bg.indexOf('async function askGate('));
     const findTabBlock = bg.slice(bg.indexOf('async function findTab'), bg.indexOf('async function cmdFetch'));
     assert(
-      findTabBlock.includes('refusing to choose one') && findTabBlock.indexOf('if (matches.length > 1)') < findTabBlock.indexOf('msg._tabId = matches[0].id'),
+      pickTabBlock.includes('refusing to choose one') && pickTabBlock.indexOf('if (matches.length > 1)') < pickTabBlock.indexOf('return matches[0]') &&
+        findTabBlock.indexOf('pickTab(msg, ') !== -1 && findTabBlock.indexOf('pickTab(msg, ') < findTabBlock.indexOf('msg._tabId = tab.id'),
       'ext: findTab refuses ambiguous same-profile matches before selecting a tab'
     );
     assert(!findTabBlock.includes('drivenTabs.has(b.id)'), 'ext: findTab has no driven/MRU ambiguity fallback');
@@ -1357,6 +1360,9 @@ try {
       'popup: manifest action points at existing popup files'
     );
     assert(spawnSync('node', ['--check', `${ROOT}extension/popup.js`]).status === 0, 'ext: popup.js parses (node --check)');
+    // The Cloud Bridge question window (D3b): the worker opens ask.html by name.
+    assert(fs.existsSync(`${ROOT}extension/ask.html`) && bg.includes("chrome.runtime.getURL('ask.html')"), 'ask window: the worker opens an existing ask.html');
+    assert(spawnSync('node', ['--check', `${ROOT}extension/ask.js`]).status === 0, 'ext: ask.js parses (node --check)');
     // The onboarding prompt the popup copies: self-contained (a store user has
     // no repo), gated on health, ends by proving no residue via doctor.
     const setupPrompt = fs.existsSync(`${ROOT}extension/setup-prompt.txt`) ? fs.readFileSync(`${ROOT}extension/setup-prompt.txt`, 'utf8') : '';
@@ -1368,10 +1374,11 @@ try {
     assert(popupSrc.includes('setup-prompt.txt') && popupSrc.includes('/health'), 'popup: copies the setup prompt + polls /health for the status dot');
     assert(bg.includes('chrome.management') && bg.includes('&install='), 'ext: install type rides the WS handshake (getSelf, no permission)');
     // The id:<tabId> match form the popup copies — one predicate shared by
-    // findTab / probe / close --all. Pin it so the branch can't silently die.
+    // findTab (pickTab) / probe / close --all / askGate's close --all. Pin it
+    // so the branch can't silently die.
     assert(
-      bg.includes('const tabMatches') && bg.includes('/^id:(\\d+)$/') && (bg.match(/tabMatches\(t, msg\.urlMatch, msg\._link\)/g) || []).length === 3 && bg.includes('if (hiddenFrom(link, t)) return false;'),
-      'ext: tabMatches predicate with the id: branch feeds all 3 match sites, and never matches a cloud link\'s substring on a tab hidden from it'
+      bg.includes('const tabMatches') && bg.includes('/^id:(\\d+)$/') && (bg.match(/tabMatches\(t, msg\.urlMatch, msg\._link\)/g) || []).length === 4 && bg.includes('if (hiddenFrom(link, t)) return false;'),
+      'ext: tabMatches predicate with the id: branch feeds all 4 match sites, and never matches a cloud link\'s substring on a tab hidden from it'
     );
     // The hygiene trio: lifecycle journal helper + doctor handler + boot-time
     // reap of dead-session group residue (re-deriving driven state from the

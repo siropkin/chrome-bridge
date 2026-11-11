@@ -250,8 +250,9 @@ test('popup width is independent of the viewport Chrome sizes from its content',
   assert.doesNotMatch(body, /\b(?:max-width|vw|dvw|svw)\b/);
 });
 
-test('popup: a toggled element whose CSS sets display still hides (author display beats the hidden attribute)', () => {
-  const html = fs.readFileSync(new URL('../extension/popup.html', import.meta.url), 'utf8');
+test('popup and ask window: a toggled element whose CSS sets display still hides (author display beats the hidden attribute)', () => {
+  for (const file of ['popup.html', 'ask.html']) {
+  const html = fs.readFileSync(new URL('../extension/' + file, import.meta.url), 'utf8');
   const css = html.match(/<style>([\s\S]*?)<\/style>/)[1];
   for (const [, tag] of html.matchAll(/<(\w+\b[^>]*\shidden\b[^>]*)>/g)) {
     const id = /\bid="([^"]+)"/.exec(tag)?.[1];
@@ -259,9 +260,76 @@ test('popup: a toggled element whose CSS sets display still hides (author displa
     for (const sel of [id && '#' + id, ...classes.map((c) => '.' + c)].filter(Boolean)) {
       const esc = sel.replace(/[.#]/g, '\\$&');
       if (new RegExp(`${esc}\\s*\\{[^}]*\\bdisplay\\s*:`).test(css))
-        assert.match(css, new RegExp(`${esc}\\[hidden\\]\\s*\\{[^}]*display\\s*:\\s*none`), `${sel} sets display — it needs ${sel}[hidden] { display: none } or the hidden attribute does nothing`);
+        assert.match(css, new RegExp(`${esc}\\[hidden\\]\\s*\\{[^}]*display\\s*:\\s*none`), `${file}: ${sel} sets display — it needs ${sel}[hidden] { display: none } or the hidden attribute does nothing`);
     }
   }
+  }
+});
+
+// The question window's page (D3b): extension/ask.js in a vm, like the popup.
+function askPage(reply) {
+  const elements = new Map();
+  const el = (id) => {
+    if (!elements.has(id)) elements.set(id, { hidden: true, disabled: true, textContent: '', href: '', focused: false, handlers: {}, focus() { this.focused = true; }, addEventListener(type, handler) { this.handlers[type] = handler; } });
+    return elements.get(id);
+  };
+  const sent = [];
+  const timers = [];
+  let keydown;
+  vm.runInNewContext(fs.readFileSync(new URL('../extension/ask.js', import.meta.url), 'utf8'), {
+    location: { hash: '#q1' },
+    document: { getElementById: el, addEventListener: (type, handler) => { if (type === 'keydown') keydown = handler; } },
+    chrome: { runtime: { sendMessage: async (m) => { sent.push(JSON.parse(JSON.stringify(m))); return reply(m); } } },
+    setTimeout: (fn, ms) => timers.push({ fn, ms }),
+  });
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  const wake = () => timers.find((t) => t.ms === 700).fn();
+  return { el, sent, timers, settle, wake, key: (e) => keydown(e) };
+}
+const QUESTION_VIEW = { ok: true, app: 'Claude', title: 'Run its own code in a page, including while waiting', command: 'eval', site: 'github.com', line: 'eval github document.title', settingsUrl: 'https://hub.example/app/settings?profile=a1' };
+
+test('ask window page (D3b): shows the question in plain words, wakes its buttons after a moment with Deny focused, and answers once — only for the person\'s own click', { timeout: 10_000 }, async () => {
+  const h = askPage((m) => (m.type === 'ask-get' ? { ...QUESTION_VIEW, expires: Date.now() + 44_500 } : { ok: true }));
+  await h.settle();
+  assert.deepEqual(h.sent, [{ type: 'ask-get', id: 'q1' }]);
+  const { el } = h;
+  assert.deepEqual([el('question').hidden, el('app').textContent, el('title').textContent, el('site-line').hidden, el('site').textContent, el('line').hidden, el('line').textContent], [false, 'Claude', QUESTION_VIEW.title, false, 'github.com', false, 'eval github document.title']);
+  assert.deepEqual([el('settings').hidden, el('settings').href], [false, QUESTION_VIEW.settingsUrl]);
+  assert.equal(el('left').textContent, 'No answer in 45 seconds means no.');
+  assert.deepEqual([el('once').disabled, el('deny').disabled], [true, true], 'asleep at first: a click or key meant for another window can\'t answer');
+  h.key({ isTrusted: true, key: 'Escape' });
+  assert.equal(h.sent.length, 1);
+  h.wake();
+  assert.deepEqual([el('once').disabled, el('deny').disabled, el('deny').focused, el('once').focused], [false, false, true, false]);
+  el('once').handlers.click({ isTrusted: false });
+  assert.equal(h.sent.length, 1, 'a synthesized click answers nothing');
+  el('once').handlers.click({ isTrusted: true });
+  await h.settle();
+  assert.deepEqual(h.sent[1], { type: 'ask-answer', id: 'q1', answer: 'once' });
+  el('deny').handlers.click({ isTrusted: true });
+  assert.equal(h.sent.length, 2, 'one answer only');
+  assert.deepEqual([el('once').disabled, el('gone').hidden], [true, true], 'the worker closes the window');
+});
+
+test('ask window page (D3b): Escape denies once awake; a question that went (answered, timed out, the worker restarted) says nothing ran; every element it uses exists', { timeout: 10_000 }, async () => {
+  const h = askPage((m) => (m.type === 'ask-get' ? { ...QUESTION_VIEW, site: null, line: '', settingsUrl: '', expires: Date.now() + 1000 } : { ok: false }));
+  await h.settle();
+  assert.deepEqual([h.el('site-line').hidden, h.el('line').hidden, h.el('settings').hidden], [true, true, true], 'no website, line or link: nothing empty shows');
+  assert.equal(h.el('left').textContent, 'No answer in 1 second means no.');
+  h.wake();
+  h.key({ isTrusted: true, key: 'Escape' });
+  await h.settle();
+  assert.deepEqual(h.sent[1], { type: 'ask-answer', id: 'q1', answer: 'deny' });
+  await h.settle();
+  const GONE = "This question isn't waiting any more, so nothing ran. You can close this window.";
+  assert.deepEqual([h.el('question').hidden, h.el('gone').hidden, h.el('gone').textContent], [true, false, GONE], 'too late: the worker said no such question');
+  const late = askPage(() => ({ ok: false }));
+  await late.settle();
+  assert.deepEqual([late.el('question').hidden, late.el('gone').textContent], [true, GONE]);
+  const html = fs.readFileSync(new URL('../extension/ask.html', import.meta.url), 'utf8');
+  const js = fs.readFileSync(new URL('../extension/ask.js', import.meta.url), 'utf8');
+  for (const [, id] of js.matchAll(/\$\('([^']+)'\)/g)) assert.match(html, new RegExp(`id="${id}"`), `ask.html has #${id}`);
+  assert.match(html, /<script src="ask\.js"><\/script>/);
 });
 
 test('popup setup restarts fetched code and reloads stale extensions', () => {

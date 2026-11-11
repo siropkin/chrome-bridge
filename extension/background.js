@@ -345,8 +345,9 @@ async function stuckTab(err, tabId) {
 // One command from any link: strip caller-supplied _fields, tag the link, run
 // it with the pill/favicon bookkeeping, and answer with the reply envelope
 // {ok, result | error, pageErrors?} (the local link sends it as-is with its id;
-// the cloud arm renders it).
-async function runCommand(link, msg) {
+// the cloud arm renders it). ask: the question for a command the person set to
+// Ask (the cloud arm's; askGate asks it once the command's tab is known).
+async function runCommand(link, msg, ask) {
   // Underscore fields (_tabId, _pill, _markedByMe, _warn, …) are INTERNAL —
   // set while handling a command, and trusted by onmessage's catch/finally
   // and the ownership gate. The server strips them at /cmd, but that guards
@@ -354,6 +355,7 @@ async function runCommand(link, msg) {
   // came in on (a peer can't claim to be another link).
   for (const k of Object.keys(msg)) if (k.startsWith('_')) delete msg[k];
   msg._link = link.id;
+  if (ask) msg._ask = ask;
   let failed = false;
   try {
     let result = await handle(msg);
@@ -560,6 +562,7 @@ async function connect(link) {
     if (link.rpc) {
       clearInterval(s._ping);
       cloudDropPending(s);
+      askCancel(s);
     }
     clearTimeout(s._authTimer);
     if (link.socket !== s) return; // a newer socket already took over — don't double-reconnect
@@ -810,15 +813,31 @@ async function cloudKeep(link, path, mimeType, body, detail) {
   ];
 }
 
-// The user's Allow/Ask/Off rule for a command, as refusal text (null = allowed).
+// The user's rule for a command on this link: 'off', 'ask', or null (Allow).
 // Every command the arm runs goes through it — including the open/close/
 // release it runs itself for fetch and doctor --fix.
+function policyRule(link, name) {
+  const commands = link.policy?.commands || {};
+  const rule = Object.hasOwn(commands, name) ? commands[name] : null;
+  return rule === 'off' || rule === 'ask' ? rule : null;
+}
+// An Off rule as refusal text (null = not off).
 function policyRefusal(link, name) {
-  const rule = link.policy?.commands?.[name];
+  if (policyRule(link, name) !== 'off') return null;
   const where = link.policy?.settingsUrl ? ` (${link.policy.settingsUrl})` : '';
-  if (rule === 'off') return `${name} is turned off for this Chrome profile in the user's Cloud Bridge settings, so nothing ran. Do the task without it, or ask the user to allow it there${where}.`;
-  if (rule === 'ask') return `${name} needs the user's confirmation, which this extension version can't ask for yet, so nothing ran. Ask the user to set ${name} to Allow in Cloud Bridge settings${where}.`;
-  return null;
+  return `${name} is turned off for this Chrome profile in the user's Cloud Bridge settings, so nothing ran. Do the task without it, or ask the user to allow it there${where}.`;
+}
+// The question for a command set to Ask (askUser shows it): the AI app asking,
+// what the command does in people's words, the line it would run — typed
+// values "***" as on the Activity page, page code as written — and where the
+// rules change. askGate adds the website once the tab is known. It belongs to
+// its call: the connection the call came on (closed: nobody to tell, so no
+// question), and one budget of ASK_MS from the call's start for all its
+// questions — a batch's later step can't be allowed after its AI app gave up.
+function askFor(link, report, name, msg) {
+  const C = globalThis.BridgeCommands;
+  const line = C.replayLine(msg, { ok: true })?.replace(/^# secret · /, '') ?? msg.code ?? msg.js ?? '';
+  return { app: report.app, command: name, title: C.lookup(name)?.title || name, line: String(line).slice(0, 2000), settingsUrl: link.policy?.settingsUrl || '', socket: report.socket, deadline: report.started + ASK_MS };
 }
 // The hub's rules for this profile (decision d3-design): per-command 'off' (or
 // 'ask'), websites the user blocked (each with its subdomains), and the page
@@ -875,8 +894,12 @@ async function cloudMessage(link, s, data) {
   };
   if (msg.method === 'tools/list') return reply({ result: { tools: CLOUD_TOOLS() } });
   if (msg.method === 'tools/call') {
-    const { name, arguments: args } = msg.params || {};
-    const report = { command: null, site: null, steps: [], batch: false };
+    const { name, arguments: args, _meta: meta } = msg.params || {};
+    // app: who a question in Chrome says is asking (the name the user allowed the AI app under).
+    const app = typeof meta?.clientName === 'string' && meta.clientName.trim() ? meta.clientName.trim().slice(0, 60) : 'An AI app';
+    // socket + started: a question belongs to this call — the connection it came
+    // on, and the time it has left (askUser).
+    const report = { command: null, site: null, steps: [], batch: false, app, socket: s, started: Date.now() };
     let result;
     try {
       result = await cloudCall(link, name, args && typeof args === 'object' ? args : {}, report);
@@ -1012,6 +1035,7 @@ async function cloudLine(link, line, report) {
 async function cloudArgv(link, argv, report) {
   const C = globalThis.BridgeCommands;
   let parsed;
+  let ask = null;
   try {
     if (!argv[0]) return cloudText('Empty command. Start with: tabs', true);
     const entry = C.lookup(argv[0]);
@@ -1025,26 +1049,30 @@ async function cloudArgv(link, argv, report) {
     if (early) return cloudText(early, true);
     parsed = await C.parse(argv, cloudIo(link)); // no stdin or clipboard here: parse names the alternative
     // wait --js runs page code like eval, so eval's rule covers it too.
-    const refused = parsed.name === 'wait' && parsed.msg.js ? policyRefusal(link, 'eval') : null;
+    const ruled = parsed.name === 'wait' && parsed.msg.js ? 'eval' : parsed.name;
+    const refused = ruled !== parsed.name ? policyRefusal(link, ruled) : null;
     if (refused) {
       const r = cloudText(refused, true);
       report.steps.push(cloudStep(parsed.name, parsed.msg, r));
       return r;
     }
+    // Either rule set to Ask asks: wait's own, or eval's for its page code (named first).
+    const asking = [ruled, parsed.name].find((name) => policyRule(link, name) === 'ask');
+    if (asking) ask = askFor(link, report, asking, parsed.msg);
   } catch (err) {
     return cloudText(cloudWords(errMsg(err)), true);
   }
   const sent = { ...parsed.msg, deadlineAt: cloudDeadline(parsed.msg) };
-  const result = parsed.name === 'fetch' ? await cloudFetch(link, parsed) : await cloudRun(link, parsed, sent);
+  const result = parsed.name === 'fetch' ? await cloudFetch(link, parsed, report, ask) : await cloudRun(link, parsed, sent, report, ask);
   report.steps.push(cloudStep(parsed.name, parsed.msg, result));
   report.site = (await cloudSite(parsed.name === 'fetch' ? parsed.msg : sent)) || report.site;
   return result;
 }
 
 // A parsed command → its reply rendered as MCP content.
-async function cloudRun(link, parsed, sent) {
+async function cloudRun(link, parsed, sent, report, ask) {
   const C = globalThis.BridgeCommands;
-  const reply = await runCommand(link, sent);
+  const reply = await runCommand(link, sent, ask);
   const warnings = C.replyWarnings(reply);
   if (!reply.ok) return cloudText([String(reply.error), ...warnings].join('\n'), true);
   if (parsed.name === 'doctor') {
@@ -1055,10 +1083,15 @@ async function cloudRun(link, parsed, sent) {
   }
   if (parsed.name === 'doctor' && parsed.msg.fix) {
     // cli.mjs's doctor --fix: one release per residue row, never a driven tab.
-    for (const row of reply.result) {
-      if (row.driven || row.error || row.staleMemory) continue;
-      if (!(row.grouped || row.status || row.emulated || row.debugger)) continue;
-      const refused = policyRefusal(link, 'release');
+    const residue = reply.result.filter((row) => !(row.driven || row.error || row.staleMemory) && (row.grouped || row.status || row.emulated || row.debugger));
+    let refused = policyRefusal(link, 'release');
+    // Release set to Ask: one question for all of them, not one per tab.
+    if (!refused && residue.length && policyRule(link, 'release') === 'ask') {
+      const q = { ...askFor(link, report, 'release', { type: 'release', urlMatch: 'id:' + residue[0].id }), line: residue.map((row) => `release id:${row.id}`).join('\n'), site: null };
+      const answer = await askUser(q);
+      if (answer !== 'once') refused = askRefusal(q, answer);
+    }
+    for (const row of residue) {
       const r = refused ? { ok: false, error: refused } : await runCommand(link, { type: 'release', urlMatch: 'id:' + row.id });
       row.fixed = r.ok ? 'released' : 'release failed: ' + r.error;
     }
@@ -1095,15 +1128,24 @@ async function cloudRun(link, parsed, sent) {
 
 // cli.mjs's fetch: no matching tab → a scratch tab on the target's origin
 // (fetching from an unrelated tab is cross-origin and dies on CORS).
-async function cloudFetch(link, parsed) {
+async function cloudFetch(link, parsed, report, ask) {
   const C = globalThis.BridgeCommands;
   const { urlMatch: match, url } = parsed.msg;
   const { keep, host, outFile } = parsed.view;
   const notes = [];
-  let res = await runCommand(link, { ...parsed.msg });
+  let res = await runCommand(link, { ...parsed.msg }, ask);
   if (!res.ok && String(res.error).includes('no tab matching') && !String(res.error).includes('in any connected profile')) {
     const refused = policyRefusal(link, 'open') || (keep ? null : policyRefusal(link, 'close'));
     if (refused) return cloudText(`${res.error}\nA scratch tab on ${host} would need it: ${refused}`, true);
+    // One question for all of it (the try above found no tab, so it asked
+    // nothing): the fetch when it's set to Ask, the tab it opens and closes when those are.
+    const asked = [ask?.command, policyRule(link, 'open') === 'ask' && 'open', !keep && policyRule(link, 'close') === 'ask' && 'close'].filter(Boolean);
+    if (asked.length) {
+      const base = ask || askFor(link, report, 'open', parsed.msg);
+      const q = { ...base, command: asked.length > 1 ? `${asked.slice(0, -1).join(', ')} and ${asked.at(-1)}` : asked[0], line: `${base.line}\n# in a new tab on ${host}${keep ? '' : ', closed after'}`, site: hostOf(url) };
+      const answer = await askUser(q);
+      if (answer !== 'once') return cloudText(`${res.error}\n${askRefusal(q, answer)}`, true);
+    }
     notes.push(`no tab matching "${match}" — opened a scratch tab on ${host} for this fetch${keep ? ' (kept open)' : ''}`);
     const opened = await runCommand(link, { type: 'open', url });
     if (!opened.ok) return cloudText(String(opened.error), true);
@@ -5307,6 +5349,133 @@ async function waitPixel(tab, msg) {
   });
 }
 
+// --- Ask: the person's yes or no before a Cloud Bridge step (D3b) -----------
+// A command set to Ask on the hub's settings page runs only after the person
+// allows it in a small chrome-bridge window (decision d3-design): no page can
+// draw over or click an extension window, and cloud AI apps mostly drive
+// background tabs, where a pill goes unseen. One question shows at a time; the
+// rest wait their turn, each with its own 45 seconds. No answer in that time, a
+// closed window or the hub connection dropping counts as no. 45, not a minute:
+// AI apps give a call about 60 seconds (the MCP SDK's default request timeout),
+// and the step itself still has to run after a yes — a question that waited a
+// minute left the AI app a transport timeout instead of the answer (found live).
+const ASK_MS = 45_000;
+// Questions waiting at once: an AI app firing calls in parallel can't stack windows.
+const ASK_WAITING_MAX = 5;
+// Less time than this left in a call: no question (nobody could read and answer it).
+const ASK_MIN_MS = 5_000;
+const ASK_PAGE = chrome.runtime.getURL('ask.html');
+const ASK_SIZE = { width: 460, height: 360 };
+// { id, q, expires, settle, timer, shown: Promise<windowId | null> | null, windowId }
+const askQueue = [];
+
+// q: { app, command, title, site, line, settingsUrl, socket, deadline } — site
+// null when the step acts on no single website; socket: the hub connection its
+// call came on; deadline: when the call's time for questions runs out (askFor).
+// Answers 'once' | 'deny' | 'timeout' | 'closed' | 'busy' | 'failed' | 'gone' | 'late'.
+function askUser(q) {
+  // Closed: the hub already told the AI app the call failed — a yes would run unseen.
+  if (q.socket && q.socket.readyState !== 1 /* WebSocket.OPEN */) return Promise.resolve('gone');
+  const ms = Math.min(ASK_MS, (q.deadline ?? Infinity) - Date.now());
+  if (ms < ASK_MIN_MS) return Promise.resolve('late');
+  if (askQueue.length >= ASK_WAITING_MAX) return Promise.resolve('busy');
+  return new Promise((resolve) => {
+    const entry = { id: crypto.randomUUID(), q, expires: Date.now() + ms, shown: null, windowId: null };
+    entry.settle = (answer) => {
+      const at = askQueue.indexOf(entry);
+      if (at < 0) return; // answered already
+      askQueue.splice(at, 1);
+      clearTimeout(entry.timer);
+      resolve(answer);
+      entry.shown?.then((windowId) => windowId != null && chrome.windows.remove(windowId).catch(() => {}));
+      if (at === 0) askNext();
+    };
+    entry.timer = setTimeout(() => entry.settle('timeout'), ms);
+    askQueue.push(entry);
+    askNext();
+  });
+}
+
+// Shows the oldest waiting question, in front, over the window last used.
+function askNext() {
+  const entry = askQueue[0];
+  if (!entry || entry.shown) return;
+  entry.shown = (async () => {
+    const last = await chrome.windows.getLastFocused({ windowTypes: ['normal'] }).catch(() => null);
+    const place = last?.width ? { left: Math.round(last.left + (last.width - ASK_SIZE.width) / 2), top: Math.round(last.top + Math.max(0, (last.height - ASK_SIZE.height) / 3)) } : {};
+    const win = await chrome.windows.create({ url: `${ASK_PAGE}#${entry.id}`, type: 'popup', focused: true, ...ASK_SIZE, ...place });
+    // Chrome in the background: its Dock/taskbar icon calls the person over.
+    chrome.windows.update(win.id, { drawAttention: true }).catch(() => {});
+    entry.windowId = win.id;
+    return win.id;
+  })().catch((err) => {
+    logLine('ask: the question window did not open — ' + errMsg(err));
+    entry.settle('failed');
+    return null;
+  });
+}
+
+// What the window shows: nothing it doesn't need (never the hub socket).
+function askView(entry) {
+  const { app, title, command, site, line, settingsUrl } = entry.q;
+  return { app, title, command, site: site || null, line, settingsUrl: settingsUrl || '', expires: entry.expires };
+}
+
+// The hub connection a call came on dropped: its AI app already got an error,
+// so a yes can't reach anyone — and must not run the step unseen. From the
+// last one back: the shown one goes last, so none of its siblings flashes up.
+function askCancel(socket) {
+  for (const entry of [...askQueue].reverse()) if (entry.q.socket === socket) entry.settle('gone');
+}
+
+chrome.windows.onRemoved.addListener((windowId) => {
+  askQueue.find((e) => e.windowId === windowId)?.settle('closed');
+});
+
+// Only the window shown for a question may read or answer it: its own page, in
+// that very window. Pages and content scripts can't reach this (no
+// externally_connectable; a content script's sender.url is its page's).
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg?.type !== 'ask-get' && msg?.type !== 'ask-answer') return;
+  const entry = askQueue.find((e) => e.id === msg.id);
+  const own = sender?.id === chrome.runtime.id && String(sender.url || '').split('#')[0] === ASK_PAGE && sender.tab?.windowId != null;
+  if (!entry?.shown || !own) {
+    sendResponse({ ok: false });
+    return;
+  }
+  entry.shown
+    .then((windowId) => {
+      if (windowId == null || sender.tab.windowId !== windowId || !askQueue.includes(entry)) return { ok: false };
+      if (msg.type === 'ask-get') return { ok: true, ...askView(entry) };
+      if (msg.answer !== 'once' && msg.answer !== 'deny') return { ok: false };
+      entry.settle(msg.answer);
+      return { ok: true };
+    })
+    .then(sendResponse);
+  return true;
+});
+
+// A worker that restarted lost its questions: their windows can't answer anything.
+chrome.tabs
+  .query({})
+  .then((tabs) => {
+    for (const t of tabs) if (String(t.url || '').startsWith(ASK_PAGE)) chrome.tabs.remove(t.id).catch(() => {});
+  })
+  .catch(() => {});
+
+// What the AI app is told when the answer isn't yes.
+function askRefusal(q, answer) {
+  const what = q.command + (q.site ? ' on ' + q.site : '');
+  const set = `${q.command} is set to Ask in the user's Cloud Bridge settings`;
+  if (answer === 'deny') return `The user said no when Chrome asked them to allow ${what}, so nothing ran. Don't run it again; do the task another way, or ask the user in the chat.`;
+  if (answer === 'timeout') return `${set}: Chrome asked the user to allow ${what}, and no answer came in time (Chrome waits up to 45 seconds), so nothing ran. Ask the user in the chat to watch for the chrome-bridge window in Chrome and answer it, then try again.`;
+  if (answer === 'late') return `${set}, and this call already spent its time waiting for the user's answers in Chrome, so ${what} didn't run. Run it, and anything after it, in a new call.`;
+  if (answer === 'closed') return `The user closed Chrome's question about ${what} without answering, so nothing ran. Ask the user in the chat before trying again.`;
+  if (answer === 'busy') return `${ASK_WAITING_MAX} questions are already waiting for the user's answer in Chrome, so nothing ran. Wait for those answers, call one step at a time, then try again.`;
+  if (answer === 'gone') return `Cloud Bridge disconnected while Chrome asked the user to allow ${what}, so nothing ran.`;
+  return `${set}, but Chrome couldn't show the user its question, so nothing ran. Ask the user to try again, or to allow ${q.command} there${q.settingsUrl ? ` (${q.settingsUrl})` : ''}.`;
+}
+
 // --- Commands ---------------------------------------------------------------
 
 // Commands that act as the user or run code in the page. Auto-MARKING is no
@@ -5375,11 +5544,14 @@ function assertLinkMayDrive(tabId, msg) {
   );
 }
 
-async function findTab(msg) {
+// The one tab a <match> names, from all tabs — or the error that says why not
+// (none, or several: never choose one from an ambiguous match). findTab and
+// askGate pick with it, so a question is asked about exactly the tab the command
+// will run on.
+function pickTab(msg, tabs) {
   // A flag where <match> belongs can never match a URL — say so instead of
   // 'no tab matching "--max"'. One guard here covers every command.
   if (msg.urlMatch?.startsWith('--')) throw new Error(`"${msg.urlMatch}" is a flag, not a tab match — <match> goes first (check the command's usage)`);
-  const tabs = await chrome.tabs.query({});
   // URL or title substring (or an exact id:<tabId> reference) — the same
   // predicate `cli tabs <match>` filters with, so the list the agent picked
   // from and the resolver never disagree.
@@ -5424,23 +5596,62 @@ async function findTab(msg) {
         '. Re-run with a longer <match>, or target one exactly: id:<tabId>.'
     );
   }
-  msg._tabId = matches[0].id;
+  return matches[0];
+}
+
+// Cloud Bridge's Ask rule (D3b; the cloud arm sets msg._ask for a command set to
+// Ask): the person allows it in a chrome-bridge window before it runs. The
+// question names the website it would act on — the address it opens, goes to or
+// fetches, else its tab's. The tab is picked and refused here exactly as findTab
+// will, so nobody is asked about a command that can't run, then pinned: after
+// the answer findTab refuses another tab, or this one on another website.
+// close --all closes only the tabs it asked about.
+async function askGate(msg) {
+  if (!msg._ask) return;
+  let site = ['open', 'navigate', 'fetch'].includes(msg.type) ? hostOf(msg.url) : null;
+  if (msg.type === 'close' && msg.all) {
+    const mine = (await chrome.tabs.query({})).filter((t) => tabMatches(t, msg.urlMatch, msg._link) && [null, msg._link].includes(ownerOf(t.id)));
+    msg._askTabs = mine.map((t) => t.id);
+    if (!mine.length) return; // close --all says why: nothing of this link's matches
+    const hosts = new Set(mine.map((t) => hostOf(t.url)));
+    site = hosts.size === 1 ? [...hosts][0] : null;
+  } else if (msg.type !== 'open' && typeof msg.urlMatch === 'string') {
+    const tab = pickTab(msg, await chrome.tabs.query({}));
+    assertNotReclaimed(tab.id, msg);
+    assertLinkMayDrive(tab.id, msg);
+    refuseOffLimitsTab(tab, msg);
+    msg._askAt = { tabId: tab.id, host: hostOf(tab.url) };
+    if (!['navigate', 'fetch'].includes(msg.type)) site = msg._askAt.host;
+  }
+  const q = { ...msg._ask, site };
+  const answer = await askUser(q);
+  if (answer !== 'once') throw new Error(askRefusal(q, answer));
+}
+
+async function findTab(msg) {
+  const tab = pickTab(msg, await chrome.tabs.query({}));
+  // Allowed for one tab on one website (askGate): the person said yes to that.
+  if (msg._askAt && (tab.id !== msg._askAt.tabId || hostOf(tab.url) !== msg._askAt.host)) {
+    const now = tab.id !== msg._askAt.tabId ? `"${msg.urlMatch}" now matches another tab` : `the tab went to ${hostOf(tab.url) || 'a page with no website'}`;
+    throw new Error(`while the user was answering Chrome's question, ${now}, so nothing ran: they allowed it for ${msg._askAt.host || 'the tab it was asked about'}. Run the command again; the user is asked again.`);
+  }
+  msg._tabId = tab.id;
   // Where it was when picked: a cloud command reports that site to the hub's
   // Activity page (cloudSite), and a close or a navigating click leaves none after.
-  msg._tabAt = { url: matches[0].url, pendingUrl: matches[0].pendingUrl };
+  msg._tabAt = { url: tab.url, pendingUrl: tab.pendingUrl };
   // The ⏏ reclaim gate: the human took this tab back (pill ⏏) and findTab's
   // auto-mark would hand it to the next command in the agent's loop within
   // seconds — refuse everything for the window. `mark` is the deliberate
   // re-claim (passes and clears the flag); `release` passes and KEEPS it (a
   // stray agent release must not launder the tab back). `tabs`/`probe` never
   // reach findTab — listing and routing stay possible while gated.
-  assertNotReclaimed(matches[0].id, msg);
+  assertNotReclaimed(tab.id, msg);
   // Another link's tab: reads pass, everything else is refused here — before
   // mark's reclaim-clear, the auto-mark and any activity record.
-  assertLinkMayDrive(matches[0].id, msg);
-  refuseOffLimitsTab(matches[0], msg);
+  assertLinkMayDrive(tab.id, msg);
+  refuseOffLimitsTab(tab, msg);
   if (msg.type === 'mark') {
-    humanReclaimed.delete(matches[0].id);
+    humanReclaimed.delete(tab.id);
     persist(); // the re-claim must survive an SW restart too — a resurrected veto would refuse commands on a tab the human handed back
   }
   // Every command resolving here marks the tab, reads included (owner's
@@ -5455,23 +5666,23 @@ async function findTab(msg) {
   // the banner in (note's probe; shot / wait --pixel-change / trusted
   // input's suppression windows) awaitMark() it, which also sees a SIBLING
   // command's mark that a per-message handle would miss.
-  if (!['release', 'mark', 'unemulate', 'activate'].includes(msg.type) && !drivenTabs.has(matches[0].id)) {
+  if (!['release', 'mark', 'unemulate', 'activate'].includes(msg.type) && !drivenTabs.has(tab.id)) {
     // This command created the claim — if it then hits Chrome's permanent
     // "nothing here is drivable" wall, onmessage undoes THIS mark (#37).
     assertLinkOn(msg);
     msg._markedByMe = true;
-    tabOwner.set(matches[0].id, msg._link); // markTab persists it
-    markTab(matches[0].id).catch(() => {});
+    tabOwner.set(tab.id, msg._link); // markTab persists it
+    markTab(tab.id).catch(() => {});
   }
   // Not `release`: it would flash ⏳ on the still-driven tab right before
   // releaseTab restores the site's own favicon. Fire-and-forget for the same
   // uncommitted-nav reason as open() — an awaited executeScript there can
   // pend forever and eat the whole command timeout.
-  if (msg.type !== 'release' && drivenTabs.has(matches[0].id)) {
-    setFavicon(matches[0].id, '⏳').catch(() => {});
-    recordActivity(matches[0].id, msg);
+  if (msg.type !== 'release' && drivenTabs.has(tab.id)) {
+    setFavicon(tab.id, '⏳').catch(() => {});
+    recordActivity(tab.id, msg);
   }
-  return matches[0];
+  return tab;
 }
 
 async function cmdFetch(tab, msg) {
@@ -6005,6 +6216,16 @@ function blockedSite(host) {
 
 const cloudLink = (link) => !!link && link !== 'local';
 
+// The hostname a web address is on (lowercase), or null for anything else.
+function hostOf(url) {
+  try {
+    const u = new URL(url);
+    return /^https?:$/.test(u.protocol) ? u.hostname.toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}
+
 // subject: the address, or a phrase ending in one ("this tab is on 10.0.0.1, which");
 // where: the address alone, when the subject is a phrase.
 function offLimitsError(subject, outcome = 'nothing ran', where = subject) {
@@ -6122,6 +6343,9 @@ async function handle(msg) {
       throw new Error(`"${u.protocol}//${u.host}" can never be driven — Chrome blocks extension scripting on chrome:// pages, other extensions' pages, and the Web Store. Open it by hand for the human instead; the bridge would only leave a marked tab it can't act on`);
   }
   refuseOffLimits(msg);
+  // Set to Ask in Cloud Bridge settings: the person says yes first — after every
+  // check above, so they're never asked about a command that would be refused.
+  await askGate(msg);
 
   if (msg.type === 'ping') {
     return 'pong';
@@ -6306,7 +6530,8 @@ async function handle(msg) {
     // and a sibling link's live work is not that.
     if (msg.all) {
       const ts = await chrome.tabs.query({});
-      const found = ts.filter((t) => tabMatches(t, msg.urlMatch, msg._link));
+      // Asked first (askGate): only the tabs the person said yes to, never one that matched since.
+      const found = ts.filter((t) => tabMatches(t, msg.urlMatch, msg._link) && (!msg._askTabs || msg._askTabs.includes(t.id)));
       if (!found.length) throw new Error(`no tab matching "${msg.urlMatch}" — already closed? (the match is a URL/title substring)`);
       const matches = found.filter((t) => [null, msg._link].includes(ownerOf(t.id)));
       const skipped = found.length - matches.length;

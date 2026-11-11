@@ -152,7 +152,7 @@ Cloud Bridge 让云端 AI 应用(Claude.ai、ChatGPT 和其他远程 MCP 客户�
 
 **你的 Cloud Bridge 页面**(`<hub>/app`,用 GitHub 登录)列出你连接的 Chrome 配置和你允许的 AI 应用:可以 **Rename** 某个配置(AI 应用之后用这个名字选择它,包括工具的 `profile` 参数和命令行里的 `--profile`;本机上的 chrome-bridge 名字不变)、**Disconnect** 某个配置(弹窗会提示 Cloud Bridge 已断开它;重新打开 Cloud AI apps 即可再次连接)、**Remove** 某个 AI 应用,或 **Delete my data**。它还会实时逐步显示 AI 应用在你的 Chrome 里做了什么(**See everything AI apps did in your Chrome**):每一步的命令(`snap`、`click`…)和网站由本扩展上报,绝不包括你电脑或局域网上的标签页。**Keep details for 24 hours**(默认关闭)还会保留每一步的命令行(输入的文字显示为 `***`)、回答预览和截图,方便你打开某一步的 **Details**,或把一组步骤下载为脚本交给 `node cli.mjs batch` 重放;关闭它会立即删除这些内容。
 
-**AI 应用可以做什么**(`<hub>/app/settings`,从上面的页面进入)为每个 Chrome 配置设置规则:本扩展能替 AI 应用做的每一步(读取页面、点击、在页面里运行代码……)都可以设为 **Allow** 或 **Off**;**Websites AI apps can't use** 列出 AI 应用在该配置中不能打开、读取或操作的网站,包括其子域名(这些网站的标签页仍会出现在 AI 应用看到的列表里,但不带地址和标题)。在你修改之前,一切都是允许的。某一步被关闭时,AI 应用会被告知(以及在哪里修改),并在不用它的情况下完成任务;关闭再打开 Cloud AI apps 后,规则仍属于这个配置。本机智能体不受影响。
+**AI 应用可以做什么**(`<hub>/app/settings`,从上面的页面进入)为每个 Chrome 配置设置规则:本扩展能替 AI 应用做的每一步(读取页面、点击、在页面里运行代码……)都可以设为 **Allow**、**Ask** 或 **Off**;**Websites AI apps can't use** 列出 AI 应用在该配置中不能打开、读取或操作的网站,包括其子域名(这些网站的标签页仍会出现在 AI 应用看到的列表里,但不带地址和标题)。在你修改之前,一切都是允许的。设为 **Ask** 时,AI 应用每次要做这一步,该 Chrome 前面都会弹出一个 chrome-bridge 小窗口,写明是哪个 AI 应用、哪一步、哪个网站(*Claude wants to Run its own code in a page … on github.com*),并提供 **Allow once** 和 **Deny**;45 秒内不回答算作拒绝,你允许之前什么都不会执行(而且只在你被问到的那个标签页和网站上执行)。某一步被关闭或被拒绝时,AI 应用会被告知(以及在哪里修改),并在不用它的情况下完成任务;关闭再打开 Cloud AI apps 后,规则仍属于这个配置。本机智能体不受影响。
 
 两条连接同时开启时,智能体会看到:
 
