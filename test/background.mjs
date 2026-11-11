@@ -1524,6 +1524,13 @@ test('ownership: with Local AI agents off, an in-flight local command cannot cla
   assert.equal(context.tabOwner.get(7), 'cloud');
 });
 
+test('findTab records where the tab was when picked — the site a cloud command reports, even after a close (D2b)', async () => {
+  const { context } = ownershipHarness();
+  const msg = { type: 'close', urlMatch: 'a.test', _link: 'cloud' };
+  await context.findTab(msg);
+  assert.deepEqual(JSON.parse(JSON.stringify(msg._tabAt)), { url: 'https://a.test/x' });
+});
+
 test('ownership: another link may only read a driven tab — every other command is refused before it marks or records', async () => {
   const { context, marked, recorded } = ownershipHarness({ driven: [7], owners: [[7, 'cloud']] });
   for (const type of ['click', 'fill', 'eval', 'wait', 'navigate', 'close', 'note', 'mark', 'release', 'activate', 'emulate', 'unemulate', 'grid', 'scroll', 'fetch', 'dialog', 'upload']) {
@@ -1578,6 +1585,11 @@ test('findTab: a bare number that is a live tab\'s id says to write id:<n> (it r
 
 // --- Cloud arm: the hub link speaks MCP over the same commands ---------------
 const plain = (v) => JSON.parse(JSON.stringify(v)); // vm-realm objects fail deepStrictEqual's prototype check
+// What the AI app gets: the hub keeps _meta (the Activity page's report) and never forwards it.
+const forApp = (r) => {
+  const { _meta, ...rest } = plain(r);
+  return rest;
+};
 const PAIRED = { hub: 'http://localhost:8787', token: 'cba_dGVzdA.' + 'x'.repeat(43), enabled: true };
 async function cloudArm(opts = {}) {
   const h = linksHarness({ cloud: PAIRED, ...opts });
@@ -1659,7 +1671,7 @@ test('cloud: typed tools build the command line and run it through the same gram
 test('cloud: shot needs no file name, and its typed tool returns the image', async () => {
   const { call, handled } = await cloudArm({ handle: () => 'data:image/jpeg;base64,/9j/' });
   for (const r of [await call('chrome', { command: 'shot github' }), await call('chrome', { command: 'shot github --max 800' }), await call('chrome_shot', { tab: 'github', max: 800, format: 'jpeg' })])
-    assert.deepEqual(plain(r), { content: [{ type: 'image', data: '/9j/', mimeType: 'image/jpeg' }], isError: false });
+    assert.deepEqual(forApp(r), { content: [{ type: 'image', data: '/9j/', mimeType: 'image/jpeg' }], isError: false });
   assert.deepEqual(handled.map((m) => [m.type, m.max, m.format]), [['shot', undefined, undefined], ['shot', 800, undefined], ['shot', 800, 'jpeg']]);
 });
 
@@ -1840,7 +1852,7 @@ test('cloud: a failing command, an empty snap and a thrown handle come back as t
 test('cloud: shot comes back as MCP image content', async () => {
   const { call } = await cloudArm({ handle: () => 'data:image/png;base64,iVBORw0KGgo=' });
   const r = await call('chrome', { command: 'shot github page.png' });
-  assert.deepEqual(plain(r), { content: [{ type: 'image', data: 'iVBORw0KGgo=', mimeType: 'image/png' }], isError: false });
+  assert.deepEqual(forApp(r), { content: [{ type: 'image', data: 'iVBORw0KGgo=', mimeType: 'image/png' }], isError: false });
 });
 
 test('cloud: fetch with no matching tab rides a scratch tab on the target origin, then closes it (cli.mjs #35)', async () => {
@@ -1855,6 +1867,70 @@ test('cloud: fetch with no matching tab rides a scratch tab on the target origin
   const r = await call('chrome', { command: 'fetch api.example.com https://api.example.com/v1' });
   assert.deepEqual(handled.map((m) => [m.type, m.urlMatch ?? m.url]), [['fetch', 'api.example.com'], ['open', 'https://api.example.com/v1'], ['fetch', 'id:5'], ['close', 'id:5']]);
   assert.equal(text(r), 'no tab matching "api.example.com" — opened a scratch tab on api.example.com for this fetch\n200 application/json\n{"a":1}');
+  assert.deepEqual(plain(r._meta), { 'cloud-bridge/activity': { command: 'fetch', site: 'api.example.com', line: 'fetch api.example.com https://api.example.com/v1' } }, 'the site is what it fetched, the line the one the AI app sent');
+});
+
+// The hub's Activity page (D2b): each result says what ran, where, and its
+// replay line — the history --batch form, so nothing typed reaches the hub's page.
+const reported = (r) => plain(r._meta?.['cloud-bridge/activity'] ?? null);
+test('cloud activity: each result reports the command word, the site it acted on and its redacted replay line (D2b)', async () => {
+  const at = { 'github.com': 'https://GitHub.com/pulls?q=is%3Aopen', 'local.app': 'http://127.0.0.1:8787/app?code=gh-1:abc', 'shop.test': 'https://shop.test:8443/cart', blank: 'about:blank', blob: 'blob:https://example.com/0f1e', settings: 'chrome://settings/' };
+  const handle = (msg) => {
+    if (msg.urlMatch in at) msg._tabAt = { url: at[msg.urlMatch] }; // what findTab records when it picks the tab
+    if (msg.urlMatch === 'leaving.test') msg._tabAt = { url: 'https://leaving.test/', pendingUrl: 'http://10.0.0.1/admin' };
+    if (msg.type === 'open' && msg.url.includes('192.168.')) throw new Error('192.168.1.1 is on this computer or its local network — Cloud AI apps reach public web pages only'); // the real refuseOffLimits
+    if (msg.type === 'open') return { id: 5, url: msg.url };
+    if (msg.type === 'click' && msg.target === '@e9') throw new Error('no element @e9 — snap again');
+    return 'ok';
+  };
+  const { call } = await cloudArm({ handle });
+  assert.deepEqual(reported(await call('chrome', { command: 'snap github.com --find "the search box"' })), { command: 'snap', site: 'github.com', line: 'snap github.com --find "the search box"' });
+  const fill = await call('chrome_fill', { tab: 'github.com', target: '@e5', value: 'hunter2 --secret' });
+  assert.deepEqual(reported(fill), { command: 'fill', site: 'github.com', line: '# secret · fill github.com @e5 --diff -- "***"' });
+  for (const command of ['type github.com @e5 -- hunter2', 'paste github.com @e5 -- hunter2', 'dialog github.com accept --text hunter2', 'fetch github.com https://api.github.com/x --header "Authorization: Bearer hunter2"'])
+    assert.doesNotMatch(JSON.stringify(reported(await call('chrome', { command }))), /hunter2/, command);
+  assert.deepEqual(reported(await call('chrome', { command: 'click shop.test @e9' })), { command: 'click', site: 'shop.test:8443', line: '# failed · click shop.test @e9' }, 'a failed step is a comment, so a replay proceeds past it');
+  assert.deepEqual(reported(await call('chrome_open', { url: 'https://Example.COM/a b' })), { command: 'open', site: 'example.com', line: 'open "https://Example.COM/a b"' });
+  // Never a site on this computer or its network (tabs hides those from the cloud too); the line is the AI app's own.
+  assert.deepEqual(reported(await call('chrome', { command: 'snap local.app' })), { command: 'snap', line: 'snap local.app' });
+  assert.deepEqual(reported(await call('chrome', { command: 'snap leaving.test' })), { command: 'snap', line: 'snap leaving.test' }, 'a tab on its way there counts too');
+  for (const page of ['blank', 'blob', 'settings']) assert.deepEqual(reported(await call('chrome', { command: `snap ${page}` })), { command: 'snap', line: `snap ${page}` }, `no web site on a ${page} page`);
+  assert.deepEqual(reported(await call('chrome', { command: 'open http://192.168.1.1/' })), { command: 'open', line: '# failed · open http://192.168.1.1/' });
+  assert.deepEqual(reported(await call('chrome', { command: 'tabs' })), { command: 'tabs', line: 'tabs' }, 'no one tab, no site');
+  // Refused before it ran: the word only (the raw line could hold a secret the parser never redacted).
+  assert.deepEqual(reported(await call('chrome', { command: 'fill github.com @e5' })), { command: 'fill' });
+  assert.deepEqual(reported(await call('chrome', { command: 'extreload' })), { command: 'extreload' });
+  assert.equal(reported(await call('chrome', { command: 'frobnicate x' })), null, 'not a command: nothing to report');
+});
+
+test('cloud activity: a batch reports "batch", the lines that ran in order and the last site; long code is never shipped (D2b)', async () => {
+  const handle = (msg) => {
+    if (msg.urlMatch) msg._tabAt = { url: `https://${msg.urlMatch}/` };
+    if (msg.type === 'open') return { id: 5, url: msg.url };
+    if (msg.target === '@e9') throw new Error('no element @e9');
+    return 'ok';
+  };
+  const { call, context } = await cloudArm({ handle });
+  const r = await call('chrome_batch', { lines: ['open https://a.test/', 'fill a.test @e1 -- pw', '# a comment', 'snap b.test', 'click b.test @e9', 'snap a.test'] });
+  assert.equal(r.isError, true);
+  assert.deepEqual(reported(r), { command: 'batch', site: 'b.test', line: 'open https://a.test/\n# secret · fill a.test @e1 -- "***"\nsnap b.test\n# failed · click b.test @e9' }, 'the step after the failure never ran, so it is not reported');
+  const long = 'x'.repeat(2100);
+  assert.deepEqual(reported(await call('chrome', { command: `eval a.test ${long}` })), { command: 'eval', site: 'a.test', line: '# eval: 2112 characters, too long to keep' });
+  assert.equal(context.cloudReplay('eval', { type: 'eval', urlMatch: 'a.test', code: 'a\nb' }, true), "# eval: its code spans several lines, which one line of a script can't hold");
+  assert.equal(context.cloudReplay('eval', { type: 'eval', urlMatch: 'a.test', code: 'a\nb' }, false), "# failed · eval: its code spans several lines, which one line of a script can't hold");
+  const many = await call('chrome_batch', { lines: Array.from({ length: 6 }, (_, i) => `eval a.test ${i}${'y'.repeat(1900)}`) });
+  const line = reported(many).line;
+  assert.ok(line.length <= 8000, `capped at 8,000 characters (${line.length})`);
+  assert.match(line, /\n# … 2 more line\(s\), too long to keep$/);
+});
+
+test('cloud activity: wait --js refused under eval\'s Off rule reports a failed line, and a policy-refused command only its word (D2b)', async () => {
+  const { call, ws, flush, handled } = await cloudArm();
+  await ws.recv({ jsonrpc: '2.0', method: 'arm/policy', params: { commands: { eval: 'off', click: 'off' } } });
+  await flush();
+  assert.deepEqual(reported(await call('chrome', { command: 'wait a.test --js "window.ok"' })), { command: 'wait', line: '# failed · wait a.test --js window.ok' });
+  assert.deepEqual(reported(await call('chrome', { command: 'click a.test @e1' })), { command: 'click' });
+  assert.equal(handled.length, 0, 'nothing ran');
 });
 
 test('cloud: pong and unreadable frames are ignored without dropping the link', async () => {

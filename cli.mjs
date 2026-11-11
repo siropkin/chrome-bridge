@@ -206,7 +206,7 @@ const io = {
 
 // Adding a command? EIGHT registries stay in sync (a missing one fails SILENTLY):
 // cli.mjs USAGE · extension/commands.js REGISTRY + parse() (or cli.mjs run() for the
-// commands the CLI handles itself) · server.mjs CLI_LINES · server.mjs route() (only if it
+// commands the CLI handles itself) · extension/commands.js REPLAY · server.mjs route() (only if it
 // needs special routing) · background.js handle() · ACT_VERBS (pill narration) · MUTATING.
 const USAGE = `chrome-bridge CLI — drive the user's real Chrome.
 
@@ -444,7 +444,7 @@ is refused — name one with --profile <id or name> (an id prefix is enough; see
 
 // Adding a command? EIGHT registries stay in sync (a missing one fails SILENTLY):
 // cli.mjs USAGE · extension/commands.js REGISTRY + parse() (or cli.mjs run() for the
-// commands the CLI handles itself) · server.mjs CLI_LINES · server.mjs route() (only if it
+// commands the CLI handles itself) · extension/commands.js REPLAY · server.mjs route() (only if it
 // needs special routing) · background.js handle() · ACT_VERBS (pill narration) · MUTATING.
 async function run(cmdName, args) {
   const previous = invocation;
@@ -462,7 +462,7 @@ async function run(cmdName, args) {
 }
 
 async function runCommand(cmdName, args) {
-  // New flags parsed here must also land in server.mjs CLI_LINES — history
+  // New flags parsed here must also land in commands.js REPLAY — history
   // --batch rebuilds replay lines there, and an unmirrored flag is silently
   // dropped at replay.
   switch (cmdName) {

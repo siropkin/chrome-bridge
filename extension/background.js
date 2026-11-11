@@ -854,26 +854,84 @@ async function cloudMessage(link, s, data) {
   if (msg.method === 'tools/list') return reply({ result: { tools: CLOUD_TOOLS(link) } });
   if (msg.method === 'tools/call') {
     const { name, arguments: args } = msg.params || {};
+    const report = { command: null, site: null, lines: [], batch: false };
     let result;
     try {
-      result = await cloudCall(link, name, args && typeof args === 'object' ? args : {});
+      result = await cloudCall(link, name, args && typeof args === 'object' ? args : {}, report);
     } catch (err) {
       result = cloudText(errMsg(err), true);
     }
-    return reply({ result });
+    const activity = cloudActivity(report);
+    return reply({ result: activity ? { ...result, _meta: { [CLOUD_ACTIVITY]: activity } } : result });
   }
   if (msg.method === 'ping') return reply({ result: {} });
   reply({ error: { code: -32601, message: 'Method not found: ' + msg.method } });
 }
 
-async function cloudCall(link, name, args) {
-  if (name === 'chrome') return cloudLine(link, String(args.command ?? ''));
+// What the hub's Activity page shows for a call, in the result's _meta (the hub
+// never forwards _meta to the AI app): the command word, the site it acted on
+// and its replay line — commands.js replayLine, the history --batch form, so
+// typed values, dialog answers, upload files and header values are already
+// "***" and a step a replay must skip is a comment. The hub keeps the line only
+// when the user opted in. A batch reports "batch", its lines in order and the
+// last site it acted on; lines are capped so a long eval can't bloat every frame.
+const CLOUD_ACTIVITY = 'cloud-bridge/activity';
+const CLOUD_LINE_MAX = 2000;
+const CLOUD_LINES_MAX = 8000;
+function cloudReplay(name, msg, ok) {
+  const line = globalThis.BridgeCommands.replayLine(msg, { ok });
+  const failed = ok ? '' : 'failed · ';
+  if (line == null) return `# ${failed}${name}: its code spans several lines, which one line of a script can't hold`;
+  return line.length > CLOUD_LINE_MAX ? `# ${failed}${name}: ${line.length} characters, too long to keep` : line;
+}
+function cloudActivity(report) {
+  const out = {};
+  const command = report.batch ? 'batch' : report.command;
+  if (command) out.command = command;
+  if (report.site) out.site = report.site;
+  const kept = [];
+  let size = 0;
+  for (const [i, line] of report.lines.entries()) {
+    if (size + line.length + 1 > CLOUD_LINES_MAX) {
+      kept.push(`# … ${report.lines.length - i} more line(s), too long to keep`);
+      break;
+    }
+    kept.push(line);
+    size += line.length + 1;
+  }
+  if (kept.length) out.line = kept.join('\n');
+  return Object.keys(out).length ? out : null;
+}
+// The site (host) a command acted on: the address it opened, went to or
+// fetched, else its tab's when the command picked it (findTab's _tabAt; a
+// close leaves no tab to ask afterwards), else the tab it has now (open).
+// Never one on this computer or its network: tabs hides those from the cloud
+// too, and the hub's page is no place to learn them.
+async function cloudSite(msg) {
+  const tab = msg._tabAt || (msg._tabId != null ? await chrome.tabs.get(msg._tabId).catch(() => null) : null);
+  const goes = ['open', 'navigate', 'fetch'].includes(msg.type);
+  if (!goes && (!tab || tabOffLimits(tab))) return null;
+  const raw = goes ? msg.url : tab.url;
+  let u;
+  try {
+    u = new URL(raw);
+  } catch {
+    return null;
+  }
+  // offLimitsUrl refuses every other scheme; about:blank and blob: have no host.
+  if (offLimitsUrl(raw)) return null;
+  return u.host.toLowerCase() || null;
+}
+
+async function cloudCall(link, name, args, report) {
+  if (name === 'chrome') return cloudLine(link, String(args.command ?? ''), report);
   if (name === 'chrome_batch') {
+    report.batch = true;
     const lines = (Array.isArray(args.lines) ? args.lines : []).map((l) => String(l).trim()).filter((l) => l && !l.startsWith('#'));
     if (!lines.length) return cloudText('chrome_batch needs lines, e.g. ["tabs", "snap <match>"].', true);
     const content = [];
     for (const [i, line] of lines.entries()) {
-      const r = await cloudLine(link, line);
+      const r = await cloudLine(link, line, report);
       content.push({ type: 'text', text: '$ ' + line }, ...r.content);
       if (r.isError) {
         if (i < lines.length - 1) content.push({ type: 'text', text: `stopped here: the ${lines.length - 1 - i} line(s) after it did not run` });
@@ -888,12 +946,12 @@ async function cloudCall(link, name, args) {
   } catch (err) {
     return cloudText(errMsg(err), true);
   }
-  if (argv) return cloudArgv(link, argv);
+  if (argv) return cloudArgv(link, argv, report);
   return cloudText(`Unknown tool ${name}: this Chrome offers ${CLOUD_TOOLS(link).map((t) => t.name).join(', ')}. Call tools/list to refresh.`, true);
 }
 
 // One command line → MCP content, the way cli.mjs would run and print it.
-async function cloudLine(link, line) {
+async function cloudLine(link, line, report) {
   let split;
   try {
     split = globalThis.BridgeCommands.splitLine(line);
@@ -914,16 +972,17 @@ async function cloudLine(link, line) {
     const known = renamed ? `"${hubName}" on Cloud Bridge${profile === PROFILE_NAME ? `; "${PROFILE_NAME}" is its chrome-bridge name, which Cloud Bridge doesn't use since the rename` : ''}` : `"${PROFILE_NAME}"`;
     return cloudText(`--profile ${profile} is not this Chrome (${known}). Pick the Chrome with the tool's profile argument instead.`, true);
   }
-  return cloudArgv(link, argv);
+  return cloudArgv(link, argv, report);
 }
 
-async function cloudArgv(link, argv) {
+async function cloudArgv(link, argv, report) {
   const C = globalThis.BridgeCommands;
   let parsed;
   try {
     if (!argv[0]) return cloudText('Empty command. Start with: tabs', true);
     const entry = C.lookup(argv[0]);
     if (!entry) return cloudText(`Unknown command: ${argv[0]}. Commands: ${C.REGISTRY.filter((c) => c.scope === 'browser').map((c) => c.name).join(', ')}.`, true);
+    report.command = entry.name;
     if (entry.scope !== 'browser') return cloudText(`${entry.name} manages the user's local chrome-bridge install; it isn't available through Cloud Bridge.`, true);
     // shot's <out> is a file on the CLI's disk; the cloud returns the image, so the name is optional.
     if (entry.name === 'shot' && argv[1] && (argv[2] === undefined || argv[2].startsWith('--'))) argv = [argv[0], argv[1], 'shot.png', ...argv.slice(2)];
@@ -933,12 +992,24 @@ async function cloudArgv(link, argv) {
     parsed = await C.parse(argv, cloudIo(link)); // no stdin or clipboard here: parse names the alternative
     // wait --js runs page code like eval, so eval's rule covers it too.
     const refused = parsed.name === 'wait' && parsed.msg.js ? policyRefusal(link, 'eval') : null;
-    if (refused) return cloudText(refused, true);
+    if (refused) {
+      report.lines.push(cloudReplay(parsed.name, parsed.msg, false));
+      return cloudText(refused, true);
+    }
   } catch (err) {
     return cloudText(cloudWords(errMsg(err)), true);
   }
-  if (parsed.name === 'fetch') return cloudFetch(link, parsed);
-  const reply = await runCommand(link, { ...parsed.msg, deadlineAt: cloudDeadline(parsed.msg) });
+  const sent = { ...parsed.msg, deadlineAt: cloudDeadline(parsed.msg) };
+  const result = parsed.name === 'fetch' ? await cloudFetch(link, parsed) : await cloudRun(link, parsed, sent);
+  report.lines.push(cloudReplay(parsed.name, parsed.msg, !result.isError));
+  report.site = (await cloudSite(parsed.name === 'fetch' ? parsed.msg : sent)) || report.site;
+  return result;
+}
+
+// A parsed command → its reply rendered as MCP content.
+async function cloudRun(link, parsed, sent) {
+  const C = globalThis.BridgeCommands;
+  const reply = await runCommand(link, sent);
   const warnings = C.replyWarnings(reply);
   if (!reply.ok) return cloudText([String(reply.error), ...warnings].join('\n'), true);
   if (parsed.name === 'doctor') {
@@ -1641,7 +1712,7 @@ function recordActivity(tabId, msg) {
 // RIGHT NOW — agent-speak like "click @e4" doesn't answer that.
 // Adding a command? EIGHT registries stay in sync (a missing one fails SILENTLY):
 // cli.mjs USAGE · extension/commands.js REGISTRY + parse() (or cli.mjs run() for the
-// commands the CLI handles itself) · server.mjs CLI_LINES · server.mjs route() (only if it
+// commands the CLI handles itself) · extension/commands.js REPLAY · server.mjs route() (only if it
 // needs special routing) · background.js handle() · ACT_VERBS (pill narration) · MUTATING.
 const ACT_VERBS = {
   open: ['opening page', 'opened page'],
@@ -5210,7 +5281,7 @@ async function waitPixel(tab, msg) {
 // can be a mutation on some servers).
 // Adding a command? EIGHT registries stay in sync (a missing one fails SILENTLY):
 // cli.mjs USAGE · extension/commands.js REGISTRY + parse() (or cli.mjs run() for the
-// commands the CLI handles itself) · server.mjs CLI_LINES · server.mjs route() (only if it
+// commands the CLI handles itself) · extension/commands.js REPLAY · server.mjs route() (only if it
 // needs special routing) · background.js handle() · ACT_VERBS (pill narration) · MUTATING.
 const MUTATING = new Set(['click', 'fill', 'clear', 'paste', 'type', 'press', 'upload', 'eval', 'hover', 'scroll', 'grid', 'emulate', 'resize', 'drag', 'dialog', 'fetch']);
 // What a link may run on a tab ANOTHER link drives: pure reads (selftest:
@@ -5315,6 +5386,9 @@ async function findTab(msg) {
     );
   }
   msg._tabId = matches[0].id;
+  // Where it was when picked: a cloud command reports that site to the hub's
+  // Activity page (cloudSite), and a close or a navigating click leaves none after.
+  msg._tabAt = { url: matches[0].url, pendingUrl: matches[0].pendingUrl };
   // The ⏏ reclaim gate: the human took this tab back (pill ⏏) and findTab's
   // auto-mark would hand it to the next command in the agent's loop within
   // seconds — refuse everything for the window. `mark` is the deliberate
@@ -5953,7 +6027,7 @@ function tabRowFor(link, tab, row) {
 
 // Adding a command? EIGHT registries stay in sync (a missing one fails SILENTLY):
 // cli.mjs USAGE · extension/commands.js REGISTRY + parse() (or cli.mjs run() for the
-// commands the CLI handles itself) · server.mjs CLI_LINES · server.mjs route() (only if it
+// commands the CLI handles itself) · extension/commands.js REPLAY · server.mjs route() (only if it
 // needs special routing) · background.js handle() · ACT_VERBS (pill narration) · MUTATING.
 async function handle(msg) {
   // State maps hydrate from storage.session — no command may run against

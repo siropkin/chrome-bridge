@@ -1209,7 +1209,7 @@ try {
     assert(bg.includes('waitHuman') && bg.includes('e.isTrusted'), 'ext: wait --human completes only on trusted input');
     assert(serverSrc.includes("msg.type === 'type') return await ask(seat, msg, Math.min(285_000, CMD_TIMEOUT_MS + (msg.value?.length || 0) * 100)"), 'server: type reply budget scales with payload length, capped at the undici wall (#29)');
     assert(serverSrc.includes("EADDRINUSE") && serverSrc.includes("server.on('error'"), 'server: a taken port exits with one clean line, not an unhandled-error stack dump');
-    assert(serverSrc.includes("typeof m.code !== 'string'") && serverSrc.includes('Array.isArray(m.crop)') && serverSrc.includes('Array.isArray(msg.files)') && serverSrc.includes('Object.hasOwn(CLI_LINES'), 'server: replay formatters are total — a malformed raw /cmd field must not cost the ring its entry (logging failed for shot/eval in the live log; files/world/proto-key dispatch are the same throw class)');
+    assert(cmdSrc.includes("typeof m.code !== 'string'") && cmdSrc.includes('Array.isArray(m.crop)') && serverSrc.includes('Array.isArray(msg.files)') && cmdSrc.includes('Object.hasOwn(REPLAY'), 'commands+server: replay formatters are total — a malformed raw /cmd field must not cost the ring its entry (logging failed for shot/eval in the live log; files/world/proto-key dispatch are the same throw class)');
     // #63's stale-server warning must watch every module the server loads at
     // boot: localauth.mjs and nativehost.mjs (S2b) were never added, so an edit
     // there left a running server on old code with no "restart it" warning.
@@ -1470,14 +1470,14 @@ try {
   assert(rows2.find((r) => r.id === 7)?.fixed === 'released', 'doctor --fix releases residue tabs via the release path', doc2.stdout);
   assert(rows2.find((r) => r.staleMemory)?.pruned === true, 'doctor --fix prunes stale memory', doc2.stdout);
   // history --batch must replay EVERY wire command: clear and activate were
-  // missing from the server's CLI_LINES table and close dropped --all — a
+  // missing from the replay table (then server.mjs CLI_LINES, now commands.js REPLAY) and close dropped --all — a
   // replayed `close --all` closed ONE tab and reported ok, a replayed fill
   // sequence APPENDED where the recorded session replaced (the registry drift
   // the SEVEN-registries comment warns fails silently).
   const clearRun = await cli('clear', 'example.com', '@e2', '--diff');
   const actRun = await cli('activate', 'example.com');
   const closeAllRun = await cli('close', 'example.com', '--all');
-  // Flags that landed in cli.mjs without their CLI_LINES mirror and silently
+  // Flags that landed in cli.mjs without their REPLAY mirror and silently
   // dropped out of replays: emulate dsf=N, paste --html, upload --chooser.
   const dsfRun = await cli('emulate', 'example.com', '1280', '800', 'dsf=2');
   const htmlRun = await cli('paste', 'example.com', '--html', '--', '<b>x</b>');

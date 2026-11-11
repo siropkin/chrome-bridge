@@ -30,7 +30,7 @@ test('loads as a classic script with no Node globals and publishes one frozen AP
   assert.ok(Object.isFrozen(C) && Object.isFrozen(C.REGISTRY) && C.REGISTRY.every((e) => Object.isFrozen(e)));
   // splitDashDash stays internal (A1b): fill/type/paste use it, but nothing
   // outside commands.js needs it anymore now that paste moved in.
-  for (const k of ['GROUPS', 'REGISTRY', 'lookup', 'tokenize', 'splitLine', 'parse', 'render', 'replyWarnings', 'TOOLS', 'toolArgv']) assert.ok(k in C, k);
+  for (const k of ['GROUPS', 'REGISTRY', 'lookup', 'tokenize', 'splitLine', 'parse', 'render', 'replyWarnings', 'replayLine', 'TOOLS', 'toolArgv']) assert.ok(k in C, k);
   assert.ok(!('splitDashDash' in C), 'splitDashDash is not exported — nothing outside the module calls it');
   assert.doesNotThrow(() => vm.runInContext(source, context), 'a second load (worker restart path) does not collide with the first');
 });
@@ -236,4 +236,52 @@ test('MCP tools: typed arguments build argv that the real grammar parses', async
   assert.throws(() => C.toolArgv('chrome_snap', {}), /^Error: chrome_snap needs tab: a URL or title substring that names ONE tab/);
   assert.throws(() => C.toolArgv('chrome_fill', { tab: 'a', target: '@e1' }), /chrome_fill needs value/);
   assert.throws(() => C.toolArgv('chrome_upload', { tab: 'a', target: '#f', files: [] }), /chrome_upload needs files/);
+});
+
+// replayLine: the history --batch line (server.mjs's ring) and the line the
+// cloud arm reports to the hub's Activity page (D2b).
+const canon = (v) => (Array.isArray(v) ? v.map(canon) : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, canon(v[k])])) : v);
+// paste's clipboard mode is redacted too: a replay must not paste whatever the clipboard holds later.
+const REDACTED = { fill: ['value'], type: ['value'], paste: ['value', 'clip'], upload: ['files'], dialog: ['text'], fetch: ['headers'] };
+test('replayLine: every browser command and flag comes back from its replay line, except the redacted values', async () => {
+  const io = { stdin: async () => 'x', clipboard: async () => 'clip', syntaxError: () => false, resolveFile: (p) => '/abs/' + p };
+  const lines = [
+    'tabs', 'tabs git', 'doctor', 'doctor --fix', 'open https://a.test/x', 'nav gh https://a.test --diff', 'close gh', 'close gh --all',
+    'snap gh', 'snap gh main --diff --href --skeleton --find "the box"', 'snap gh --no-fold', 'click gh @e1 --dbl --diff --trusted', 'drag gh @e1 @e2 --diff --trusted',
+    'dialog gh accept', 'dialog gh dismiss --text hunter2', 'fill gh @e1 --diff -- hunter2', 'clear gh @e1 --diff', 'type gh @e1 --diff --trusted -- hunter2',
+    'press gh Enter @e1 --diff --trusted', 'press gh Tab', 'hover gh @e1 --diff --trusted', 'paste gh @e1 --diff --html -- <b>hunter2</b>', 'paste gh', 'scroll gh down --diff',
+    'upload gh @e1 a.txt b.txt --chooser --diff', 'ask gh "what now?"', 'wait gh .done', 'wait gh --text Saved --timeout 5000', 'wait gh --js "a === 1" --world main', 'wait gh --human', 'wait gh --pixel-change',
+    'eval gh 1+1', 'eval gh document.title --world main', 'shot gh out.png', 'shot gh out.png --max 800 --scale 2 --format jpeg --quality 70 --crop 0,0,10,10', 'shot gh o.png --full', 'shot gh o.png --diff',
+    'net gh', 'net gh --dur 3000 --filter api --body "q" --ws --har x.har', 'fetch gh https://a.test/api', 'fetch gh https://a.test/api --csrf --keep --header "Authorization: Bearer hunter2"', 'fetch gh https://a.test/api --out f.json',
+    'perf gh --dur 2000', 'measure gh .x', 'console gh', 'console gh --clear', 'console gh --ask', 'console gh --ask "why?"', 'grid gh', 'mark gh', 'release gh', 'activate gh', 'note gh "hello there"',
+    'emulate gh 390 844 mobile dsf=3', 'emulate gh 1280 800', 'emulate gh focus', 'unemulate gh', 'resize gh 1200 800',
+  ];
+  const covered = new Set();
+  for (const line of lines) {
+    const first = JSON.parse(json(await C.parse(C.tokenize(line), io)));
+    covered.add(first.name);
+    const replay = C.replayLine(first.msg);
+    assert.equal(typeof replay, 'string', line);
+    assert.doesNotMatch(replay, /hunter2|\/abs\//, `${line}: typed values, answers, header values and file paths never reach a replay line`);
+    const again = JSON.parse(json(await C.parse(C.tokenize(replay.replace(/^# secret · /, '')), io)));
+    for (const k of REDACTED[first.msg.type] || []) delete first.msg[k], delete again.msg[k];
+    assert.deepEqual(canon(again.msg), canon(first.msg), `${line} → ${replay}`);
+  }
+  for (const e of C.REGISTRY) if (e.scope === 'browser') assert.ok(covered.has(e.name), `${e.name} has a round-trip case: a new command or flag needs its REPLAY formatter`);
+});
+
+test('replayLine: failed, redacted and worker-restarting steps are comments; --profile leads; malformed messages never throw', () => {
+  assert.equal(C.replayLine({ type: 'snap', urlMatch: 'gh' }), 'snap gh');
+  assert.equal(C.replayLine({ type: 'snap', urlMatch: 'gh' }, { ok: false }), '# failed · snap gh');
+  assert.equal(C.replayLine({ type: 'snap', urlMatch: 'gh' }, { profile: 'oak' }), '--profile oak snap gh');
+  assert.equal(C.replayLine({ type: 'fill', urlMatch: 'gh', target: '@e1', value: 'pw' }, { profile: 'oak' }), '# secret · --profile oak fill gh @e1 -- "***"');
+  assert.equal(C.replayLine({ type: 'fill', urlMatch: 'gh', target: '@e1', value: 'pw' }, { ok: false }), '# failed · fill gh @e1 -- "***"');
+  assert.equal(C.replayLine({ type: 'dialog', urlMatch: 'gh', accept: true }), 'dialog gh accept', 'a dialog without an answer replays');
+  assert.equal(C.replayLine({ type: 'fetch', urlMatch: 'gh', url: 'https://a.test/', headers: {} }), 'fetch gh https://a.test/', 'no header values, nothing to hide');
+  assert.equal(C.replayLine({ type: 'extreload' }), '# worker-restart · extreload');
+  assert.equal(C.replayLine({ type: 'eval', urlMatch: 'gh', code: 'a\nb' }), null, 'multiline code has no one-line form');
+  for (const msg of [null, undefined, 'snap', {}, { type: 5 }, { type: '__proto__' }, { type: 'constructor' }, { type: 'toString' }, { type: 'eval' }, { type: 'eval', code: 5 }, { type: 'eval', code: 'x', world: true },
+    { type: 'wait', js: true }, { type: 'shot', crop: 'z' }, { type: 'emulate', dsf: '2' }, { type: 'fetch', headers: 'x' }, { type: 'upload', files: 'a.txt' }])
+    assert.doesNotThrow(() => C.replayLine(msg), json(msg));
+  for (const type of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) assert.equal(C.replayLine({ type }), null, type);
 });

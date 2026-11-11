@@ -12,6 +12,9 @@ import { createDiagnostics } from './diagnostics.mjs';
 import { driftWarnings } from './drift.mjs';
 import { createGuard, ensureKey, isNonce, mac, nonce, registerCheckout, same, stateDir, UNAUTHENTICATED } from './localauth.mjs';
 import { registerHosts } from './nativehost.mjs';
+import './extension/commands.js';
+
+const { replayLine } = globalThis.BridgeCommands;
 
 const diagnostics = createDiagnostics(
   process.env.BRIDGE_DIAGNOSTICS_DIR || fileURLToPath(new URL('./.diagnostics/', import.meta.url)),
@@ -187,7 +190,7 @@ function newestMtime(rel) {
 }
 function serverCodeMtime() {
   let m = 0;
-  for (const f of ['./server.mjs', './diagnostics.mjs', './drift.mjs', './localauth.mjs', './nativehost.mjs']) {
+  for (const f of ['./server.mjs', './diagnostics.mjs', './drift.mjs', './localauth.mjs', './nativehost.mjs', './extension/commands.js']) {
     try {
       m = Math.max(m, fs.statSync(new URL(f, import.meta.url)).mtimeMs);
     } catch {}
@@ -308,7 +311,7 @@ async function seatByProfileGrace(want) {
 // Route one command to exactly one profile's seat.
 // Adding a command? EIGHT registries stay in sync (a missing one fails SILENTLY):
 // cli.mjs USAGE · extension/commands.js REGISTRY + parse() (or cli.mjs run() for the
-// commands the CLI handles itself) · server.mjs CLI_LINES · server.mjs route() (only if it
+// commands the CLI handles itself) · extension/commands.js REPLAY · server.mjs route() (only if it
 // needs special routing) · background.js handle() · ACT_VERBS (pill narration) · MUTATING.
 async function route(msg, dispatch) {
   if (msg.type === 'tabs') {
@@ -316,7 +319,7 @@ async function route(msg, dispatch) {
     // byte-identical (no profile tags) — the common case stays the old shape.
     if (msg.profile) {
       const seat = await seatByProfileGrace(String(msg.profile));
-      // Normalize to the pid: summarize/CLI_LINES resolve the tag via
+      // Normalize to the pid: summarize/replayLine resolve the tag via
       // seatTag(msg.profile) — a NAME left here printed as its 4-char id
       // prefix in the feed ('@haze' for hazel, found live).
       msg.profile = seat.pid;
@@ -513,130 +516,6 @@ let actSeq = 0;
 // collector persists fingerprinted events. watch/history stay command-focused.
 const journal = []; // { ts, tabId, kind, detail, profile } — cap 500
 
-// Replayable CLI line for the ring, rebuilt from the command at relay time —
-// `history --batch` turns the ring into a script. shellq matches cli batch's
-// tokenizer ("double"/'single' quotes, glued to bare words): a token is bare
-// only when whitespace/quotes can't split it and it isn't flag-shaped (a fill
-// value like '--draft' must ride quoted or the fill parser rejects it as a
-// flag). The ring is memory-only — server.log keeps the value-free display
-// line, so fill values still never reach the durable log (same local trust
-// line as /cmd itself).
-const shellq = (s) => {
-  s = String(s);
-  // JSON's double-quoted representation is line-safe and, paired with the
-  // batch tokenizer's double-quote escapes, round-trips every string. The
-  // prior "pick the other quote" shortcut emitted invalid batch lines for a
-  // value containing both ' and ". Backslashes need quoting too now that the
-  // tokenizer recognizes escapes in quoted history entries.
-  return /[\s'"#\\]/.test(s) || /^--/.test(s) ? JSON.stringify(s) : s;
-};
-const D = (m) => (m.diff ? ' --diff' : '');
-// Adding a command? EIGHT registries stay in sync (a missing one fails SILENTLY):
-// cli.mjs USAGE · extension/commands.js REGISTRY + parse() (or cli.mjs run() for the
-// commands the CLI handles itself) · server.mjs CLI_LINES · server.mjs route() (only if it
-// needs special routing) · background.js handle() · ACT_VERBS (pill narration) · MUTATING.
-// CLI_LINES mirrors the flag parsers (extension/commands.js parse(), cli.mjs
-// run()) flag-for-flag — an unmirrored flag is silently dropped from history
-// --batch replays.
-const CLI_LINES = {
-  open: (m) => `open ${shellq(m.url)}`,
-  navigate: (m) => `nav ${shellq(m.urlMatch)} ${shellq(m.url)}${D(m)}`,
-  close: (m) => `close ${shellq(m.urlMatch)}${m.all ? ' --all' : ''}`,
-  mark: (m) => `mark ${shellq(m.urlMatch)}`,
-  release: (m) => `release ${shellq(m.urlMatch)}`,
-  activate: (m) => `activate ${shellq(m.urlMatch)}`,
-  unemulate: (m) => `unemulate ${shellq(m.urlMatch)}`,
-  tabs: (m) => `tabs${m.urlMatch ? ' ' + shellq(m.urlMatch) : ''}`,
-  doctor: (m) => `doctor${m.fix ? ' --fix' : ''}`,
-  swlogs: () => 'swlogs',
-  extreload: () => 'extreload',
-  snap: (m) =>
-    `snap ${shellq(m.urlMatch)}${m.scope ? ' ' + shellq(m.scope) : ''}${m.href ? ' --href' : ''}${m.skeleton ? ' --skeleton' : ''}${m.nofold ? ' --no-fold' : ''}${m.find ? ' --find ' + shellq(m.find) : ''}${D(m)}`,
-  click: (m) => `click ${shellq(m.urlMatch)} ${shellq(m.target)}${m.dbl ? ' --dbl' : ''}${m.trusted ? ' --trusted' : ''}${D(m)}`,
-  drag: (m) => `drag ${shellq(m.urlMatch)} ${shellq(m.from)} ${shellq(m.to)}${m.trusted ? ' --trusted' : ''}${D(m)}`,
-  // A prompt answer can be a password, one-time code, or recovery token. It
-  // must not be retained in a replay export any more than text typed into a
-  // field; the command is commented out by pushAct below.
-  dialog: (m) => `dialog ${shellq(m.urlMatch)} ${m.accept ? 'accept' : 'dismiss'}${m.text ? ' --text "***"' : ''}`,
-  // fill/type: flags first, then the '--' separator, then the value — a value
-  // starting with '--' (dev.to front-matter) would otherwise die on the
-  // fill parser's stray-flag scan at replay. The VALUE ITSELF IS REDACTED:
-  // the ring feeds `history` output and `--batch` exports, and typed values
-  // can be secrets (server.log's display line never had them — the ring
-  // shouldn't either). pushAct emits these as `# secret ·` comments so a
-  // replay skips the step instead of typing literal stars.
-  fill: (m) => `fill ${shellq(m.urlMatch)} ${shellq(m.target)}${D(m)} -- "***"`,
-  // clear: the #34 emptier — a replay without it APPENDS where the recorded
-  // session REPLACED. activate: the #33 hidden-tab companion of a --trusted
-  // click; without it the replayed click hits the hidden-tab refusal. Both
-  // were missing from this table (the registry drift the SEVEN-registries
-  // comment warns fails silently): the commands ran fine and silently
-  // dropped out of every history --batch export.
-  clear: (m) => `clear ${shellq(m.urlMatch)} ${shellq(m.target)}${D(m)}`,
-  type: (m) => `type ${shellq(m.urlMatch)} ${shellq(m.target)}${m.trusted ? ' --trusted' : ''}${D(m)} -- "***"`,
-  // A clipboard-mode replay would read whatever sensitive content happens to
-  // be on the clipboard later. Treat BOTH paste modes as non-replayable.
-  paste: (m) => `paste ${shellq(m.urlMatch)}${m.target ? ' ' + shellq(m.target) : ''}${m.html ? ' --html' : ''}${D(m)} -- "***"`,
-  press: (m) => `press ${shellq(m.urlMatch)} ${shellq(m.key)}${m.target ? ' ' + shellq(m.target) : ''}${m.trusted ? ' --trusted' : ''}${D(m)}`,
-  hover: (m) => `hover ${shellq(m.urlMatch)} ${shellq(m.target)}${m.trusted ? ' --trusted' : ''}${D(m)}`,
-  scroll: (m) => `scroll ${shellq(m.urlMatch)} ${shellq(m.target)}${D(m)}`,
-  // Absolute paths and filenames are local sensitive data; never preserve
-  // them in a durable replay file.
-  upload: (m) => `upload ${shellq(m.urlMatch)} ${shellq(m.target)} "***"${m.chooser ? ' --chooser' : ''}${D(m)}`,
-  // --csrf replays honestly (the token is derived extension-side per run —
-  // that's its point). --header VALUES are redacted like fill values: a
-  // csrf-token or Authorization header is the same class of secret, and the
-  // line is commented out (secret below) so a replay skips the step.
-  fetch: (m) =>
-    `fetch ${shellq(m.urlMatch)} ${shellq(m.url)}${m.csrf ? ' --csrf' : ''}${
-      m.headers && typeof m.headers === 'object' ? Object.keys(m.headers).map((k) => ` --header ${shellq(k + ': ***')}`).join('') : ''
-    }`,
-  ask: (m) => `ask ${shellq(m.urlMatch)} ${shellq(m.question)}`,
-  // --js follows eval's rules: multiline/non-string code can't be one batch line.
-  wait: (m) =>
-    m.js != null && (typeof m.js !== 'string' || !m.js || m.js.includes('\n') || (m.world != null && typeof m.world !== 'string'))
-      ? null
-      : `wait ${shellq(m.urlMatch)}${m.selector ? ' ' + shellq(m.selector) : ''}${m.text ? ' --text ' + shellq(m.text) : ''}${
-          m.js ? ' --js ' + shellq(m.js) + (m.world ? ' --world ' + m.world.toLowerCase() : '') : ''
-        }${m.human ? ' --human' : ''}${m.pixel ? ' --pixel-change' : ''}${m.timeout != null && m.timeout !== 10000 && !m.human ? ' --timeout ' + m.timeout : ''}`,
-  // Multiline code can't be one batch line — null drops it to a comment.
-  // A missing/non-string code (a raw /cmd caller sent eval without it) drops
-  // to a comment too — the formatter must be total: its throw costs the ring
-  // the whole entry ('logging failed for eval' in server.log, found live).
-  // Total over ANY parsed /cmd body, not just the cli's: a non-string world
-  // ({"world":true}) must not throw either, and an empty code would replay as
-  // `eval <match>` — a batch line missing its required arg.
-  eval: (m) =>
-    typeof m.code !== 'string' || !m.code || m.code.includes('\n') || (m.world != null && typeof m.world !== 'string')
-      ? null
-      : `eval ${shellq(m.urlMatch)} ${shellq(m.code)}${m.world && m.world !== 'auto' ? ' --world ' + m.world.toLowerCase() : ''}`,
-  // The output path is CLI-side and never rides the msg — placeholder name.
-  // crop is only replayed when it's the cli's 4-number array; a raw /cmd
-  // caller's {"crop":"z"} used to throw here and lose the ring entry (the
-  // try/catch around pushAct saves the server, not the line).
-  shot: (m) =>
-    `shot ${shellq(m.urlMatch)} shot-replay.png${m.full ? ' --full' : ''}${
-      Array.isArray(m.crop) && m.crop.length === 4 && m.crop.every(Number.isFinite) ? ' --crop ' + m.crop.join(',') : ''
-    }` +
-    `${m.max != null ? ' --max ' + m.max : ''}${m.scale != null ? ' --scale ' + m.scale : ''}` +
-    `${m.format ? ' --format ' + m.format : ''}${m.quality != null ? ' --quality ' + m.quality : ''}${m.diff ? ' --diff' : ''}`,
-  net: (m) =>
-    `net ${shellq(m.urlMatch)}${m.duration != null ? ' --dur ' + m.duration : ''}${m.filter ? ' --filter ' + shellq(m.filter) : ''}${
-      m.body ? ' --body ' + shellq(m.body) : ''
-    }${m.ws ? ' --ws' : ''}${m.har ? ' --har net-replay.har' : ''}`,
-  perf: (m) => `perf ${shellq(m.urlMatch)}${m.duration != null ? ' --dur ' + m.duration : ''}`,
-  measure: (m) => `measure ${shellq(m.urlMatch)} ${shellq(m.selector)}`,
-  console: (m) => `console ${shellq(m.urlMatch)}${m.clear ? ' --clear' : ''}${m.ask ? (m.ask === true ? ' --ask' : ' --ask ' + shellq(m.ask)) : ''}`,
-  grid: (m) => `grid ${shellq(m.urlMatch)}`,
-  note: (m) => `note ${shellq(m.urlMatch)} ${shellq(m.text)}`,
-  // dsf=N is guarded so a raw /cmd caller's {"dsf":"2"} (or a focus/mobile
-  // emulate, which carries no dsf) keeps the formatter total.
-  emulate: (m) =>
-    m.focus
-      ? `emulate ${shellq(m.urlMatch)} focus`
-      : `emulate ${shellq(m.urlMatch)} ${m.width} ${m.height}${m.mobile ? ' mobile' : ''}${Number.isFinite(m.dsf) ? ' dsf=' + m.dsf : ''}`,
-  resize: (m) => `resize ${shellq(m.urlMatch)} ${m.width} ${m.height}`,
-};
 // `watch` keys its `since` cursor on actSeq, which resets on restart — the
 // boot id lets it detect the reset instead of silently filtering out every
 // line until seq climbs back past the old high-water mark.
@@ -651,7 +530,7 @@ function summarize(msg) {
   // text is its whole purpose, and wait --text is a page-text expectation.
   const extra =
     msg.target || msg.url || msg.key || msg.selector || msg.find || (msg.type === 'dialog' ? '' : msg.text) || msg.question ||
-    // total like the CLI_LINES formatters: a non-array files ({"files":"a.txt"}
+    // total like the replay formatters (commands.js REPLAY): a non-array files ({"files":"a.txt"}
     // from a raw /cmd caller) must not throw here either — the ring would lose
     // the whole entry ('logging failed for upload').
     (Array.isArray(msg.files) ? msg.files.map((f) => String(f).split('/').pop()).join(', ') : '') || '';
@@ -669,29 +548,11 @@ function pushAct(msg, out, ms) {
     // select option values) — strip control chars so a page can't inject ANSI
     // escapes or forged newlines into server.log / the `watch` terminal.
   ).replace(/[\x00-\x1f\x7f\x9b]/g, ' ');
-  // The replayable form rides the ring (see CLI_LINES above); a failed command
-  // is commented out so a replayed script proceeds past it instead of dying.
-  // Secret-shaped commands (fill/type/paste values) are redacted in CLI_LINES
-  // AND commented out here — a replay must skip the step, not type "***".
-  // Own-key only: CLI_LINES is a plain object, so msg.type '__proto__'
-  // resolves to Object.prototype (not callable → the throw this table's
-  // totality exists to prevent) and 'constructor'/'toString' resolve to
-  // callable builtins emitting a garbage '[object Object]' replay line.
-  const replay = Object.hasOwn(CLI_LINES, msg.type) ? CLI_LINES[msg.type](msg) : null;
-  const prof = msg.profile ? `--profile ${seatTag(msg.profile)} ` : '';
-  const secret =
-    !!msg &&
-    (['fill', 'type', 'paste', 'upload'].includes(msg.type) ||
-      (msg.type === 'dialog' && !!msg.text) ||
-      (msg.type === 'fetch' && !!msg.headers && typeof msg.headers === 'object' && Object.keys(msg.headers).length > 0));
-  // extreload can't ride a replay either: mid-batch it restarts the worker out
-  // from under the later lines (driven-tab memory and emulation die with it).
-  const cmd =
-    replay == null ? null
-    : !out.ok ? `# failed · ${prof}${replay}`
-    : secret ? `# secret · ${prof}${replay}`
-    : msg.type === 'extreload' ? `# worker-restart · ${prof}${replay}`
-    : prof + replay;
+  // The replayable form rides the ring for `history --batch` (extension/
+  // commands.js replayLine: redacted, failed/secret steps commented out). The
+  // ring is memory-only — server.log keeps the value-free display line above,
+  // so fill values still never reach the durable log.
+  const cmd = replayLine(msg, { ok: out.ok, profile: msg.profile ? seatTag(msg.profile) : '' });
   activity.push({ seq: ++actSeq, line, cmd });
   if (activity.length > 300) activity.shift();
 }
@@ -926,7 +787,7 @@ const server = http.createServer((req, res) => {
         out = { ok: false, error: String(e) };
       }
       // Logging must never kill the relay: a malformed field ({"type":"shot",
-      // "crop":"z"}) reached CLI_LINES's m.crop.join and the throw — inside an
+      // "crop":"z"}) reached the replay formatter's m.crop.join and the throw — inside an
       // async 'end' handler — took the whole server down as an unhandled
       // rejection (found by the parallel stress suite; one curl repro).
       try {

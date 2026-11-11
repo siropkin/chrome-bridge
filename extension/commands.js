@@ -1,7 +1,7 @@
 // chrome-bridge command grammar: the registry of every CLI command, the
-// command-line tokenizer, and parse/render for browser commands. It is shared
-// by every surface that speaks the CLI syntax: cli.mjs today, the extension's
-// cloud link next.
+// command-line tokenizer, parse/render for browser commands, and their replay
+// lines. It is shared by every surface that speaks the CLI syntax: cli.mjs,
+// server.mjs (history --batch lines) and the extension's cloud link.
 // Pure: no fs, process, network, stdin or printing, and no eval/new Function
 // (the extension's CSP forbids them). The caller does all I/O; errors are
 // thrown as plain Error(<user-facing text>).
@@ -240,7 +240,7 @@
   // view holds what only render() needs, or what the caller's own post-cmd
   // logic needs (a disk path, a retry hint) — either way it never goes on the
   // wire.
-  // New flags parsed here must also land in server.mjs CLI_LINES — history
+  // New flags parsed here must also land in REPLAY below — history
   // --batch rebuilds replay lines there, and an unmirrored flag is silently
   // dropped at replay.
   //
@@ -777,6 +777,152 @@
     return lines;
   }
 
+  // --- Replay lines (history --batch; Cloud Bridge activity) ---------------
+  // The batch line a wire message would replay as, rebuilt from the message:
+  // server.mjs's ring turns it into `history --batch` scripts, and the cloud
+  // arm reports it to the hub with each result (the Activity page keeps it
+  // only when the user opts in). shellq matches the batch tokenizer above
+  // ("double"/'single' quotes, glued to bare words): a token is bare only when
+  // whitespace/quotes can't split it and it isn't flag-shaped (a fill value
+  // like '--draft' must ride quoted or the fill parser rejects it as a flag).
+  const shellq = (s) => {
+    s = String(s);
+    // JSON's double-quoted representation is line-safe and, paired with the
+    // batch tokenizer's double-quote escapes, round-trips every string. The
+    // prior "pick the other quote" shortcut emitted invalid batch lines for a
+    // value containing both ' and ". Backslashes need quoting too now that the
+    // tokenizer recognizes escapes in quoted history entries.
+    return /[\s'"#\\]/.test(s) || /^--/.test(s) ? JSON.stringify(s) : s;
+  };
+  const D = (m) => (m.diff ? ' --diff' : '');
+  // REPLAY mirrors the flag parsers (parse() above, cli.mjs run()) flag-for-
+  // flag — an unmirrored flag is silently dropped from history --batch
+  // replays. Every formatter is total over ANY parsed /cmd body, not just
+  // the cli's: its throw would cost server.mjs's ring the whole entry.
+  const REPLAY = {
+    open: (m) => `open ${shellq(m.url)}`,
+    navigate: (m) => `nav ${shellq(m.urlMatch)} ${shellq(m.url)}${D(m)}`,
+    close: (m) => `close ${shellq(m.urlMatch)}${m.all ? ' --all' : ''}`,
+    mark: (m) => `mark ${shellq(m.urlMatch)}`,
+    release: (m) => `release ${shellq(m.urlMatch)}`,
+    activate: (m) => `activate ${shellq(m.urlMatch)}`,
+    unemulate: (m) => `unemulate ${shellq(m.urlMatch)}`,
+    tabs: (m) => `tabs${m.urlMatch ? ' ' + shellq(m.urlMatch) : ''}`,
+    doctor: (m) => `doctor${m.fix ? ' --fix' : ''}`,
+    swlogs: () => 'swlogs',
+    extreload: () => 'extreload',
+    snap: (m) =>
+      `snap ${shellq(m.urlMatch)}${m.scope ? ' ' + shellq(m.scope) : ''}${m.href ? ' --href' : ''}${m.skeleton ? ' --skeleton' : ''}${m.nofold ? ' --no-fold' : ''}${m.find ? ' --find ' + shellq(m.find) : ''}${D(m)}`,
+    click: (m) => `click ${shellq(m.urlMatch)} ${shellq(m.target)}${m.dbl ? ' --dbl' : ''}${m.trusted ? ' --trusted' : ''}${D(m)}`,
+    drag: (m) => `drag ${shellq(m.urlMatch)} ${shellq(m.from)} ${shellq(m.to)}${m.trusted ? ' --trusted' : ''}${D(m)}`,
+    // A prompt answer can be a password, one-time code, or recovery token. It
+    // must not be retained in a replay export any more than text typed into a
+    // field; the command is commented out by replayLine below.
+    dialog: (m) => `dialog ${shellq(m.urlMatch)} ${m.accept ? 'accept' : 'dismiss'}${m.text ? ' --text "***"' : ''}`,
+    // fill/type: flags first, then the '--' separator, then the value — a value
+    // starting with '--' (dev.to front-matter) would otherwise die on the
+    // fill parser's stray-flag scan at replay. The VALUE ITSELF IS REDACTED:
+    // the ring feeds `history` output and `--batch` exports, and typed values
+    // can be secrets (server.log's display line never had them — the ring
+    // shouldn't either). replayLine emits these as `# secret ·` comments so a
+    // replay skips the step instead of typing literal stars.
+    fill: (m) => `fill ${shellq(m.urlMatch)} ${shellq(m.target)}${D(m)} -- "***"`,
+    // clear: the #34 emptier — a replay without it APPENDS where the recorded
+    // session REPLACED. activate: the #33 hidden-tab companion of a --trusted
+    // click; without it the replayed click hits the hidden-tab refusal. Both
+    // were missing from this table (the registry drift the SEVEN-registries
+    // comment warns fails silently): the commands ran fine and silently
+    // dropped out of every history --batch export.
+    clear: (m) => `clear ${shellq(m.urlMatch)} ${shellq(m.target)}${D(m)}`,
+    type: (m) => `type ${shellq(m.urlMatch)} ${shellq(m.target)}${m.trusted ? ' --trusted' : ''}${D(m)} -- "***"`,
+    // A clipboard-mode replay would read whatever sensitive content happens to
+    // be on the clipboard later. Treat BOTH paste modes as non-replayable.
+    paste: (m) => `paste ${shellq(m.urlMatch)}${m.target ? ' ' + shellq(m.target) : ''}${m.html ? ' --html' : ''}${D(m)} -- "***"`,
+    press: (m) => `press ${shellq(m.urlMatch)} ${shellq(m.key)}${m.target ? ' ' + shellq(m.target) : ''}${m.trusted ? ' --trusted' : ''}${D(m)}`,
+    hover: (m) => `hover ${shellq(m.urlMatch)} ${shellq(m.target)}${m.trusted ? ' --trusted' : ''}${D(m)}`,
+    scroll: (m) => `scroll ${shellq(m.urlMatch)} ${shellq(m.target)}${D(m)}`,
+    // Absolute paths and filenames are local sensitive data; never preserve
+    // them in a durable replay file.
+    upload: (m) => `upload ${shellq(m.urlMatch)} ${shellq(m.target)} "***"${m.chooser ? ' --chooser' : ''}${D(m)}`,
+    // --csrf replays honestly (the token is derived extension-side per run —
+    // that's its point). --header VALUES are redacted like fill values: a
+    // csrf-token or Authorization header is the same class of secret, and the
+    // line is commented out (secret below) so a replay skips the step.
+    fetch: (m) =>
+      `fetch ${shellq(m.urlMatch)} ${shellq(m.url)}${m.csrf ? ' --csrf' : ''}${
+        m.headers && typeof m.headers === 'object' ? Object.keys(m.headers).map((k) => ` --header ${shellq(k + ': ***')}`).join('') : ''
+      }`,
+    ask: (m) => `ask ${shellq(m.urlMatch)} ${shellq(m.question)}`,
+    // --js follows eval's rules: multiline/non-string code can't be one batch line.
+    wait: (m) =>
+      m.js != null && (typeof m.js !== 'string' || !m.js || m.js.includes('\n') || (m.world != null && typeof m.world !== 'string'))
+        ? null
+        : `wait ${shellq(m.urlMatch)}${m.selector ? ' ' + shellq(m.selector) : ''}${m.text ? ' --text ' + shellq(m.text) : ''}${
+            m.js ? ' --js ' + shellq(m.js) + (m.world ? ' --world ' + m.world.toLowerCase() : '') : ''
+          }${m.human ? ' --human' : ''}${m.pixel ? ' --pixel-change' : ''}${m.timeout != null && m.timeout !== 10000 && !m.human ? ' --timeout ' + m.timeout : ''}`,
+    // Multiline code can't be one batch line — null drops it to a comment.
+    // A missing/non-string code (a raw /cmd caller sent eval without it) drops
+    // to a comment too — the formatter must be total: its throw costs the ring
+    // the whole entry ('logging failed for eval' in server.log, found live).
+    // Total over ANY parsed /cmd body, not just the cli's: a non-string world
+    // ({"world":true}) must not throw either, and an empty code would replay as
+    // `eval <match>` — a batch line missing its required arg.
+    eval: (m) =>
+      typeof m.code !== 'string' || !m.code || m.code.includes('\n') || (m.world != null && typeof m.world !== 'string')
+        ? null
+        : `eval ${shellq(m.urlMatch)} ${shellq(m.code)}${m.world && m.world !== 'auto' ? ' --world ' + m.world.toLowerCase() : ''}`,
+    // The output path is CLI-side and never rides the msg — placeholder name.
+    // crop is only replayed when it's the cli's 4-number array; a raw /cmd
+    // caller's {"crop":"z"} used to throw here and lose the ring entry (the
+    // try/catch around server.mjs pushAct saves the server, not the line).
+    shot: (m) =>
+      `shot ${shellq(m.urlMatch)} shot-replay.png${m.full ? ' --full' : ''}${
+        Array.isArray(m.crop) && m.crop.length === 4 && m.crop.every(Number.isFinite) ? ' --crop ' + m.crop.join(',') : ''
+      }` +
+      `${m.max != null ? ' --max ' + m.max : ''}${m.scale != null ? ' --scale ' + m.scale : ''}` +
+      `${m.format ? ' --format ' + m.format : ''}${m.quality != null ? ' --quality ' + m.quality : ''}${m.diff ? ' --diff' : ''}`,
+    net: (m) =>
+      `net ${shellq(m.urlMatch)}${m.duration != null ? ' --dur ' + m.duration : ''}${m.filter ? ' --filter ' + shellq(m.filter) : ''}${
+        m.body ? ' --body ' + shellq(m.body) : ''
+      }${m.ws ? ' --ws' : ''}${m.har ? ' --har net-replay.har' : ''}`,
+    perf: (m) => `perf ${shellq(m.urlMatch)}${m.duration != null ? ' --dur ' + m.duration : ''}`,
+    measure: (m) => `measure ${shellq(m.urlMatch)} ${shellq(m.selector)}`,
+    console: (m) => `console ${shellq(m.urlMatch)}${m.clear ? ' --clear' : ''}${m.ask ? (m.ask === true ? ' --ask' : ' --ask ' + shellq(m.ask)) : ''}`,
+    grid: (m) => `grid ${shellq(m.urlMatch)}`,
+    note: (m) => `note ${shellq(m.urlMatch)} ${shellq(m.text)}`,
+    // dsf=N is guarded so a raw /cmd caller's {"dsf":"2"} (or a focus/mobile
+    // emulate, which carries no dsf) keeps the formatter total.
+    emulate: (m) =>
+      m.focus
+        ? `emulate ${shellq(m.urlMatch)} focus`
+        : `emulate ${shellq(m.urlMatch)} ${m.width} ${m.height}${m.mobile ? ' mobile' : ''}${Number.isFinite(m.dsf) ? ' dsf=' + m.dsf : ''}`,
+    resize: (m) => `resize ${shellq(m.urlMatch)} ${m.width} ${m.height}`,
+  };
+
+  // msg → its replay line, or null when it has none (multiline eval or wait
+  // --js code, an unknown type). Commented out when a replay must skip it: a
+  // failed step (the script proceeds past it instead of dying), a redacted
+  // one (fill/type/paste values, a dialog answer, upload files, fetch header
+  // values: a replay must skip the step, not type "***"), and extreload
+  // (mid-batch it restarts the worker out from under the later lines).
+  // profile: the --profile word to lead with ('' = none).
+  function replayLine(msg, { ok = true, profile = '' } = {}) {
+    // Own-key only: REPLAY is a plain object, so a type of '__proto__'
+    // resolves to Object.prototype (not callable) and 'constructor'/'toString'
+    // to builtins that would emit a garbage '[object Object]' line.
+    const line = msg && typeof msg === 'object' && typeof msg.type === 'string' && Object.hasOwn(REPLAY, msg.type) ? REPLAY[msg.type](msg) : null;
+    if (line == null) return null;
+    const prof = profile ? `--profile ${profile} ` : '';
+    const secret =
+      ['fill', 'type', 'paste', 'upload'].includes(msg.type) ||
+      (msg.type === 'dialog' && !!msg.text) ||
+      (msg.type === 'fetch' && !!msg.headers && typeof msg.headers === 'object' && Object.keys(msg.headers).length > 0);
+    return !ok ? `# failed · ${prof}${line}`
+      : secret ? `# secret · ${prof}${line}`
+      : msg.type === 'extreload' ? `# worker-restart · ${prof}${line}`
+      : prof + line;
+  }
+
   // --- MCP tools (the Cloud Bridge arm offers these; the hub syncs its list) ---
   // `chrome` takes a whole command line; the typed tools build one from named
   // arguments (argv, so no quoting) and run it through parse() like any line.
@@ -931,5 +1077,5 @@ Reading with chrome_tabs / chrome_snap / chrome_shot / chrome_measure / chrome_w
     return build ? build(args && typeof args === 'object' ? args : {}) : null;
   }
 
-  globalThis.BridgeCommands = Object.freeze({ GROUPS, REGISTRY, lookup, tokenize, splitLine, parse, render, replyWarnings, TOOLS, toolArgv });
+  globalThis.BridgeCommands = Object.freeze({ GROUPS, REGISTRY, lookup, tokenize, splitLine, parse, render, replyWarnings, replayLine, TOOLS, toolArgv });
 })();
