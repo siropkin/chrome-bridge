@@ -30,13 +30,61 @@
   //   diskBound    false, or the part that reads/writes the local disk or OS clipboard
   //   pageCode     false, or the argument that carries caller JavaScript run in
   //                the page: eval-equivalent for any policy (never readOnly)
+  //   title        browser commands: what it does, in people's words (the Cloud
+  //                Bridge settings page lists them; GROUP_TITLES heads each group)
   const GROUPS = Object.freeze(['Observe', 'Act', 'Navigate', 'Network & data', 'Page code', 'Hand-off', 'Housekeeping', 'Local admin']);
+  const GROUP_TITLES = Object.freeze({
+    Observe: 'Reading pages',
+    Act: 'Acting on pages',
+    Navigate: 'Tabs and moving around',
+    'Network & data': 'Requests and data',
+    'Page code': 'Running code in pages',
+    'Hand-off': 'Waiting and handing over',
+    Housekeeping: 'Housekeeping',
+  });
+  const TITLES = {
+    tabs: 'See your open tabs',
+    doctor: 'Find leftover AI markers on tabs',
+    open: 'Open new tabs',
+    nav: 'Go to another address in a tab',
+    close: 'Close tabs',
+    snap: "Read a page's text and controls",
+    click: 'Click',
+    drag: 'Drag and drop',
+    dialog: "Answer a page's pop-up questions",
+    fill: 'Fill in fields, replacing what is there',
+    clear: 'Clear fields',
+    type: 'Type text',
+    press: 'Press keys',
+    hover: 'Point at things (opens hover menus)',
+    paste: 'Paste text',
+    scroll: 'Scroll',
+    upload: 'Upload files',
+    ask: "Ask Chrome's built-in AI about a page",
+    wait: 'Wait for something on a page, or hand a tab to you',
+    eval: 'Run its own code in a page, including while waiting',
+    shot: 'Take screenshots',
+    net: "Watch a page's network requests",
+    fetch: 'Send requests from a page, signed in as you',
+    perf: "Measure a page's CPU use",
+    measure: 'Measure sizes and positions on a page',
+    console: "Read a page's console messages",
+    grid: 'Show an alignment grid on a page',
+    mark: 'Mark a tab as used by the AI',
+    release: 'Hand a tab back to you',
+    activate: 'Bring a tab to the front',
+    note: 'Show you a note in a tab',
+    emulate: 'Act as a phone or another screen size',
+    unemulate: 'Stop acting as another device',
+    resize: 'Resize the window',
+  };
   const entry = (name, group, scope, usage, more = {}) =>
     Object.freeze({
       name,
       aliases: Object.freeze(more.aliases || []),
       usage,
       group,
+      title: TITLES[name] || '',
       scope,
       readOnly: !!more.readOnly,
       destructive: !!more.destructive,
@@ -1077,5 +1125,5 @@ Reading with chrome_tabs / chrome_snap / chrome_shot / chrome_measure / chrome_w
     return build ? build(args && typeof args === 'object' ? args : {}) : null;
   }
 
-  globalThis.BridgeCommands = Object.freeze({ GROUPS, REGISTRY, lookup, tokenize, splitLine, parse, render, replyWarnings, replayLine, TOOLS, toolArgv });
+  globalThis.BridgeCommands = Object.freeze({ GROUPS, GROUP_TITLES, REGISTRY, lookup, tokenize, splitLine, parse, render, replyWarnings, replayLine, TOOLS, toolArgv });
 })();

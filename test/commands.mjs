@@ -30,7 +30,7 @@ test('loads as a classic script with no Node globals and publishes one frozen AP
   assert.ok(Object.isFrozen(C) && Object.isFrozen(C.REGISTRY) && C.REGISTRY.every((e) => Object.isFrozen(e)));
   // splitDashDash stays internal (A1b): fill/type/paste use it, but nothing
   // outside commands.js needs it anymore now that paste moved in.
-  for (const k of ['GROUPS', 'REGISTRY', 'lookup', 'tokenize', 'splitLine', 'parse', 'render', 'replyWarnings', 'replayLine', 'TOOLS', 'toolArgv']) assert.ok(k in C, k);
+  for (const k of ['GROUPS', 'GROUP_TITLES', 'REGISTRY', 'lookup', 'tokenize', 'splitLine', 'parse', 'render', 'replyWarnings', 'replayLine', 'TOOLS', 'toolArgv']) assert.ok(k in C, k);
   assert.ok(!('splitDashDash' in C), 'splitDashDash is not exported — nothing outside the module calls it');
   assert.doesNotThrow(() => vm.runInContext(source, context), 'a second load (worker restart path) does not collide with the first');
 });
@@ -46,6 +46,9 @@ test('registry entries are well-formed and every name or alias resolves once', (
     assert.ok(e.pageCode === false || (typeof e.pageCode === 'string' && e.pageCode && !e.readOnly), `${e.name}: pageCode is false, or set on a non-readOnly command`);
     assert.ok(e.usage === e.name || e.usage.startsWith(e.name + ' '), `${e.name}: usage starts with the name`);
     for (const w of [e.name, ...e.aliases]) assert.equal(C.lookup(w), e);
+    // The Cloud Bridge settings page lists browser commands by title, under their group's title.
+    if (e.scope === 'browser') assert.ok(e.title && C.GROUP_TITLES[e.group], `${e.name}: a title and a group title for the settings page`);
+    else assert.equal(e.title, '', `${e.name}: local-only commands never reach the settings page`);
   }
   assert.equal(C.lookup('nope'), null);
   assert.equal(C.lookup('__proto__'), null);

@@ -253,6 +253,53 @@ test('cloud links neither act on nor read a tab that ended up off-limits, whatev
   assert.match(fetchSrcCode, /offLimitsUrl\(landed\)[\s\S]*catch \(e\) \{\n\s*if \(e\?\.offLimits\) throw e;/, 'a redirect off-limits is refused, not retried through the browser-network fallback');
 });
 
+test('cloud blocked websites (D3): no open, read or act there, subdomains included, listed without address — the local link untouched', async () => {
+  const offSource = source.slice(source.indexOf('function privateHost('), source.indexOf('// --- end off-limits'));
+  const tabs = new Map([[7, { id: 7, url: 'https://secure.chase.com/accounts' }], [9, { id: 9, url: 'https://example.com/' }]]);
+  const context = vm.createContext({ URL, drivenTabs: new Set([7, 9]), tabOwner: new Map([[7, 'cloud'], [9, 'cloud']]), chrome: { tabs: { get: async (id) => tabs.get(id) } } });
+  vm.runInContext(offSource + '\nconst ownerOf = (tabId) => (drivenTabs.has(tabId) ? tabOwner.get(tabId) || "local" : null);\ncloudBlocked = ["chase.com", "mail.example.org"];\nthis.withheld = withheld;', context);
+  const blocked = "www.chase.com is a website the user blocked for Cloud AI apps in their Cloud Bridge settings; nothing ran. Do the task without it, or ask the user to do this part themselves";
+  for (const type of ['open', 'navigate', 'fetch']) assert.throws(() => context.refuseOffLimits({ type, url: 'https://www.chase.com/login', _link: 'cloud' }), (e) => e.message === blocked && e.offLimits, type);
+  assert.throws(() => context.refuseOffLimits({ type: 'open', url: 'https://MAIL.Example.org./inbox', _link: 'cloud' }), /^Error: MAIL\.Example\.org\.|^Error: mail\.example\.org\. is a website the user blocked/, 'any case, a trailing dot');
+  assert.throws(() => context.refuseOffLimits({ type: 'open', url: 'https://chase.com:8443/', _link: 'cloud' }), /^Error: chase\.com:8443 is a website the user blocked/, 'any port');
+  for (const url of ['https://notchase.com/', 'https://chase.com.evil.example/', 'https://example.org/']) assert.doesNotThrow(() => context.refuseOffLimits({ type: 'open', url, _link: 'cloud' }), url);
+  assert.doesNotThrow(() => context.refuseOffLimits({ type: 'open', url: 'https://chase.com/', _link: 'local' }), 'local agents keep their reach');
+  // A tab there is neither read nor acted on; backing out stays possible.
+  for (const type of ['snap', 'shot', 'click', 'eval', 'net'])
+    assert.throws(() => context.refuseOffLimitsTab(tabs.get(7), { type, _link: 'cloud' }), /^Error: this tab is on secure\.chase\.com, which is a website the user blocked for Cloud AI apps in their Cloud Bridge settings; nothing ran\./, type);
+  for (const type of ['release', 'close', 'unemulate', 'navigate']) assert.doesNotThrow(() => context.refuseOffLimitsTab(tabs.get(7), { type, _link: 'cloud' }), type);
+  assert.doesNotThrow(() => context.refuseOffLimitsTab(tabs.get(7), { type: 'snap', _link: 'local' }));
+  const row = (t) => ({ id: t.id, url: t.url, title: 'Chase' });
+  assert.deepEqual(JSON.parse(JSON.stringify(context.tabRowFor('cloud', tabs.get(7), row(tabs.get(7))))), { id: 7, url: '', title: '', offLimits: "secure.chase.com: a website the user blocked for Cloud AI apps, so they can't read or use this tab" });
+  assert.deepEqual(JSON.parse(JSON.stringify(context.tabRowFor('local', tabs.get(7), row(tabs.get(7))))), row(tabs.get(7)));
+  // A cloud action that lands there, or a command whose tab moved there, gets nothing back.
+  assert.equal(await context.offLimitsLanding(7), 'secure.chase.com — a website the user blocked for Cloud AI apps, so they get no snapshot of it. Go back (nav <match> <another url>) or close it');
+  assert.equal(context.withheld('secure.chase.com', 'ran'), 'this tab is now on secure.chase.com, a website the user blocked for Cloud AI apps, so they get nothing back from it (the command ran). Go back (nav <match> <another url>) or close it');
+  assert.match(context.withheld('192.168.1.1', 'ran'), /^this tab is now on 192\.168\.1\.1, on this computer or its local network/, 'the local-network wording is unchanged');
+  // An allowed page's requests to a blocked site carry its cookies: left out of a cloud net capture.
+  assert.equal(context.netOffLimits('https://api.chase.com/v1/balance'), true);
+  assert.equal(context.netOffLimits('wss://live.chase.com/'), true);
+  assert.equal(context.netOffLimits('https://example.com/api'), false);
+  // A fetch redirect and a capture whose tab went there name it the same way.
+  assert.match(context.offLimitsError('the request was redirected to chase.com, which', 'its answer is withheld', 'chase.com').message, /^the request was redirected to chase\.com, which is a website the user blocked for Cloud AI apps in their Cloud Bridge settings; its answer is withheld\./);
+  vm.runInContext('cloudBlocked = []', context);
+  assert.doesNotThrow(() => context.refuseOffLimits({ type: 'open', url: 'https://www.chase.com/', _link: 'cloud' }), 'unblocked: allowed again');
+});
+
+test('cloud policy (D3): arm/policy sets the rules, the blocked websites and the settings link; anything malformed counts as nothing set', async () => {
+  const { ws, flush, context } = await cloudArm();
+  const policy = () => JSON.parse(JSON.stringify(context.links.get('cloud').policy));
+  await ws.recv({ jsonrpc: '2.0', method: 'arm/policy', params: { commands: { eval: 'off' }, blockedDomains: [' Chase.COM. ', 7, '', 'mail.example.org'], settingsUrl: 'https://hub.example/app/settings?profile=a1' } });
+  await flush();
+  assert.deepEqual(policy(), { commands: { eval: 'off' }, blockedDomains: ['chase.com', 'mail.example.org'], settingsUrl: 'https://hub.example/app/settings?profile=a1' });
+  assert.equal(context.blockedSite('www.chase.com'), 'chase.com', 'the off-limits checks see the new list at once');
+  assert.equal(context.blockedSite('example.org'), null);
+  await ws.recv({ jsonrpc: '2.0', method: 'arm/policy', params: { commands: ['off'], blockedDomains: 'chase.com', settingsUrl: 'javascript:alert(1)' } });
+  await flush();
+  assert.deepEqual(policy(), { commands: {}, blockedDomains: [], settingsUrl: '' });
+  assert.equal(context.blockedSite('www.chase.com'), null, 'a malformed list blocks nothing (the hub sends the whole policy every time)');
+});
+
 function netHarness({ tabUrl = 'https://example.com/' } = {}) {
   const netSource = source.slice(source.indexOf('// --- Network capture (CDP)'), source.indexOf('// --- Page-side scripts'));
   const offSource = source.slice(source.indexOf('function privateHost('), source.indexOf('// --- end off-limits'));
@@ -622,7 +669,7 @@ test('dispatch deadline is server-owned and retains the actual timeout budget', 
 });
 
 const fetchSource = source.slice(source.indexOf('async function cmdFetch('), source.indexOf('// A JS dialog (alert/confirm/prompt)'));
-function fetchHarness({ chunks = [], cap = 8, origin = 'https://example.test', onCookies, redirect = false } = {}) {
+function fetchHarness({ chunks = [], cap = 8, origin = 'https://example.test', onCookies, redirect = false, blocked = [] } = {}) {
   const calls = [];
   const requests = [];
   const page = vm.createContext({
@@ -635,6 +682,7 @@ function fetchHarness({ chunks = [], cap = 8, origin = 'https://example.test', o
   });
   const context = vm.createContext({
     BODY_CAP: cap, URL, Uint8Array, TextEncoder, TextDecoder, atob, btoa,
+    cloudLink: (link) => !!link && link !== 'local', cloudBlocked: blocked,
     withDbg: async (_tabId, fn) => fn(),
     fetchSrc: (url, headers) => JSON.stringify({ url, headers }),
     runEval: async (_tabId, payload) => { calls.push(['eval', payload]); throw new Error('in-page blocked'); },
@@ -664,6 +712,24 @@ function fetchHarness({ chunks = [], cap = 8, origin = 'https://example.test', o
   vm.runInContext(fetchSource, context);
   return { context, calls, requests, page };
 }
+
+test('cloud fetch while the profile blocks websites: no retry outside the page, which follows redirects unseen (D3 review: a redirector reached a blocked site)', async () => {
+  const chunks = () => [{ data: 'body', eof: true }];
+  {
+    const { context, calls } = fetchHarness({ blocked: ['mail.google.com'], chunks: chunks() });
+    await assert.rejects(
+      context.cmdFetch({ id: 7 }, { url: 'https://redirect.example/to?u=https://mail.google.com/feed', _link: 'cloud' }),
+      (e) => e.message === "in-page blocked — the page refused the request, and Cloud AI apps get no retry outside the page while the user blocks websites in this Chrome profile (it can't see where a redirect lands). Fetch it from a tab on https://redirect.example: open https://redirect.example/, then fetch that tab"
+    );
+    assert.ok(!calls.some(([m]) => m === 'Network.loadNetworkResource'), 'the browser-network read never ran');
+  }
+  // Nothing blocked, or the local link: the fallback runs as before.
+  for (const [blocked, link] of [[[], 'cloud'], [['mail.google.com'], 'local']]) {
+    const { context, calls } = fetchHarness({ blocked, chunks: chunks() });
+    assert.equal((await context.cmdFetch({ id: 7 }, { url: 'https://example.test/file', _link: link })).body, 'body');
+    assert.ok(calls.some(([m]) => m === 'Network.loadNetworkResource'), `${link} with ${blocked.length} blocked`);
+  }
+});
 
 test('fetch IO stream preserves padded base64 and mixed chunks in byte order', async () => {
   const { context } = fetchHarness({ chunks: [
@@ -1628,14 +1694,33 @@ test('cloud: a paired profile dials /arm with its token as a subprotocol, says h
   assert.equal(ws.url, 'ws://localhost:8787/arm');
   assert.deepEqual(plain(ws.protocols), ['cloud-bridge.v1', 'cbtoken.' + PAIRED.token]);
   assert.equal(ws.sent[0].method, 'arm/hello');
-  assert.deepEqual({ ...ws.sent[0].params, offlineHint: undefined }, { kind: 'chrome', name: 'oak', version: '9.9.9', selector: 'profile', offlineHint: undefined });
+  assert.deepEqual({ ...ws.sent[0].params, offlineHint: undefined, registry: undefined }, { kind: 'chrome', name: 'oak', version: '9.9.9', selector: 'profile', instanceId: 'pid', offlineHint: undefined, registry: undefined });
   assert.match(ws.sent[0].params.offlineHint, /profile chrome-bridge calls "oak".*Cloud AI apps is on in the chrome-bridge popup's ⚙ Settings/);
   assert.equal(intervals[0].ms, 20000);
   intervals[0].fn();
   assert.equal(ws.sent.at(-1), 'ping');
 });
 
-test('cloud: tools/list offers chrome, chrome_batch and the typed tools, minus the ones turned Off', async () => {
+test('cloud hello: the registry lists every browser command in people\'s words, with the typed tools that run it (D3: the hub\'s settings page)', async () => {
+  const { ws } = await cloudArm();
+  const registry = ws.sent[0].params.registry;
+  const C = (() => {
+    const c = vm.createContext({});
+    vm.runInContext(commandsSource, c);
+    return c.BridgeCommands;
+  })();
+  assert.deepEqual(registry.map((e) => e.name), [...C.REGISTRY.filter((e) => e.scope === 'browser').map((e) => e.name)], 'browser commands only, in registry order');
+  assert.ok(!registry.some((e) => ['start', 'update', 'extreload', 'history'].includes(e.name)), 'local-only commands stay off the page');
+  for (const e of registry) {
+    assert.ok(e.title && e.title.length <= 60 && !/\b(eval|snap|CDP|DOM|a11y|@ref)\b/.test(e.title), `${e.name}: a plain title (${e.title})`);
+    assert.ok(Object.values(C.GROUP_TITLES).includes(e.group), `${e.name}: a people's group (${e.group})`);
+  }
+  const tools = Object.fromEntries(registry.map((e) => [e.name, e.tools]));
+  assert.deepEqual([tools.snap, tools.fill, tools.eval, tools.close], [['chrome_snap'], ['chrome_fill'], [], ['chrome_close']]);
+  assert.deepEqual(registry.flatMap((e) => e.tools).sort(), [...C.TOOLS.filter((t) => t.command).map((t) => t.name)].sort(), 'every typed tool belongs to exactly one command');
+});
+
+test('cloud: tools/list offers chrome, chrome_batch and every typed tool, whatever is Off (the hub hides those: its list follows a settings change at once)', async () => {
   const { ws, flush } = await cloudArm();
   await ws.recv({ jsonrpc: '2.0', id: 'l1', method: 'tools/list' });
   await flush();
@@ -1647,8 +1732,7 @@ test('cloud: tools/list offers chrome, chrome_batch and the typed tools, minus t
   await ws.recv({ jsonrpc: '2.0', method: 'arm/policy', params: { commands: { click: 'off', eval: 'off' } } });
   await ws.recv({ jsonrpc: '2.0', id: 'l2', method: 'tools/list' });
   await flush();
-  const names = ws.sent.find((m) => m.id === 'l2').result.tools.map((t) => t.name);
-  assert.ok(!names.includes('chrome_click') && names.includes('chrome') && names.includes('chrome_fill'), 'an Off command loses its typed tool; chrome stays');
+  assert.deepEqual(ws.sent.find((m) => m.id === 'l2').result.tools.map((t) => t.name), tools.map((t) => t.name));
 });
 
 test('cloud: typed tools build the command line and run it through the same grammar and policy', async () => {
@@ -1669,7 +1753,7 @@ test('cloud: typed tools build the command line and run it through the same gram
   await ws.recv({ jsonrpc: '2.0', method: 'arm/policy', params: { commands: { fill: 'off' } } });
   await flush();
   const n = handled.length;
-  assert.match(text(await call('chrome_fill', { tab: 'github', target: '@e5', value: 'x' })), /^fill is turned off for Cloud Bridge/, 'a cached typed tool is still refused');
+  assert.match(text(await call('chrome_fill', { tab: 'github', target: '@e5', value: 'x' })), /^fill is turned off for this Chrome profile in the user's Cloud Bridge settings/, 'a cached typed tool is still refused');
   assert.equal(handled.length, n);
 });
 
@@ -1826,11 +1910,11 @@ test('cloud: refusals name the next step and run nothing', async () => {
   assert.match(text(await call('chrome', { command: 'frobnicate x' })), /^Unknown command: frobnicate\. Commands: tabs, /);
   assert.match(text(await call('chrome', { command: '--profile elm tabs' })), /--profile elm is not this Chrome \("oak"\)/);
   assert.match(text(await call('chrome', { command: '--profile --x tabs' })), /^--profile needs an id or name: pick the Chrome with the tool's profile argument instead$/, 'no cli.mjs in cloud errors');
-  await ws.recv({ jsonrpc: '2.0', method: 'arm/policy', params: { commands: { click: 'off', eval: 'ask' } } });
+  await ws.recv({ jsonrpc: '2.0', method: 'arm/policy', params: { commands: { click: 'off', eval: 'ask' }, settingsUrl: 'https://hub.example/app/settings?profile=a1' } });
   await flush();
   const off = await call('chrome', { command: 'click github @e1' });
   assert.equal(off.isError, true);
-  assert.match(text(off), /^click is turned off for Cloud Bridge in the user's settings, nothing ran\./);
+  assert.equal(text(off), "click is turned off for this Chrome profile in the user's Cloud Bridge settings, so nothing ran. Do the task without it, or ask the user to allow it there (https://hub.example/app/settings?profile=a1).");
   assert.match(text(await call('chrome', { command: 'wait github --js "1"' })), /^eval needs the user's confirmation/, 'wait --js runs page code: eval\'s rule covers it');
   assert.equal(text(await call('chrome', { command: 'wait github --text Saved' })), 'ok', 'wait without --js is not page code');
   assert.deepEqual(handled.map((m) => m.type), ['wait']);

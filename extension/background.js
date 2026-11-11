@@ -643,8 +643,8 @@ addLink({
   label: 'Cloud Bridge',
   rpc: true,
   retry: [1000, 60000],
-  // Replaced by the hub's arm/policy: per-command 'allow' | 'ask' | 'off'.
-  policy: { commands: {}, blockedDomains: [] },
+  // Replaced by the hub's arm/policy (see cloudPolicy).
+  policy: { commands: {}, blockedDomains: [], settingsUrl: '' },
   enabled: () => !!(cloudCfg.enabled && cloudCfg.hub && cloudCfg.token),
   async dial() {
     return cloudArmUrl(cloudCfg.hub);
@@ -656,8 +656,11 @@ addLink({
 function cloudOpen(link, s) {
   const version = chrome.runtime.getManifest().version;
   link.hubName = ''; // until this connection's hub sends its own (arm/name)
+  // instanceId: the profile's own id, so the rules the user set for this
+  // profile survive turning Cloud AI apps off and on (a new hub record each
+  // time). registry: what the hub's settings page lists for it.
   s.send(JSON.stringify({ jsonrpc: '2.0', method: 'arm/hello', params: {
-    kind: 'chrome', name: PROFILE_NAME, version, selector: 'profile',
+    kind: 'chrome', name: PROFILE_NAME, version, selector: 'profile', instanceId: PROFILE_ID, registry: CLOUD_REGISTRY(),
     offlineHint: `Ask the user to open Chrome (the profile chrome-bridge calls "${PROFILE_NAME}") and check that Cloud AI apps is on in the chrome-bridge popup's ⚙ Settings`,
   } }));
   s._lastPong = Date.now();
@@ -679,10 +682,18 @@ function cloudUnpaired(reason) {
 }
 
 // The tools live in commands.js (the hub syncs its pre-pairing list from
-// there). A typed tool whose command the user turned Off isn't offered; the
-// call is still refused if a client cached it.
-const CLOUD_TOOLS = (link) =>
-  globalThis.BridgeCommands.TOOLS.filter((t) => !(t.command && link?.policy?.commands?.[t.command] === 'off')).map(({ command, ...t }) => t);
+// there). All of them, whatever the user turned Off: the hub hides an Off
+// command's typed tools itself (it knows which from CLOUD_REGISTRY), so its
+// list follows a settings change at once. Calls are still refused here.
+const CLOUD_TOOLS = () => globalThis.BridgeCommands.TOOLS.map(({ command, ...t }) => t);
+// Every command a cloud link may send, in people's words, with the typed tools
+// that run it: the hub's settings page lists these per Chrome profile.
+const CLOUD_REGISTRY = () => {
+  const C = globalThis.BridgeCommands;
+  return C.REGISTRY.filter((c) => c.scope === 'browser').map((c) => ({
+    name: c.name, group: C.GROUP_TITLES[c.group], title: c.title, tools: C.TOOLS.filter((t) => t.command === c.name).map((t) => t.name),
+  }));
+};
 
 const cloudText = (text, isError = false) => ({ content: [{ type: 'text', text }], isError });
 // The dispatch deadline the local server stamps on every command (server.mjs
@@ -802,9 +813,20 @@ async function cloudKeep(link, path, mimeType, body, detail) {
 // release it runs itself for fetch and doctor --fix.
 function policyRefusal(link, name) {
   const rule = link.policy?.commands?.[name];
-  if (rule === 'off') return `${name} is turned off for Cloud Bridge in the user's settings, nothing ran. Do the task without it, or ask the user to allow it.`;
-  if (rule === 'ask') return `${name} needs the user's confirmation, which this extension version can't ask for yet, so nothing ran. Ask the user to set ${name} to Allow in Cloud Bridge settings.`;
+  const where = link.policy?.settingsUrl ? ` (${link.policy.settingsUrl})` : '';
+  if (rule === 'off') return `${name} is turned off for this Chrome profile in the user's Cloud Bridge settings, so nothing ran. Do the task without it, or ask the user to allow it there${where}.`;
+  if (rule === 'ask') return `${name} needs the user's confirmation, which this extension version can't ask for yet, so nothing ran. Ask the user to set ${name} to Allow in Cloud Bridge settings${where}.`;
   return null;
+}
+// The hub's rules for this profile (decision d3-design): per-command 'off' (or
+// 'ask'), websites the user blocked (each with its subdomains), and the page
+// where the user changes them. Anything malformed counts as nothing set.
+function cloudPolicy(params) {
+  const p = params && typeof params === 'object' ? params : {};
+  const commands = p.commands && typeof p.commands === 'object' && !Array.isArray(p.commands) ? p.commands : {};
+  const blockedDomains = (Array.isArray(p.blockedDomains) ? p.blockedDomains : []).filter((d) => typeof d === 'string' && d.trim()).map((d) => d.trim().toLowerCase().replace(/\.+$/, ''));
+  const settingsUrl = typeof p.settingsUrl === 'string' && /^https?:\/\/[^\s]+$/.test(p.settingsUrl) ? p.settingsUrl : '';
+  return { commands, blockedDomains, settingsUrl };
 }
 const errMsg = (err) => String(err?.message ?? err).replace(/^(Error:\s*)+/, '');
 
@@ -822,7 +844,8 @@ async function cloudMessage(link, s, data) {
   }
   if (!msg || typeof msg !== 'object') return;
   if (msg.method === 'arm/policy') {
-    link.policy = { commands: {}, blockedDomains: [], ...(msg.params && typeof msg.params === 'object' ? msg.params : {}) };
+    link.policy = cloudPolicy(msg.params);
+    cloudBlocked = link.policy.blockedDomains; // the off-limits checks read it
     return;
   }
   // The name AI apps pick this profile by: the user may rename it on the
@@ -848,7 +871,7 @@ async function cloudMessage(link, s, data) {
       s.send(JSON.stringify({ jsonrpc: '2.0', id: msg.id, ...body }));
     } catch {} // gone: the hub tells its caller the arm dropped
   };
-  if (msg.method === 'tools/list') return reply({ result: { tools: CLOUD_TOOLS(link) } });
+  if (msg.method === 'tools/list') return reply({ result: { tools: CLOUD_TOOLS() } });
   if (msg.method === 'tools/call') {
     const { name, arguments: args } = msg.params || {};
     const report = { command: null, site: null, steps: [], batch: false };
@@ -956,7 +979,7 @@ async function cloudCall(link, name, args, report) {
     return cloudText(errMsg(err), true);
   }
   if (argv) return cloudArgv(link, argv, report);
-  return cloudText(`Unknown tool ${name}: this Chrome offers ${CLOUD_TOOLS(link).map((t) => t.name).join(', ')}. Call tools/list to refresh.`, true);
+  return cloudText(`Unknown tool ${name}: this Chrome offers ${CLOUD_TOOLS().map((t) => t.name).join(', ')}. Call tools/list to refresh.`, true);
 }
 
 // One command line → MCP content, the way cli.mjs would run and print it.
@@ -2806,7 +2829,7 @@ async function captureNetwork(tabId, duration, filter, bodyFilter, har, ws, publ
     const landed = [...c.values()].find((r) => r.type === 'Document' && offLimitsUrl(r.url));
     const now = await chrome.tabs.get(tabId).catch(() => null);
     const where = (landed && offLimitsUrl(landed.url)) || (now && tabOffLimits(now));
-    if (where) throw offLimitsError(`the tab went to ${where} during the capture, which`, 'nothing from the capture comes back');
+    if (where) throw offLimitsError(`the tab went to ${where} during the capture, which`, 'nothing from the capture comes back', where);
     for (const [id, r] of c) if (netOffLimits(r.url)) c.delete(id);
     c.wsFrames = c.wsFrames.filter((f) => !netOffLimits(f.url));
   }
@@ -5510,7 +5533,7 @@ async function cmdFetch(tab, msg) {
     // public name pointing into the LAN: that stays out of reach of this check.)
     const { url: landed, ...reply } = out || {};
     const where = cloudLink(msg._link) && landed ? offLimitsUrl(landed) : null;
-    if (where) throw offLimitsError(`the request was redirected to ${where}, which`, 'its answer is withheld');
+    if (where) throw offLimitsError(`the request was redirected to ${where}, which`, 'its answer is withheld', where);
     return out ? reply : out;
   } catch (e) {
     if (e?.offLimits) throw e;
@@ -5521,6 +5544,15 @@ async function cmdFetch(tab, msg) {
       throw new Error(
         String(e).replace(/^(Error:\s*)+/, '') + ' — custom headers ride only the in-page fetch; the browser-network fallback cannot carry them'
       );
+    // That fallback follows redirects where nothing can see them: a redirector
+    // would hand a cloud link a blocked website's answer, cookies included
+    // (review). While this profile blocks websites, cloud fetches stay in the page.
+    if (cloudLink(msg._link) && cloudBlocked.length) {
+      const origin = new URL(msg.url).origin;
+      throw new Error(
+        `${String(e).replace(/^(Error:\s*)+/, '')} — the page refused the request, and Cloud AI apps get no retry outside the page while the user blocks websites in this Chrome profile (it can't see where a redirect lands). Fetch it from a tab on ${origin}: open ${origin}/, then fetch that tab`
+      );
+    }
     const read = await withDbg(tab.id, async () => {
       // Chrome 152 tightened loadNetworkResource: options.disableCache is
       // mandatory AND frameId must be provided (stress: the fallback died
@@ -5935,7 +5967,8 @@ function privateHost(hostname) {
 }
 
 // Where a cloud link may not go, or null: a place on this computer or its
-// network, or a non-web page. blob: pages count as their http(s) origin.
+// network, a website the user blocked for Cloud AI apps, or a non-web page.
+// blob: pages count as their http(s) origin.
 function offLimitsUrl(raw) {
   let u;
   try {
@@ -5950,16 +5983,29 @@ function offLimitsUrl(raw) {
       return 'blob: pages';
     }
   }
-  if (u.protocol === 'http:' || u.protocol === 'https:') return privateHost(u.hostname) ? u.host : null;
+  if (u.protocol === 'http:' || u.protocol === 'https:') return privateHost(u.hostname) || blockedSite(u.hostname) ? u.host : null;
   return u.href === 'about:blank' ? null : u.protocol + ' pages';
+}
+
+// The websites the user blocked for Cloud AI apps in this profile's Cloud
+// Bridge settings (decision d3-design; the hub's arm/policy sets it): treated
+// like a place on this computer — no open, read or act — each with its
+// subdomains. blockedSite answers with the blocked entry, or null.
+let cloudBlocked = [];
+function blockedSite(host) {
+  const h = String(host).toLowerCase().replace(/:\d+$/, '').replace(/^\[|\]$/g, '').replace(/\.+$/, '');
+  return cloudBlocked.find((d) => h === d || h.endsWith('.' + d)) || null;
 }
 
 const cloudLink = (link) => !!link && link !== 'local';
 
-// subject: the address, or a phrase ending in one ("this tab is on 10.0.0.1, which").
-function offLimitsError(subject, outcome = 'nothing ran') {
+// subject: the address, or a phrase ending in one ("this tab is on 10.0.0.1, which");
+// where: the address alone, when the subject is a phrase.
+function offLimitsError(subject, outcome = 'nothing ran', where = subject) {
   const err = new Error(
-    `${subject} is on this computer or its local network — Cloud AI apps reach public web pages only (not localhost, private or link-local addresses, *.local, or file:, data: and view-source: pages); ${outcome}. Ask the user to do this with an AI agent on their computer, or to open it themselves`
+    blockedSite(where)
+      ? `${subject} is a website the user blocked for Cloud AI apps in their Cloud Bridge settings; ${outcome}. Do the task without it, or ask the user to do this part themselves`
+      : `${subject} is on this computer or its local network — Cloud AI apps reach public web pages only (not localhost, private or link-local addresses, *.local, or file:, data: and view-source: pages); ${outcome}. Ask the user to do this with an AI agent on their computer, or to open it themselves`
   );
   err.offLimits = true;
   return err;
@@ -5986,11 +6032,12 @@ const tabOffLimits = (tab) => offLimitsUrl(tab.url) || offLimitsUrl(tab.pendingU
 function refuseOffLimitsTab(tab, msg) {
   if (!cloudLink(msg._link) || ['release', 'close', 'unemulate', 'navigate'].includes(msg.type)) return;
   const where = tabOffLimits(tab);
-  if (where) throw offLimitsError(`this tab is on ${where}, which`);
+  if (where) throw offLimitsError(`this tab is on ${where}, which`, undefined, where);
 }
 
 // net's capture runs for seconds after that check: requests to such addresses
-// (ws:// too) are left out of what a cloud link gets back (review).
+// (ws:// too) are left out of what a cloud link gets back (review), and so are
+// requests to a blocked website from an allowed page (they carry its cookies).
 function netOffLimits(raw) {
   let u;
   try {
@@ -5998,7 +6045,7 @@ function netOffLimits(raw) {
   } catch {
     return false;
   }
-  return /^(https?|wss?):$/.test(u.protocol) ? privateHost(u.hostname) : u.protocol === 'file:';
+  return /^(https?|wss?):$/.test(u.protocol) ? privateHost(u.hostname) || !!blockedSite(u.hostname) : u.protocol === 'file:';
 }
 
 // After an action navigated a tab: the snapshot that would come back, withheld
@@ -6007,7 +6054,9 @@ async function offLimitsLanding(tabId) {
   if (!cloudLink(ownerOf(tabId))) return null;
   const t = await chrome.tabs.get(tabId).catch(() => null);
   const where = t && tabOffLimits(t);
-  return where ? `${where} — on this computer or its local network, so Cloud AI apps get no snapshot of it. Go back (nav <match> <public url>) or close it, or ask the user to continue with an AI agent on their computer` : null;
+  if (!where) return null;
+  if (blockedSite(where)) return `${where} — a website the user blocked for Cloud AI apps, so they get no snapshot of it. Go back (nav <match> <another url>) or close it`;
+  return `${where} — on this computer or its local network, so Cloud AI apps get no snapshot of it. Go back (nav <match> <public url>) or close it, or ask the user to continue with an AI agent on their computer`;
 }
 // Where a cloud command's tab is when the command is done: a page can move
 // between the gate and the read (a self-navigation mid-shot), and the reply's
@@ -6022,7 +6071,9 @@ async function offLimitsNow(msg) {
 // address, no page content: fetch's scratch tab needs the id to be closed).
 const BACK_OUT = new Set(['navigate', 'release', 'close', 'unemulate', 'open']);
 const withheld = (where, outcome) =>
-  `this tab is now on ${where}, on this computer or its local network, so Cloud AI apps get nothing back from it (the command ${outcome}). Go back (nav <match> <public url>) or close it, or ask the user to continue with an AI agent on their computer`;
+  blockedSite(where)
+    ? `this tab is now on ${where}, a website the user blocked for Cloud AI apps, so they get nothing back from it (the command ${outcome}). Go back (nav <match> <another url>) or close it`
+    : `this tab is now on ${where}, on this computer or its local network, so Cloud AI apps get nothing back from it (the command ${outcome}). Go back (nav <match> <public url>) or close it, or ask the user to continue with an AI agent on their computer`;
 // tabs and doctor list every tab: a cloud link gets the row of a tab it may not
 // read without its address and title (a file: path, a localhost URL carrying a
 // token — an OAuth code showed up this way, 2026-11-10), only where it is.
@@ -6031,7 +6082,9 @@ function hiddenFrom(link, tab) {
 }
 function tabRowFor(link, tab, row) {
   const where = hiddenFrom(link, tab);
-  return where ? { ...row, url: '', title: '', offLimits: `${where}: on this computer or its local network, so Cloud AI apps can't read or use this tab` } : row;
+  if (!where) return row;
+  const why = blockedSite(where) ? 'a website the user blocked for Cloud AI apps, so they' : 'on this computer or its local network, so Cloud AI apps';
+  return { ...row, url: '', title: '', offLimits: `${where}: ${why} can't read or use this tab` };
 }
 // --- end off-limits
 
