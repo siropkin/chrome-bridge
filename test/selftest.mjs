@@ -1642,6 +1642,9 @@ try {
       assert(fill.status === 1 && fill.stderr.includes("couldn't prove") && !fill.stdout.includes('forged'), 'auth: the CLI refuses an impostor on the port', fill.stdout + fill.stderr);
       assert(stop.status === 1 && !stop.stdout.includes('stopped'), 'auth: stop does not report an impostor as stopped', stop.stdout + stop.stderr);
       assert(got.every((l) => l.startsWith('GET /auth')) && !got.join().includes('hunter2'), 'auth: the impostor saw nonces only — never a command, a body or a /stop', got.join(' | '));
+      // It answers /health like a bridge: start must not call that "already running".
+      const st = await cliRaw(['start'], null, { BRIDGE_PORT: port });
+      assert(st.status === 1 && !st.stdout.includes('already running') && st.stderr.includes(`port ${port} is taken`) && st.stderr.includes(`lsof -i :${port}`), 'auth: start names an impostor on the port as taken, not "already running"', st.stdout + st.stderr);
       // A proof of non-ASCII characters must read as "couldn't prove", not a dropped connection.
       weird = true;
       const odd = await cliRaw(['tabs'], null, { BRIDGE_PORT: port });

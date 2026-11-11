@@ -560,6 +560,14 @@ async function runCommand(cmdName, args) {
         for (let i = 0; i < 20 && (await bridgeHealth()); i++) await new Promise((r) => setTimeout(r, 100));
         replaced = true;
       } else if (up) {
+        // Answering /health proves nothing: a program that can't prove it holds
+        // this OS user's key (another account's) isn't "already running" — the
+        // CLI refuses it on every command, and its error points here.
+        try {
+          await bridgeFetch(BASE, '/health');
+        } catch (e) {
+          if (e instanceof LocalAuthError) fail(`port ${PORT} is taken by a program that can't prove it is this OS user's chrome-bridge server — see who holds it (lsof -i :${PORT}), quit it, then run node cli.mjs start`);
+        }
         // A bare 'already running' reads as fully ready while the extension
         // is disconnected — the fresh-start path below says it, this one too.
         print(up.extension ? 'already running — extension connected' : 'already running — extension not connected (if it was already loaded, run health again in a moment; else load extension/ at chrome://extensions)');
