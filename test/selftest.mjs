@@ -1210,6 +1210,12 @@ try {
     assert(serverSrc.includes("msg.type === 'type') return await ask(seat, msg, Math.min(285_000, CMD_TIMEOUT_MS + (msg.value?.length || 0) * 100)"), 'server: type reply budget scales with payload length, capped at the undici wall (#29)');
     assert(serverSrc.includes("EADDRINUSE") && serverSrc.includes("server.on('error'"), 'server: a taken port exits with one clean line, not an unhandled-error stack dump');
     assert(serverSrc.includes("typeof m.code !== 'string'") && serverSrc.includes('Array.isArray(m.crop)') && serverSrc.includes('Array.isArray(msg.files)') && serverSrc.includes('Object.hasOwn(CLI_LINES'), 'server: replay formatters are total — a malformed raw /cmd field must not cost the ring its entry (logging failed for shot/eval in the live log; files/world/proto-key dispatch are the same throw class)');
+    // #63's stale-server warning must watch every module the server loads at
+    // boot: localauth.mjs and nativehost.mjs (S2b) were never added, so an edit
+    // there left a running server on old code with no "restart it" warning.
+    const watched = (/function serverCodeMtime\(\) \{[\s\S]*?for \(const f of \[([^\]]*)\]/.exec(serverSrc) || [])[1] || '';
+    const loaded = [...serverSrc.matchAll(/^import\s+(?:[^'"]*?\s+from\s+)?'(\.\/[^']+)'/gm)].map((m) => m[1]);
+    assert(loaded.length >= 4 && loaded.every((f) => watched.includes(`'${f}'`)), 'server: the stale-code check watches every module server.mjs imports', `imports ${loaded.join(', ')} · watched ${watched}`);
     assert(bg.includes('const errText') && bg.includes('errText(e)') && bg.includes("Cannot access a chrome-extension"), 'ext: CDP protocol-error envelopes unwrap to their message; cross-extension tabs get a named error');
     assert(bg.includes("world: 'ISOLATED'") && bg.includes('__bridgeHumanActed'), 'ext: the human-acted flag lives in the ISOLATED world (page JS cannot flip it)');
     assert(serverSrc.includes("msg.type === 'wait' && msg.human"), 'server: wait --human rides the long-wait path past the 70s cap');

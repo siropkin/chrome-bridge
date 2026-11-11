@@ -187,7 +187,7 @@ function newestMtime(rel) {
 }
 function serverCodeMtime() {
   let m = 0;
-  for (const f of ['./server.mjs', './diagnostics.mjs', './drift.mjs']) {
+  for (const f of ['./server.mjs', './diagnostics.mjs', './drift.mjs', './localauth.mjs', './nativehost.mjs']) {
     try {
       m = Math.max(m, fs.statSync(new URL(f, import.meta.url)).mtimeMs);
     } catch {}
