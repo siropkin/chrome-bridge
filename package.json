@@ -1,6 +1,6 @@
 {
   "name": "chrome-bridge",
-  "version": "1.34.9",
+  "version": "1.34.10",
   "description": "Open-source browser automation for shell-capable AI agents. Uses existing Chrome tabs and a local Node.js server.",
   "type": "module",
   "private": true,

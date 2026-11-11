@@ -649,7 +649,7 @@ addLink({
 
 function cloudOpen(link, s) {
   const version = chrome.runtime.getManifest().version;
-  link.hubName = ''; // this connection's hub sends its own (arm/name), or none (an older hub)
+  link.hubName = ''; // until this connection's hub sends its own (arm/name)
   s.send(JSON.stringify({ jsonrpc: '2.0', method: 'arm/hello', params: {
     kind: 'chrome', name: PROFILE_NAME, version, selector: 'profile',
     offlineHint: `Ask the user to open Chrome (the profile chrome-bridge calls "${PROFILE_NAME}") and check that Cloud AI apps is on in the chrome-bridge popup's ⚙ Settings`,
@@ -763,14 +763,7 @@ function cloudIo(link) {
     async resolveFile(token) {
       if (/^data:/i.test(token)) return cloudDataFile(token);
       if (!/^https?:\/\//i.test(token)) throw new Error(`${token} is not a URL. ${CLOUD_FILE_HELP}`);
-      let file;
-      try {
-        file = await cloudRequest(link, 'arm/download', { url: token });
-      } catch (err) {
-        const m = errMsg(err);
-        if (/^Method not found/.test(m)) throw new Error("this Cloud Bridge can't download files for uploads yet (an older hub) — send the file as base64 instead");
-        throw new Error(m);
-      }
+      const file = await cloudRequest(link, 'arm/download', { url: token });
       if (!file || typeof file.data !== 'string' || typeof file.name !== 'string') throw new Error('Cloud Bridge sent back no file for ' + token);
       if (file.data.length * 0.75 > CLOUD_UPLOAD_MAX) throw new Error(tooBig(file.data.length * 0.75));
       return { name: file.name, mimeType: typeof file.mimeType === 'string' ? file.mimeType : 'application/octet-stream', data: file.data };
@@ -788,9 +781,7 @@ async function cloudKeep(link, path, mimeType, body, detail) {
   try {
     file = await cloudRequest(link, 'arm/file', { name, mimeType, ...body });
   } catch (err) {
-    const m = errMsg(err);
-    if (/^Method not found/.test(m)) throw new Error(`this Cloud Bridge can't keep files yet (an older hub), so ${name} wasn't saved — run the command without --out/--har: the result comes back here`);
-    throw new Error(`${name} wasn't saved: ${m}`);
+    throw new Error(`${name} wasn't saved: ${errMsg(err)}`);
   }
   if (!file || typeof file.url !== 'string') throw new Error(`Cloud Bridge sent back no link for ${name}`);
   const kb = Math.max(1, Math.round((Number(file.size) || 0) / 1024));

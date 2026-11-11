@@ -1691,7 +1691,7 @@ test('cloud: upload takes data: URLs, and public URLs downloaded by the hub — 
       'https://files.test/docs/report%201.pdf': { result: { name: 'report 1.pdf', mimeType: 'application/pdf', data: 'JVBERg==' } },
       'https://files.test/huge': { result: { name: 'h', mimeType: 'x', data: 'A'.repeat(15 * 1048576) } },
       'http://localhost./x': { error: { code: -32000, message: 'localhost. is a private-network address; Cloud Bridge only downloads upload files from public addresses — send the file as base64 instead' } },
-      'https://old.hub/x': { error: { code: -32601, message: 'Method not found: arm/download' } },
+      'https://gone.test/x': { error: { code: -32000, message: 'https://gone.test/x answered 404 — check the link, or send the file as base64 instead' } },
     };
     if (m.params.url === 'https://never.answers/x') return;
     setImmediate(() => ws.recv({ jsonrpc: '2.0', id: m.id, ...answers[m.params.url] }));
@@ -1711,7 +1711,7 @@ test('cloud: upload takes data: URLs, and public URLs downloaded by the hub — 
     ['upload github @e1 file:///etc/passwd', /is not a URL/],
     ['upload github @e1 http://localhost./x', /^localhost\. is a private-network address/],
     ['upload github @e1 https://files.test/huge', /11\.3 MB — Cloud Bridge uploads take up to 10 MB/],
-    ['upload github @e1 https://old.hub/x', /^this Cloud Bridge can't download files for uploads yet \(an older hub\) — send the file as base64 instead$/],
+    ['upload github @e1 https://gone.test/x', /^https:\/\/gone\.test\/x answered 404 — check the link, or send the file as base64 instead$/],
     ['upload github @e1 data:text/plain;base64,a-b_#x', /base64 for x has characters/],
     ['upload github @e1 data:text/plain,%E0%A4%A#x', /broken %-escape/],
   ];
@@ -1748,7 +1748,7 @@ test('cloud: fetch --out and net --har hand the file to the hub and return its l
     if (m?.method !== 'arm/file') return;
     kept.push(plain(m.params));
     const size = m.params.text !== undefined ? m.params.text.length : Math.floor(m.params.data.length * 0.75);
-    const answer = hub === 'old' ? { error: { code: -32601, message: 'Method not found: arm/file' } } : { result: { url: `https://hub.test/files/${'a'.repeat(32)}/${encodeURIComponent(m.params.name)}`, name: m.params.name, mimeType: m.params.mimeType, size, expiresAt: '2026-11-10T00:00:00.000Z' } };
+    const answer = hub === 'full' ? { error: { code: -32000, message: 'Cloud Bridge keeps no more files today — run the command without --out/--har: the result comes back here' } } : { result: { url: `https://hub.test/files/${'a'.repeat(32)}/${encodeURIComponent(m.params.name)}`, name: m.params.name, mimeType: m.params.mimeType, size, expiresAt: '2026-11-10T00:00:00.000Z' } };
     setImmediate(() => ws.recv({ jsonrpc: '2.0', id: m.id, ...answer }));
   };
   const json = await call('chrome', { command: 'fetch github https://github.com/x.json --out /tmp/out/data.json' });
@@ -1769,11 +1769,11 @@ test('cloud: fetch --out and net --har hand the file to the hub and return its l
   assert.equal(kept[2].name, 'capture.har');
   assert.deepEqual(JSON.parse(kept[2].text).log.entries[0].request.headers, [{ name: 'Cookie', value: 's=1' }]);
   assert.equal(net.content[2].type, 'resource_link');
-  hub = 'old';
-  const old = await call('chrome', { command: 'net github --har capture.har' });
-  assert.equal(old.isError, true);
-  assert.equal(old.content[0].text, 'GET 200 https://github.com/api', 'the capture still comes back');
-  assert.equal(old.content[1].text, "this Cloud Bridge can't keep files yet (an older hub), so capture.har wasn't saved — run the command without --out/--har: the result comes back here");
+  hub = 'full';
+  const full = await call('chrome', { command: 'net github --har capture.har' });
+  assert.equal(full.isError, true);
+  assert.equal(full.content[0].text, 'GET 200 https://github.com/api', 'the capture still comes back');
+  assert.equal(full.content[1].text, "capture.har wasn't saved: Cloud Bridge keeps no more files today — run the command without --out/--har: the result comes back here");
 });
 
 test('cloud: every command carries a dispatch deadline like the local server\'s (--diff actions refused without one, found live)', async () => {

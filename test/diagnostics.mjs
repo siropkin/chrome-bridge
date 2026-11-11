@@ -457,7 +457,7 @@ test('popup shows one card per state: setup when the bridge is down, the tab ID 
   assert.equal(up.element('profile').hidden, false);
 });
 
-test('popup update banner: version drift shows it with a copyable update prompt; in step or an old server stays quiet', async () => {
+test('popup update banner: version drift shows it with a copyable update prompt; in step or a server without a version stays quiet', async () => {
   const state = async () => ({ count: 0, active: false, connected: true, profile: 'poplar' });
   const health = (extra) => ({ ok: true, extension: true, repo: '/home/u/chrome-bridge/', ...extra });
   let copied = '';
