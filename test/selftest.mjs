@@ -1478,6 +1478,8 @@ try {
   fs.writeFileSync(scratchFile('chrome-bridge-selftest-upload.txt'), 'x');
   const chooserRun = await cli('upload', 'example.com', '@e5', '--chooser', scratchFile('chrome-bridge-selftest-upload.txt'));
   const waitJsRun = await cli('wait', 'example.com', '--js', "document.title === 'a b'", '--world', 'main');
+  // snap --no-fold had no mirror either: a replayed snap folded the lists the recorded one showed whole.
+  const noFoldRun = await cli('snap', 'example.com', '--no-fold');
   const replayPath = scratchFile('chrome-bridge-selftest-replay.batch');
   const replayExport = await cli('history', '--batch', replayPath);
   const replayScript = fs.readFileSync(replayPath, 'utf8');
@@ -1506,6 +1508,7 @@ try {
     'history --batch replays wait --js with --world (flag mirror)',
     waitJsRun.stderr + '\n' + replayScript
   );
+  assert(noFoldRun.status === 0 && replayScript.includes('snap example.com --no-fold'), 'history --batch replays snap --no-fold (flag mirror)', noFoldRun.stderr + '\n' + replayScript);
   fs.unlinkSync(replayPath);
   fs.unlinkSync(scratchFile('chrome-bridge-selftest-upload.txt'));
 

@@ -551,7 +551,7 @@ const CLI_LINES = {
   swlogs: () => 'swlogs',
   extreload: () => 'extreload',
   snap: (m) =>
-    `snap ${shellq(m.urlMatch)}${m.scope ? ' ' + shellq(m.scope) : ''}${m.href ? ' --href' : ''}${m.skeleton ? ' --skeleton' : ''}${m.find ? ' --find ' + shellq(m.find) : ''}${D(m)}`,
+    `snap ${shellq(m.urlMatch)}${m.scope ? ' ' + shellq(m.scope) : ''}${m.href ? ' --href' : ''}${m.skeleton ? ' --skeleton' : ''}${m.nofold ? ' --no-fold' : ''}${m.find ? ' --find ' + shellq(m.find) : ''}${D(m)}`,
   click: (m) => `click ${shellq(m.urlMatch)} ${shellq(m.target)}${m.dbl ? ' --dbl' : ''}${m.trusted ? ' --trusted' : ''}${D(m)}`,
   drag: (m) => `drag ${shellq(m.urlMatch)} ${shellq(m.from)} ${shellq(m.to)}${m.trusted ? ' --trusted' : ''}${D(m)}`,
   // A prompt answer can be a password, one-time code, or recovery token. It
