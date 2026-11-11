@@ -2750,7 +2750,7 @@ chrome.debugger.onEvent.addListener((src, method, params) => {
     else if (i.type && i.type !== 'other') init = ' ⟵ ' + i.type;
     // req/wallTime/initiator ride the entry for the HAR export (--har) — the
     // payloads are already in this event, keeping them costs nothing.
-    c.set(params.requestId, { t: Date.now(), wall: params.wallTime, method: params.request.method, url: params.request.url, type: params.type, init, req: params.request, initObj: params.initiator });
+    c.set(params.requestId, { t: Date.now(), wall: params.wallTime, method: params.request.method, url: params.request.url, type: params.type, frame: params.frameId, init, req: params.request, initObj: params.initiator });
   } else if (method === 'Network.responseReceived') {
     const r = c.get(params.requestId);
     if (r) { r.status = params.response.status; r.mime = params.response.mimeType; r.res = params.response; }
@@ -2801,6 +2801,10 @@ async function captureNetwork(tabId, duration, filter, bodyFilter, har, ws, publ
       }),
       c.dead,
     ]);
+    // A cloud capture withholds everything when the TAB went off-limits; an
+    // iframe there (a blocked site's reCAPTCHA or video embed) only loses its
+    // own requests. Unknown main frame: every document load counts.
+    if (publicOnly) c.mainFrame = (await Promise.race([chrome.debugger.sendCommand({ tabId }, 'Page.getFrameTree'), c.dead]).catch(() => null))?.frameTree?.frame?.id || null;
     await Promise.race([new Promise((r) => setTimeout(r, Math.min(duration || 4000, 30000))), new Promise((r) => (c.wake = r))]); // onDetach wakes us — a cut-short capture reports now, not after the full --dur
     if ((bodyFilter || har) && !c.detached)
       // Await body fetches while still attached — they fail after detach.
@@ -2826,7 +2830,7 @@ async function captureNetwork(tabId, duration, filter, bodyFilter, har, ws, publ
   }
   if (publicOnly) {
     // The page itself went there during the window: everything it loaded is its.
-    const landed = [...c.values()].find((r) => r.type === 'Document' && offLimitsUrl(r.url));
+    const landed = [...c.values()].find((r) => r.type === 'Document' && (!c.mainFrame || r.frame === c.mainFrame) && offLimitsUrl(r.url));
     const now = await chrome.tabs.get(tabId).catch(() => null);
     const where = (landed && offLimitsUrl(landed.url)) || (now && tabOffLimits(now));
     if (where) throw offLimitsError(`the tab went to ${where} during the capture, which`, 'nothing from the capture comes back', where);

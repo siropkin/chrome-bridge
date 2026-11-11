@@ -300,7 +300,7 @@ test('cloud policy (D3): arm/policy sets the rules, the blocked websites and the
   assert.equal(context.blockedSite('www.chase.com'), null, 'a malformed list blocks nothing (the hub sends the whole policy every time)');
 });
 
-function netHarness({ tabUrl = 'https://example.com/' } = {}) {
+function netHarness({ tabUrl = 'https://example.com/', mainFrame, blocked = [] } = {}) {
   const netSource = source.slice(source.indexOf('// --- Network capture (CDP)'), source.indexOf('// --- Page-side scripts'));
   const offSource = source.slice(source.indexOf('function privateHost('), source.indexOf('// --- end off-limits'));
   let listener;
@@ -309,14 +309,14 @@ function netHarness({ tabUrl = 'https://example.com/' } = {}) {
     URL, setTimeout,
     attachDbg: async () => {}, detachDbg: async () => {},
     chrome: {
-      debugger: { onEvent: { addListener: (fn) => (listener = fn) }, sendCommand: async (_src, method, params) => { if (method === 'Network.getResponseBody') { bodies.push(params.requestId); return { body: 'BODY-' + params.requestId, base64Encoded: false }; } return {}; } },
+      debugger: { onEvent: { addListener: (fn) => (listener = fn) }, sendCommand: async (_src, method, params) => { if (method === 'Network.getResponseBody') { bodies.push(params.requestId); return { body: 'BODY-' + params.requestId, base64Encoded: false }; } if (method === 'Page.getFrameTree' && mainFrame) return { frameTree: { frame: { id: mainFrame } } }; return {}; } },
       tabs: { get: async () => ({ id: 7, url: tabUrl }) },
       runtime: { getManifest: () => ({ version: 'test' }) },
     },
   });
-  vm.runInContext(offSource + '\n' + netSource, context);
-  const request = (id, url, type = 'XHR') => {
-    listener({ tabId: 7 }, 'Network.requestWillBeSent', { requestId: id, wallTime: 1, type, request: { url, method: 'GET', headers: {} }, initiator: { type: 'other' } });
+  vm.runInContext(offSource + '\n' + netSource + '\ncloudBlocked = ' + JSON.stringify(blocked) + ';', context);
+  const request = (id, url, type = 'XHR', frameId = mainFrame) => {
+    listener({ tabId: 7 }, 'Network.requestWillBeSent', { requestId: id, wallTime: 1, type, frameId, request: { url, method: 'GET', headers: {} }, initiator: { type: 'other' } });
     listener({ tabId: 7 }, 'Network.responseReceived', { requestId: id, response: { status: 200, mimeType: 'application/json', headers: {} } });
     listener({ tabId: 7 }, 'Network.loadingFinished', { requestId: id, encodedDataLength: 10 });
   };
@@ -329,6 +329,30 @@ function netHarness({ tabUrl = 'https://example.com/' } = {}) {
   };
   return { capture, bodies };
 }
+
+test('cloud net with blocked websites: an iframe there loses only its own requests; the tab itself going there withholds the capture (D3 review: reCAPTCHA/YouTube embeds failed every capture)', async () => {
+  const embed = (request) => {
+    request('1', 'https://example.com/api/items');
+    request('2', 'https://www.google.com/recaptcha/api2/anchor', 'Document', 'child-frame');
+    request('3', 'https://www.google.com/recaptcha/api2/reload');
+  };
+  {
+    const { capture, bodies } = netHarness({ mainFrame: 'main', blocked: ['google.com'] });
+    const out = await capture(true, embed);
+    assert.match(out.lines, /GET 200 \/api\/items/);
+    assert.doesNotMatch(out.lines, /recaptcha/);
+    assert.deepEqual(bodies, ['1'], 'no body is read from the blocked site');
+  }
+  {
+    const { capture } = netHarness({ mainFrame: 'main', blocked: ['google.com'] });
+    await assert.rejects(capture(true, (request) => request('9', 'https://accounts.google.com/signin', 'Document', 'main')), /^Error: the tab went to accounts\.google\.com during the capture, which is a website the user blocked for Cloud AI apps in their Cloud Bridge settings; nothing from the capture comes back\./);
+  }
+  {
+    // The main frame unknown: every document load counts, as before.
+    const { capture } = netHarness({ blocked: ['google.com'] });
+    await assert.rejects(capture(true, embed), /the tab went to www\.google\.com during the capture/);
+  }
+});
 
 test('cloud net: requests to localhost/LAN are left out, bodies never fetched, and a page that went there withholds the capture (review)', async () => {
   const lan = (request) => {
