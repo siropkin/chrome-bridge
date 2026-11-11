@@ -988,6 +988,12 @@ async function cloudCall(link, name, args, report) {
     if (!lines.length) return cloudText('chrome_batch needs lines, e.g. ["tabs", "snap <match>"].', true);
     const content = [];
     for (const [i, line] of lines.entries()) {
+      // The hub connection this call came on dropped: the hub has already told
+      // the AI app the call failed, so a later line would act with nobody told.
+      if (report.socket && report.socket.readyState !== WebSocket.OPEN) {
+        content.push({ type: 'text', text: `stopped here: Cloud Bridge disconnected, so the ${lines.length - i} line(s) from here did not run` });
+        return { content, isError: true };
+      }
       const r = await cloudLine(link, line, report);
       content.push({ type: 'text', text: '$ ' + line }, ...r.content);
       if (r.isError) {

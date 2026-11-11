@@ -2236,6 +2236,18 @@ test('cloud: chrome_batch runs in order and stops at the first failure', async (
   assert.match(text(r), /^\$ tabs\nok\n\$ start\nstart manages .*\nstopped here: the 1 line\(s\) after it did not run$/s);
 });
 
+test('cloud: a chrome_batch stops where its hub connection dropped — the AI app was already told the call failed, so later lines must not act unseen', { timeout: 10_000 }, async () => {
+  let ws;
+  const h = await cloudArm({ handle: (msg) => { if (msg.type === 'tabs') ws.drop(); return 'ok'; } });
+  ws = h.ws;
+  await ws.recv({ jsonrpc: '2.0', id: 'b1', method: 'tools/call', params: { name: 'chrome_batch', arguments: { lines: ['tabs', 'click github @e1', 'fill github @e2 -- x'] } } });
+  await h.flush();
+  assert.deepEqual(h.handled.map((m) => m.type), ['tabs'], 'nothing after the drop ran');
+  const reply = ws.sent.find((m) => m.id === 'b1');
+  assert.equal(reply.result.isError, true);
+  assert.match(h.text(reply.result), /\nstopped here: Cloud Bridge disconnected, so the 2 line\(s\) from here did not run$/);
+});
+
 test('cloud: a failing command, an empty snap and a thrown handle come back as tool errors', async () => {
   const { call, text } = await cloudArm({ handle: (msg) => { if (msg.type === 'click') throw new Error('no tab matching "x"'); return ''; } });
   const failed = await call('chrome', { command: 'click x @e1' });
