@@ -1733,7 +1733,12 @@ test('cloud hello: the registry lists every browser command in people\'s words, 
     vm.runInContext(commandsSource, c);
     return c.BridgeCommands;
   })();
-  assert.deepEqual(registry.map((e) => e.name), [...C.REGISTRY.filter((e) => e.scope === 'browser').map((e) => e.name)], 'browser commands only, in registry order');
+  const browser = [...C.REGISTRY.filter((e) => e.scope === 'browser')];
+  assert.deepEqual([...registry.map((e) => e.name)].sort(), browser.map((e) => e.name).sort(), 'browser commands only');
+  // The page shows groups in the order they come: the registry's group order, not
+  // where a group first appears ("Housekeeping" came second, found live on the hub).
+  assert.deepEqual([...new Set(registry.map((e) => e.group))], [...C.GROUPS.filter((g) => browser.some((e) => e.group === g)).map((g) => C.GROUP_TITLES[g])]);
+  for (const g of C.GROUPS) assert.deepEqual(registry.filter((e) => e.group === C.GROUP_TITLES[g]).map((e) => e.name), browser.filter((e) => e.group === g).map((e) => e.name), `${g}: registry order within a group`);
   assert.ok(!registry.some((e) => ['start', 'update', 'extreload', 'history'].includes(e.name)), 'local-only commands stay off the page');
   for (const e of registry) {
     assert.ok(e.title && e.title.length <= 60 && !/\b(eval|snap|CDP|DOM|a11y|@ref)\b/.test(e.title), `${e.name}: a plain title (${e.title})`);

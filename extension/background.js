@@ -687,10 +687,12 @@ function cloudUnpaired(reason) {
 // list follows a settings change at once. Calls are still refused here.
 const CLOUD_TOOLS = () => globalThis.BridgeCommands.TOOLS.map(({ command, ...t }) => t);
 // Every command a cloud link may send, in people's words, with the typed tools
-// that run it: the hub's settings page lists these per Chrome profile.
+// that run it: the hub's settings page lists these per Chrome profile, grouped
+// in the order they come — so group by group, in GROUPS order.
 const CLOUD_REGISTRY = () => {
   const C = globalThis.BridgeCommands;
-  return C.REGISTRY.filter((c) => c.scope === 'browser').map((c) => ({
+  const browser = C.REGISTRY.filter((c) => c.scope === 'browser');
+  return C.GROUPS.flatMap((g) => browser.filter((c) => c.group === g)).map((c) => ({
     name: c.name, group: C.GROUP_TITLES[c.group], title: c.title, tools: C.TOOLS.filter((t) => t.command === c.name).map((t) => t.name),
   }));
 };
