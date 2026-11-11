@@ -1867,12 +1867,17 @@ test('cloud: fetch with no matching tab rides a scratch tab on the target origin
   const r = await call('chrome', { command: 'fetch api.example.com https://api.example.com/v1' });
   assert.deepEqual(handled.map((m) => [m.type, m.urlMatch ?? m.url]), [['fetch', 'api.example.com'], ['open', 'https://api.example.com/v1'], ['fetch', 'id:5'], ['close', 'id:5']]);
   assert.equal(text(r), 'no tab matching "api.example.com" — opened a scratch tab on api.example.com for this fetch\n200 application/json\n{"a":1}');
-  assert.deepEqual(plain(r._meta), { 'cloud-bridge/activity': { command: 'fetch', site: 'api.example.com', line: 'fetch api.example.com https://api.example.com/v1' } }, 'the site is what it fetched, the line the one the AI app sent');
+  assert.deepEqual(plain(r._meta), { 'cloud-bridge/activity': { command: 'fetch', site: 'api.example.com', line: 'fetch api.example.com https://api.example.com/v1', preview: text(r) } }, 'the site is what it fetched, the line the one the AI app sent, the preview what it answered');
 });
 
 // The hub's Activity page (D2b): each result says what ran, where, and its
 // replay line — the history --batch form, so nothing typed reaches the hub's page.
-const reported = (r) => plain(r._meta?.['cloud-bridge/activity'] ?? null);
+const meta = (r) => plain(r._meta?.['cloud-bridge/activity'] ?? null);
+// The preview has its own test below.
+const reported = (r) => {
+  const { preview, ...rest } = meta(r) ?? {};
+  return meta(r) && rest;
+};
 test('cloud activity: each result reports the command word, the site it acted on and its redacted replay line (D2b)', async () => {
   const at = { 'github.com': 'https://GitHub.com/pulls?q=is%3Aopen', 'local.app': 'http://127.0.0.1:8787/app?code=gh-1:abc', 'shop.test': 'https://shop.test:8443/cart', blank: 'about:blank', blob: 'blob:https://example.com/0f1e', settings: 'chrome://settings/' };
   const handle = (msg) => {
@@ -1931,6 +1936,34 @@ test('cloud activity: wait --js refused under eval\'s Off rule reports a failed 
   assert.deepEqual(reported(await call('chrome', { command: 'wait a.test --js "window.ok"' })), { command: 'wait', line: '# failed · wait a.test --js window.ok' });
   assert.deepEqual(reported(await call('chrome', { command: 'click a.test @e1' })), { command: 'click' });
   assert.equal(handled.length, 0, 'nothing ran');
+});
+
+test('cloud activity: the preview is what the step answered, never a typed value — a batch echoes each step by its replay line (D2b2)', async () => {
+  const handle = (msg) => {
+    if (msg.urlMatch) msg._tabAt = { url: `https://${msg.urlMatch}/` };
+    // A --diff verdict shows the field's new value: the preview must not carry it.
+    if (msg.type === 'fill' || msg.type === 'type' || msg.type === 'paste') return `changed: textbox value="${msg.value}"`;
+    if (msg.type === 'dialog') return `answered "${msg.text}"`;
+    if (msg.target === '@e9') throw new Error('no element @e9 — snap again');
+    if (msg.type === 'snap') return '- heading "Inbox" [level=1]';
+    return 'ok';
+  };
+  const { call } = await cloudArm({ handle });
+  assert.equal(meta(await call('chrome', { command: 'snap a.test' })).preview, '- heading "Inbox" [level=1]');
+  assert.equal(meta(await call('chrome', { command: 'click a.test @e9' })).preview, 'no element @e9 — snap again', 'a failed step keeps why');
+  for (const command of ['fill a.test @e5 -- hunter2', 'type a.test @e5 -- hunter2', 'paste a.test @e5 -- hunter2', 'dialog a.test accept --text hunter2']) {
+    const r = await call('chrome', { command });
+    assert.match(JSON.stringify(r.content), /hunter2/, 'the AI app still gets its answer');
+    assert.equal(meta(r).preview, "(its answer isn't kept: it can show what was typed)", command);
+  }
+  const batch = await call('chrome_batch', { lines: ['snap a.test', 'fill a.test @e1 -- hunter2', 'click a.test @e9', 'snap a.test'] });
+  assert.match(JSON.stringify(batch.content), /\$ fill a\.test @e1 -- hunter2/, "the AI app's own echo has the value");
+  assert.equal(meta(batch).preview, '$ snap a.test\n- heading "Inbox" [level=1]\n# secret · fill a.test @e1 -- "***"\n(its answer isn\'t kept: it can show what was typed)\n# failed · click a.test @e9\nno element @e9 — snap again');
+  const big = await cloudArm({ handle: () => 'z'.repeat(5000) });
+  const long = meta(await big.call('chrome', { command: 'snap a.test' })).preview;
+  assert.equal(long.length, 2000);
+  assert.ok(long.endsWith('…'));
+  assert.equal(meta(await call('chrome', { command: 'fill a.test @e5' })).preview, undefined, 'refused before it ran: nothing');
 });
 
 test('cloud: pong and unreadable frames are ignored without dropping the link', async () => {

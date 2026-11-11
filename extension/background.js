@@ -854,7 +854,7 @@ async function cloudMessage(link, s, data) {
   if (msg.method === 'tools/list') return reply({ result: { tools: CLOUD_TOOLS(link) } });
   if (msg.method === 'tools/call') {
     const { name, arguments: args } = msg.params || {};
-    const report = { command: null, site: null, lines: [], batch: false };
+    const report = { command: null, site: null, steps: [], batch: false };
     let result;
     try {
       result = await cloudCall(link, name, args && typeof args === 'object' ? args : {}, report);
@@ -869,20 +869,30 @@ async function cloudMessage(link, s, data) {
 }
 
 // What the hub's Activity page shows for a call, in the result's _meta (the hub
-// never forwards _meta to the AI app): the command word, the site it acted on
-// and its replay line — commands.js replayLine, the history --batch form, so
+// never forwards _meta to the AI app): the command word, the site it acted on,
+// its replay line — commands.js replayLine, the history --batch form, so
 // typed values, dialog answers, upload files and header values are already
-// "***" and a step a replay must skip is a comment. The hub keeps the line only
-// when the user opted in. A batch reports "batch", its lines in order and the
-// last site it acted on; lines are capped so a long eval can't bloat every frame.
+// "***" and a step a replay must skip is a comment — and a preview of what it
+// answered. The hub keeps line and preview only when the user opted in. A batch
+// reports "batch", its lines in order, the last site it acted on, and a preview
+// that echoes each step by its replay line (the AI app's own "$ <line>" echo
+// carries the typed values). A step with a value to hide keeps no output: a
+// --diff verdict can show the value it typed. Capped so a long eval or a big
+// fetch can't bloat every frame.
 const CLOUD_ACTIVITY = 'cloud-bridge/activity';
 const CLOUD_LINE_MAX = 2000;
 const CLOUD_LINES_MAX = 8000;
+const CLOUD_PREVIEW_MAX = 2000;
 function cloudReplay(name, msg, ok) {
   const line = globalThis.BridgeCommands.replayLine(msg, { ok });
   const failed = ok ? '' : 'failed · ';
   if (line == null) return `# ${failed}${name}: its code spans several lines, which one line of a script can't hold`;
   return line.length > CLOUD_LINE_MAX ? `# ${failed}${name}: ${line.length} characters, too long to keep` : line;
+}
+function cloudStep(name, msg, result) {
+  const secret = /^# secret · /.test(globalThis.BridgeCommands.replayLine(msg, { ok: true }) ?? '');
+  const text = secret ? "(its answer isn't kept: it can show what was typed)" : (result.content || []).filter((c) => c.type === 'text').map((c) => c.text).join('\n');
+  return { line: cloudReplay(name, msg, !result.isError), text };
 }
 function cloudActivity(report) {
   const out = {};
@@ -891,15 +901,17 @@ function cloudActivity(report) {
   if (report.site) out.site = report.site;
   const kept = [];
   let size = 0;
-  for (const [i, line] of report.lines.entries()) {
+  for (const [i, { line }] of report.steps.entries()) {
     if (size + line.length + 1 > CLOUD_LINES_MAX) {
-      kept.push(`# … ${report.lines.length - i} more line(s), too long to keep`);
+      kept.push(`# … ${report.steps.length - i} more line(s), too long to keep`);
       break;
     }
     kept.push(line);
     size += line.length + 1;
   }
   if (kept.length) out.line = kept.join('\n');
+  const preview = report.batch ? report.steps.map((s) => `${s.line.startsWith('#') ? s.line : '$ ' + s.line}${s.text ? '\n' + s.text : ''}`).join('\n') : (report.steps[0]?.text ?? '');
+  if (preview) out.preview = preview.length > CLOUD_PREVIEW_MAX ? preview.slice(0, CLOUD_PREVIEW_MAX - 1) + '…' : preview;
   return Object.keys(out).length ? out : null;
 }
 // The site (host) a command acted on: the address it opened, went to or
@@ -993,15 +1005,16 @@ async function cloudArgv(link, argv, report) {
     // wait --js runs page code like eval, so eval's rule covers it too.
     const refused = parsed.name === 'wait' && parsed.msg.js ? policyRefusal(link, 'eval') : null;
     if (refused) {
-      report.lines.push(cloudReplay(parsed.name, parsed.msg, false));
-      return cloudText(refused, true);
+      const r = cloudText(refused, true);
+      report.steps.push(cloudStep(parsed.name, parsed.msg, r));
+      return r;
     }
   } catch (err) {
     return cloudText(cloudWords(errMsg(err)), true);
   }
   const sent = { ...parsed.msg, deadlineAt: cloudDeadline(parsed.msg) };
   const result = parsed.name === 'fetch' ? await cloudFetch(link, parsed) : await cloudRun(link, parsed, sent);
-  report.lines.push(cloudReplay(parsed.name, parsed.msg, !result.isError));
+  report.steps.push(cloudStep(parsed.name, parsed.msg, result));
   report.site = (await cloudSite(parsed.name === 'fetch' ? parsed.msg : sent)) || report.site;
   return result;
 }
