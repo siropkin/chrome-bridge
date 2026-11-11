@@ -633,19 +633,22 @@ s_edges() {
   assert_grep "covered click on CSP page leads with the message" "$OUT/09.log" 'ERROR: cdp: Uncaught.*click covered by'
   assert_ngrep "CDP error no longer duplicates its own message" "$OUT/09.log" 'element first Error: click covered'
   "${CLI[@]}" close csp.html --profile "$P1" >/dev/null 2>&1
-  # same-origin iframe: in-tree, drivable in place
+  # same-origin iframe: in-tree, drivable in place. Matched as fixtures/iframe.html
+  # in profile 1: every Storybook dev server has an iframe.html tab, and a bare
+  # "iframe.html" read as an iframe regression when one was open (2026-11-11).
+  local ifr=fixtures/iframe.html
   "${CLI[@]}" open "$HTTP/iframe.html" --profile "$P1" >/dev/null
-  "${CLI[@]}" snap iframe.html >"$OUT/09-iframe.log" 2>/dev/null
+  "${CLI[@]}" snap "$ifr" --profile "$P1" >"$OUT/09-iframe.log" 2>&1
   assert_grep "same-origin iframe children in tree" "$OUT/09-iframe.log" 'button "Child button"'
   local kref
   kref=$(grep -m1 'Child button' "$OUT/09-iframe.log" | grep -o '@e[0-9]*' | tr -d '@')
-  "${CLI[@]}" click iframe.html "@$kref" --diff >>"$OUT/09-iframe.log" 2>&1
+  "${CLI[@]}" click "$ifr" "@$kref" --diff --profile "$P1" >>"$OUT/09-iframe.log" 2>&1
   assert_grep "iframe child click by ref" "$OUT/09-iframe.log" 'succeeded · clicked'
-  "${CLI[@]}" eval iframe.html "document.getElementById('parent-out').textContent" >>"$OUT/09-iframe.log" 2>&1
+  "${CLI[@]}" eval "$ifr" "document.getElementById('parent-out').textContent" --profile "$P1" >>"$OUT/09-iframe.log" 2>&1
   assert_grep "iframe child handler ran in parent" "$OUT/09-iframe.log" 'child button clicked'
-  "${CLI[@]}" click iframe.html '#kid-btn' --diff >>"$OUT/09-iframe.log" 2>&1
+  "${CLI[@]}" click "$ifr" '#kid-btn' --diff --profile "$P1" >>"$OUT/09-iframe.log" 2>&1
   assert_grep "iframe child click by piercing css" "$OUT/09-iframe.log" 'succeeded · clicked'
-  "${CLI[@]}" close iframe.html --profile "$P1" >/dev/null 2>&1
+  "${CLI[@]}" close "$ifr" --profile "$P1" >/dev/null 2>&1
 }
 
 # ---------------------------------------------------------------- section 11
