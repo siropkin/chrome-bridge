@@ -29,16 +29,20 @@ let PROFILE_NAME = '';
 // between two profiles is possible (20 words) but harmless — ids stay the
 // identity for --profile and /health.
 const NAME_WORDS = ['ash', 'birch', 'cedar', 'cypress', 'elm', 'fir', 'hazel', 'ironwood', 'juniper', 'larch', 'maple', 'oak', 'pine', 'poplar', 'rowan', 'spruce', 'sumac', 'walnut', 'willow', 'yew'];
+function setProfileId(id) {
+  PROFILE_ID = id;
+  // Stable pick from the id — same id always gets the same word, across SW
+  // restarts, without a second storage key.
+  PROFILE_NAME = NAME_WORDS[[...id].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7) % NAME_WORDS.length];
+}
 const idReady = chrome.storage.local
   .get('profileId')
   .then(({ profileId }) => {
-    PROFILE_ID = profileId || crypto.randomUUID();
+    setProfileId(profileId || crypto.randomUUID());
     if (!profileId) chrome.storage.local.set({ profileId: PROFILE_ID }).catch(() => {});
-    // Stable pick from the id — same id always gets the same word, across SW
-    // restarts, without a second storage key.
-    PROFILE_NAME = NAME_WORDS[[...PROFILE_ID].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7) % NAME_WORDS.length];
   })
-  .catch(() => {});
+  // Unreadable: an id for this worker's life (the server seats no id-less dial).
+  .catch(() => setProfileId(crypto.randomUUID()));
 
 // Store install or unpacked? getSelf is the one chrome.management method that
 // needs no permission. Rides the WS handshake so health/extreload can stop
@@ -178,8 +182,10 @@ addLink({
       this.url +
       '?v=' +
       chrome.runtime.getManifest().version +
-      (PROFILE_ID ? '&id=' + PROFILE_ID : '') +
-      (PROFILE_NAME ? '&name=' + PROFILE_NAME : '') +
+      '&id=' +
+      PROFILE_ID +
+      '&name=' +
+      PROFILE_NAME +
       (INSTALL_TYPE ? '&install=' + INSTALL_TYPE : '') +
       (boot ? '&boot=' + boot : '') +
       '&c=' +
@@ -1246,14 +1252,17 @@ async function cloudPollPairing() {
 // races the storage read and the seat is held with extId=null until the next
 // SW cycle (days, on a healthy server). Reconnects run after idReady settled.
 // Watchdog: a WEDGED storage read (profile corruption) must not keep the
-// bridge offline forever — connect idless (the anon seat) and say so. Only
-// when the timer WON: logging from the timer itself fired on every healthy
+// bridge offline forever — connect with an id for this worker's life (the
+// server seats no id-less dial) and say so. Only when the timer WON: logging from the timer itself fired on every healthy
 // boot too, 5s after the id had loaded — a false wedge in every swlogs.
 Promise.race([
   Promise.all([idReady, installReady, cloudReady, localReady]),
   new Promise((r) => setTimeout(() => r('wedged'), 5000)),
 ]).then((won) => {
-  if (won === 'wedged') logLine('profile-id storage read wedged (5s) — connecting without a stable id');
+  if (won === 'wedged') {
+    if (!PROFILE_ID) setProfileId(crypto.randomUUID());
+    logLine('profile-id storage read wedged (5s) — connecting with an id for this session only');
+  }
   localLoaded = true; // a wedged read keeps the default: on
   for (const link of links.values()) connect(link);
   cloudPollPairing();

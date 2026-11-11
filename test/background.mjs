@@ -1069,7 +1069,7 @@ const serverAuth = (url, key = LOCAL_KEY) => {
   const s = nonce();
   return { type: 'auth', s, p: mac(key, 'server', new URL(url).searchParams.get('c'), s) };
 };
-function linksHarness({ owners = new Map(), driven = [], idReady = Promise.resolve(), cloud, localAgents, localRead, handle, fetchImpl, tabsGet = async () => null, nativeHost } = {}) {
+function linksHarness({ profileId = 'pid', owners = new Map(), driven = [], idReady = Promise.resolve(), cloud, localAgents, localRead, handle, fetchImpl, tabsGet = async () => null, nativeHost } = {}) {
   const sockets = [];
   const logs = [];
   const timers = [];
@@ -1101,7 +1101,7 @@ function linksHarness({ owners = new Map(), driven = [], idReady = Promise.resol
   const badge = [];
   const intervals = [];
   const context = vm.createContext({
-    WS_URL: 'ws://127.0.0.1:9333/ws', BOOT_TS_P: Promise.resolve(123), PROFILE_ID: 'pid', PROFILE_NAME: 'oak', INSTALL_TYPE: 'dev',
+    WS_URL: 'ws://127.0.0.1:9333/ws', BOOT_TS_P: Promise.resolve(123), PROFILE_ID: profileId, PROFILE_NAME: profileId ? 'oak' : '', INSTALL_TYPE: 'dev',
     idReady, installReady: Promise.resolve(), WebSocket: FakeWS, crypto: { randomUUID: () => 'req-1', getRandomValues: (a) => webcrypto.getRandomValues(a), subtle: webcrypto.subtle }, atob,
     setTimeout: (fn, ms) => timers.push({ fn, ms }), clearTimeout() {},
     setInterval: (fn, ms) => intervals.push({ fn, ms }) && intervals.length, clearInterval() {},
@@ -1120,6 +1120,7 @@ function linksHarness({ owners = new Map(), driven = [], idReady = Promise.resol
     pageErrorsFor: async () => null, currentActivity: () => false,
   });
   vm.runInContext(commandsSource, context); // the worker's importScripts('commands.js')
+  vm.runInContext(source.slice(source.indexOf('const NAME_WORDS'), source.indexOf('const idReady')), context); // setProfileId
   // runCommand withholds replies from cloud tabs now on localhost/LAN (the off-limits helpers).
   vm.runInContext(source.slice(source.indexOf('function privateHost('), source.indexOf('// --- end off-limits')), context);
   vm.runInContext(linksSource + '\nthis.links = links; this.linkOpen = linkOpen; this.cloudState = cloudState; this.cloudPair = cloudPair; this.cloudSignOut = cloudSignOut; this.cloudHeartbeatCheck = cloudHeartbeatCheck; this.connect = connect; this.setLocal = (on) => { localOn = on; }; this.localAuthState = () => localAuth;', context);
@@ -1221,13 +1222,17 @@ test('links: the boot watchdog logs a wedge only when the profile-id read lost t
   await healthy.flush();
   assert.deepEqual(healthy.logs, [], 'a healthy boot never claims a wedge (the timer used to log unconditionally)');
   assert.equal(healthy.sockets.length, 1);
-  const wedged = linksHarness({ idReady: new Promise(() => {}) });
+  const wedged = linksHarness({ profileId: '', idReady: new Promise(() => {}) });
   await wedged.flush();
   assert.equal(wedged.sockets.length, 0, 'the first dial waits for the profile id');
   wedged.fire(5000);
   await wedged.flush();
-  assert.deepEqual(wedged.logs, ['profile-id storage read wedged (5s) — connecting without a stable id']);
-  assert.equal(wedged.sockets.length, 1, 'a wedged read connects idless instead of staying offline');
+  assert.deepEqual(wedged.logs, ['profile-id storage read wedged (5s) — connecting with an id for this session only']);
+  assert.equal(wedged.sockets.length, 1, 'a wedged read connects instead of staying offline');
+  const q = new URL(wedged.sockets[0].url).searchParams;
+  assert.equal(q.get('id'), 'req-1', 'with an id for this session (crypto.randomUUID): the server seats no id-less dial');
+  assert.ok(vm.runInContext('NAME_WORDS', wedged.context).includes(q.get('name')), 'and the name that id maps to');
+
 });
 
 test('links: every link strips caller _fields, tags _link and replies on the receiving socket', async () => {
