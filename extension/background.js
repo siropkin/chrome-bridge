@@ -202,7 +202,7 @@ const LOCAL_HOST = 'com.siropkin.chrome_bridge';
 const LOCAL_KEY_RE = /^[A-Za-z0-9_-]{43}$/;
 let localKey = null;
 // What the popup shows: connecting | ok | no-key (why: not-found, forbidden,
-// failed, missing, other) | old-server | unverified.
+// failed, missing, other) | unverified.
 let localAuth = { state: 'connecting' };
 function setLocalAuth(state, why) {
   if (localAuth.state !== state || localAuth.why !== why) logLine(`local link: ${state}${why ? ' (' + why + ')' : ''}`);
@@ -257,8 +257,8 @@ async function localAuthStep(link, s, msg) {
   if (s._retryMs !== undefined || s.readyState !== WebSocket.OPEN) return; // already refused: frames still in flight change nothing
   if (s._authBusy) return localAuthFailed(link, s, 'unverified'); // an honest server waits for our proof
   s._authBusy = true;
-  // A server from before 1.34 (or anything else on the port) talks without proving itself.
-  if (msg.type !== 'auth' || typeof msg.s !== 'string' || !localKey) return localAuthFailed(link, s, localKey ? 'old-server' : 'no-key');
+  // Anything that talks before proving itself isn't this user's bridge.
+  if (msg.type !== 'auth' || typeof msg.s !== 'string' || !localKey) return localAuthFailed(link, s, localKey ? 'unverified' : 'no-key');
   const cn = new URL(s.url).searchParams.get('c');
   const key = localKey;
   if (!macEqual(msg.p, await localMac(key, 'server', cn, msg.s))) {
@@ -496,8 +496,8 @@ async function connect(link) {
   s.onopen = () => {
     if (link.rpc) cloudOpen(link, s);
     // Local: up only once the server proved itself (localAuthStep). One that
-    // says nothing in 5s predates 1.34 (or isn't ours).
-    if (link.id === 'local') s._authTimer = setTimeout(() => s._authed || localAuthFailed(link, s, 'old-server'), 5000);
+    // says nothing in 5s isn't ours.
+    if (link.id === 'local') s._authTimer = setTimeout(() => s._authed || localAuthFailed(link, s, 'unverified'), 5000);
     else linkUp(link, s);
   };
   s.onmessage = async (e) => {
@@ -2154,22 +2154,15 @@ function remapTabId(newTabId, oldTabId) {
 // is idempotent on a non-driven tab, so no entry guard needed; it also clears
 // device emulation (release = the tab is the human's again, ALL of it).
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (['diagnostics', 'bridge-state', 'release-active', 'local-toggle', 'cloud-state', 'cloud-pair', 'cloud-toggle', 'cloud-unpair'].includes(msg?.type) &&
+  if (['diagnostics', 'bridge-state', 'release-active', 'local-toggle', 'cloud-state', 'cloud-pair', 'cloud-unpair'].includes(msg?.type) &&
       (sender?.id !== chrome.runtime.id || sender.url !== chrome.runtime.getURL('popup.html') || sender.tab)) {
     sendResponse({ ok: false, error: msg.type === 'diagnostics' ? 'Logging settings are restricted to the popup.' : 'Tab controls are restricted to the popup.' });
     return;
   }
   if (msg?.type?.startsWith?.('cloud-')) {
-    const cloud = links.get('cloud');
     Promise.all([cloudReady, idReady])
       .then(async () => {
         if (msg.type === 'cloud-pair') return cloudPair(msg.hub);
-        if (msg.type === 'cloud-toggle') {
-          if (!cloudCfg.token) return { ok: false, error: 'Connect this profile first: paste your Cloud Bridge address, then Connect.', ...cloudState() };
-          await saveCloud({ enabled: !!msg.enabled, notice: '' });
-          if (msg.enabled) connect(cloud);
-          else cloud.socket?.close();
-        }
         if (msg.type === 'cloud-unpair') return cloudSignOut();
         cloudPollPairing(); // a pairing the worker forgot while it slept
         return { ok: true, ...cloudState() };

@@ -1768,8 +1768,9 @@ try {
     );
   }
 
-  // An updated checkout whose old server still runs: commands name the fix,
-  // and `start` replaces that server by itself (zero-touch update path).
+  // A server without /auth (no bridge, or code from before local
+  // authentication): commands refuse it, stop doesn't fall back to a plain
+  // /stop, and start names the port as taken instead of replacing it.
   {
     let stops = 0;
     const old = http.createServer((req, res) => {
@@ -1792,11 +1793,10 @@ try {
     const oldState = join(scratch, 'update-state');
     try {
       const cmdOld = await cliRaw(['tabs'], null, { BRIDGE_PORT: port, BRIDGE_STATE_DIR: oldState });
-      assert(cmdOld.status === 1 && cmdOld.stderr.includes('predates local authentication') && cmdOld.stderr.includes('stop && node cli.mjs start'), 'auth: a command against a pre-auth server names the restart', cmdOld.stderr);
+      assert(cmdOld.status === 1 && cmdOld.stderr.includes("couldn't prove it is this OS user's chrome-bridge server"), 'auth: a command against a server without /auth refuses it as unproven', cmdOld.stderr);
+      const stop = await cliRaw(['stop'], null, { BRIDGE_PORT: port, BRIDGE_STATE_DIR: oldState });
       const st = await cliRaw(['start'], null, { BRIDGE_PORT: port, BRIDGE_STATE_DIR: oldState });
-      assert(st.status === 0 && stops === 1 && st.stdout.includes('replacing a server that predates local authentication'), 'auth: start replaces a pre-auth server with this checkout\'s', st.stdout + st.stderr);
-      const tabs = await cliRaw(['health'], null, { BRIDGE_PORT: port, BRIDGE_STATE_DIR: oldState });
-      assert(JSON.parse(tabs.stdout).ok === true && fs.existsSync(join(oldState, 'key')), 'auth: the replacement serves health and created its key', tabs.stdout + tabs.stderr);
+      assert(stop.status === 1 && st.status === 1 && stops === 0 && st.stderr.includes(`port ${port} is taken`), 'auth: stop sends no unsigned /stop and start names the port as taken — no fallback for a server without /auth', stop.stdout + stop.stderr + st.stdout + st.stderr);
     } finally {
       old.close();
       spawnSync(process.execPath, [`${ROOT}/cli.mjs`, 'stop'], { env: { ...env, BRIDGE_PORT: port, BRIDGE_STATE_DIR: oldState } });
@@ -2122,9 +2122,9 @@ try {
     ext4back.socket.destroy();
     await new Promise((r) => setTimeout(r, 100));
 
-    // an extension without probe support (pre-1.5.0) must fail routing loudly —
-    // treating its ok:false probe reply as a dead seat silently bypassed the
-    // ambiguity refusal and reported real tabs as nonexistent
+    // a probe that fails (ok:false) must fail routing loudly — reading it as
+    // "no tabs here" silently bypassed the ambiguity refusal and reported
+    // real tabs as nonexistent
     const ext3 = await wsClient(PORT, 'gamma-old');
     ext3.onMessage((msg) => {
       if (msg.type === 'ping') return ext3.send({ id: msg.id, ok: true, result: 'pong' });
@@ -2134,7 +2134,7 @@ try {
     });
     await new Promise((r) => setTimeout(r, 100));
     const stale = await cli('snap', 'dupe.example');
-    assert(stale.status !== 0 && stale.stderr.includes("can't be probed") && stale.stderr.includes('reload it at chrome://extensions'), 'multi-seat: unprobeable extension fails routing loudly', stale.stdout + stale.stderr);
+    assert(stale.status !== 0 && stale.stderr.includes("didn't answer the match probe") && stale.stderr.includes('--profile'), 'multi-seat: a failed probe fails routing loudly', stale.stdout + stale.stderr);
     ext3.socket.destroy();
   }
 
@@ -2558,15 +2558,16 @@ try {
   // `stop && start` never started (found live, 2026-11-09).
   {
     const seen = [];
-    // A server from before local authentication: no /auth route.
+    // A server that proves this run's key (and stops on any /stop).
+    const fakeKey = fs.readFileSync(join(stateDirectory, 'key'), 'utf8');
     const fake = http.createServer((req, res) => {
       seen.push(`${req.method} ${req.url.split('?')[0]}`);
+      res.writeHead(200, { 'content-type': 'application/json' });
       if (req.url.startsWith('/auth')) {
-        res.writeHead(404);
-        res.end();
+        const s = nonce();
+        res.end(JSON.stringify({ s, p: mac(fakeKey, 'server', new URL(req.url, 'http://x').searchParams.get('c'), s) }));
         return;
       }
-      res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
     });
     await new Promise((r) => fake.listen(0, '127.0.0.1', r));
@@ -2580,7 +2581,7 @@ try {
         child.on('close', (status) => resolve({ status, stdout, stderr }));
       });
       await new Promise((r) => setTimeout(r, 100));
-      assert(out.status === 0 && out.stdout.trim() === 'stopped' && seen.join() === 'GET /auth,POST /stop', 'cli stop: a server that predates local authentication still stops (plain /stop), and nothing follows the /stop', `${seen.join(', ')} | ${out.stdout}${out.stderr}`);
+      assert(out.status === 0 && out.stdout.trim() === 'stopped' && seen.join() === 'GET /auth,POST /stop', 'cli stop: stops the server, and nothing follows the /stop', `${seen.join(', ')} | ${out.stdout}${out.stderr}`);
     } finally {
       fake.close();
     }

@@ -409,23 +409,12 @@ async function route(msg, dispatch) {
     const probes = await Promise.all(
       [...seats.entries()].map(async ([pid, s]) => {
         const reply = await ask(s, { type: 'probe', urlMatch: msg.urlMatch }, 5_000).catch(() => null);
-        // ok:false = the seat ANSWERED but can't probe (an extension older
-        // than multi-profile support). Distinct from null = never answered —
-        // treating a refused probe as dead would silently bypass the
-        // ambiguity refusal and report real tabs as nonexistent.
-        return { pid, tabs: reply?.ok ? reply.result : null, unsupported: !!reply && !reply.ok };
+        return { pid, tabs: reply?.ok ? reply.result : null };
       })
     );
-    const stale = probes.filter((p) => p.unsupported);
-    const deaf = probes.filter((p) => !p.unsupported && p.tabs === null);
+    const deaf = probes.filter((p) => p.tabs === null);
     const live = probes.filter((p) => p.tabs !== null);
     const matching = live.filter((p) => p.tabs.length);
-    if (stale.length)
-      throw new Error(
-        `⚠ ${stale.length} profile(s) can't be probed — an extension without multi-profile support is loaded (${stale
-          .map((p) => seatTag(p.pid))
-          .join(', ')}): reload it at chrome://extensions, or name a profile: --profile <name or id> (see: cli.mjs profiles)`
-      );
     // A probe that timed out is "can't know", NOT "no tabs match": excluding
     // it would auto-route into the other profile on a unique match — silently
     // bypassing the ambiguity refusal, the exact thing it exists to prevent

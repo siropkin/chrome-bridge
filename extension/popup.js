@@ -100,7 +100,7 @@ function render() {
   // Per-profile truth: /health's `extension` is ANY seat — with several
   // profiles connected, this profile's own worker can be down (or mid-reload)
   // while another profile is fine. bridgeState.connected is this profile's
-  // own socket (absent on an older worker — then health's flag stands).
+  // own socket.
   if (bridgeState === null) return setStatus('Reloading — reopen this in a moment', '');
   if (bridgeState && bridgeState.connected === false) {
     $('idle').hidden = false; // a blip: the tab ID stays valid
@@ -134,7 +134,6 @@ const AUTH_PROBLEMS = {
   failed: ["This browser can't reach Chrome Bridge on your computer yet.", "Chrome couldn't start the bridge's native messaging helper"],
   missing: ["This browser can't reach Chrome Bridge on your computer yet.", "the bridge's local key was missing; the bridge recreates it when it runs"],
   other: ["This browser can't reach Chrome Bridge on your computer yet.", "the extension couldn't read the bridge's local key"],
-  'old-server': ['Chrome Bridge on your computer is older than this extension.', 'the bridge running on this computer predates extension authentication (1.34): update it (node cli.mjs update) or restart it'],
   unverified: ["Something else is answering for Chrome Bridge on your computer, so this browser isn't using it.", "the program on 127.0.0.1:9333 couldn't prove it is this OS user's chrome-bridge server, so the extension refused it (if start says the port is taken, see who holds it: lsof -i :9333)"],
 };
 for (const k of Object.keys(AUTH_PROBLEMS)) {
@@ -165,8 +164,8 @@ function renderBanner(b, kind) {
 
 // Version drift: Chrome auto-updates a store extension, but the bridge on disk
 // (server, CLI, the agent's skill) only moves when someone runs `cli.mjs
-// update` — the human sees it here and hands the fix to their agent. A server
-// without h.v predates version reporting: no banner (health warns).
+// update` — the human sees it here and hands the fix to their agent. No
+// version from the program on the port: nothing to compare, no banner.
 let updatePrompt = '';
 let updateInfo = null;
 function renderUpdate() {
@@ -248,7 +247,7 @@ chrome.tabs.query({ active: true, currentWindow: true }).then(async ([tab]) => {
     const state = await chrome.runtime.sendMessage({ type: 'bridge-state', tabId: tab.id });
     if (state?.error || !Number.isInteger(state?.count) || state.count < 0 || typeof state.active !== 'boolean') throw new Error(state?.error || 'Tab state unavailable');
     bridgeState = state;
-    if (state.cloud) renderCloud(state.cloud);
+    renderCloud(state.cloud);
     if (typeof state.profile === 'string' && /^[a-z]+$/.test(state.profile)) {
       ref = `id:${tab.id} --profile ${state.profile}`;
       $('copy').title = ref;
@@ -424,9 +423,7 @@ $('cloud-enabled').addEventListener('change', () => {
     if (cloudState?.paired || cloudState?.pairing) return cloudRequest({ type: 'cloud-unpair' });
     return;
   }
-  // On: a profile paused by an older version reconnects with its token;
-  // otherwise the form opens: Connect, to the public hub or the last address.
-  if (cloudState?.paired) return cloudRequest({ type: 'cloud-toggle', enabled: true });
+  // On: the form opens — Connect, to the public hub or the last address.
   cloudFormOpen = true;
   $('cloud-pair-row').hidden = false;
 });

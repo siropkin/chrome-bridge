@@ -48,7 +48,7 @@ export function stateDir(env = process.env, platform = process.platform, home = 
 export class LocalAuthError extends Error {
   constructor(code, message) {
     super(message);
-    this.code = code; // 'old' | 'unverified' | 'unsafe'
+    this.code = code; // 'unverified' | 'unsafe'
   }
 }
 
@@ -140,8 +140,6 @@ export async function bridgeFetch(base, path, init = {}, dir = stateDir()) {
   const cn = nonce();
   const where = base.replace(/^https?:\/\//, '');
   const r = await fetch(`${base}/auth?c=${cn}`, { signal: init.signal });
-  if (r.status === 404)
-    throw new LocalAuthError('old', `the bridge server on ${where} predates local authentication (older code than this CLI) — restart it: node cli.mjs stop && node cli.mjs start`);
   const a = await r.json().catch(() => null);
   const key = readKey(dir);
   if (!key || typeof a?.s !== 'string' || !same(a.p, mac(key, 'server', cn, a.s)))

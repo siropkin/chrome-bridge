@@ -1385,7 +1385,7 @@ test('local auth: the server proves itself first, then we prove back; nothing is
   assert.deepEqual(h.handled, [], 'a frame before the proof runs nothing');
   assert.deepEqual(ws.sent, [], 'and gets nothing back — not even the journal');
   assert.equal(ws.auth, undefined);
-  assert.equal(h.context.localAuthState().state, 'old-server');
+  assert.equal(h.context.localAuthState().state, 'unverified');
   const ok = h.sockets.length;
   await h.flush();
   // The honest server: its proof, then ours with the same key.
@@ -1482,7 +1482,7 @@ test('local auth: no key from Chrome → one &nokey dial says why, then 1s/2s/4s
   assert.ok(h.timers.some((t) => t.ms === 500), 'once authenticated, an ordinary drop is back to the flat 500ms');
 });
 
-test('local auth: a server that never proves itself (before 1.34) is left after 5s; the keepalive leaves a handshake alone', async () => {
+test('local auth: a server that never proves itself is left after 5s; the keepalive leaves a handshake alone', async () => {
   const h = linksHarness();
   await h.flush();
   const ws = h.sockets[0];
@@ -1492,7 +1492,7 @@ test('local auth: a server that never proves itself (before 1.34) is left after 
   assert.equal(h.sockets.length, 1, 'the alarm does not kill a socket still proving itself');
   h.fire(5000);
   assert.equal(ws.readyState, 3);
-  assert.equal(h.context.localAuthState().state, 'old-server');
+  assert.equal(h.context.localAuthState().state, 'unverified');
 });
 
 // --- Tab ownership per link (A2): findTab's gate, in a vm.

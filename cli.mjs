@@ -46,15 +46,12 @@ async function reportCompletion(type, started, error) {
   } catch {}
 }
 
-// /stop, signed. A server that predates local authentication accepts the
-// plain request — it carries nothing, so `stop && start` still moves an
-// updated checkout onto its new code. null: nothing answered.
+// /stop, signed. null: nothing answered.
 async function stopServer() {
   serverStopped = true;
   try {
     return await bridgeFetch(BASE, '/stop', { method: 'POST' });
   } catch (e) {
-    if (e?.code === 'old') return fetch(`${BASE}/stop`, { method: 'POST' }).catch(() => null);
     if (e instanceof LocalAuthError) fail(e.message);
     return null;
   }
@@ -491,9 +488,7 @@ async function runCommand(cmdName, args) {
         if (!h.extension) process.exitCode = 1;
         // Version drift (server vs its checkout, each extension vs the
         // manifest) is computed server-side (drift.mjs) and arrives in h.warn.
-        // A server without h.v predates that — it is old code by definition.
-        if (!h.v) console.error('⚠ the running server predates version reporting — it is old code: run `cli.mjs update` (or `cli.mjs stop && cli.mjs start`)');
-        else {
+        {
           // This CLI may belong to another checkout than the running server.
           let mine = null;
           try {
@@ -550,18 +545,9 @@ async function runCommand(cmdName, args) {
       // spawned child would die on EADDRINUSE and start would lie 'started').
       const bridgeHealth = () => fetch(`${BASE}/health`).then((r) => r.json()).then((h) => (h?.ok === true ? h : null)).catch(() => null);
       const up = await bridgeHealth();
-      // A server from before local authentication (an updated checkout whose
-      // server wasn't restarted) answers health, but this CLI would refuse it
-      // on every command: replace it. The stop runs in a child process — a
-      // request racing the server's exit can crash this one (see serverStopped).
-      let replaced = false;
-      if (up && (await fetch(`${BASE}/auth?c=${'0'.repeat(22)}`).then((r) => r.status).catch(() => 0)) === 404) {
-        spawnSync(process.execPath, [fileURLToPath(import.meta.url), 'stop'], { env: process.env });
-        for (let i = 0; i < 20 && (await bridgeHealth()); i++) await new Promise((r) => setTimeout(r, 100));
-        replaced = true;
-      } else if (up) {
+      if (up) {
         // Answering /health proves nothing: a program that can't prove it holds
-        // this OS user's key (another account's) isn't "already running" — the
+        // this OS user's key (another account's, or no bridge at all) isn't "already running" — the
         // CLI refuses it on every command, and its error points here.
         try {
           await bridgeFetch(BASE, '/health');
@@ -597,7 +583,7 @@ async function runCommand(cmdName, args) {
         await new Promise((r) => setTimeout(r, 250));
         health = await bridgeHealth();
       }
-      const started = 'started' + (replaced ? ', replacing a server that predates local authentication' : '') + ' (log: ' + logPath + ')';
+      const started = 'started (log: ' + logPath + ')';
       print(
         health?.extension
           ? started + ' — extension connected'
@@ -706,10 +692,9 @@ async function runCommand(cmdName, args) {
         }
       }
       const after = check ? before : pkgVersion();
-      const serverDrift = !h.v || (h.warn || []).some((w) => /^this server runs|^server code on disk/.test(w));
+      const serverDrift = (h.warn || []).some((w) => /^this server runs|^server code on disk/.test(w));
       const restart = serverHere && (changed || h.v !== after || serverDrift);
-      // A server too old to report its checkout can't be matched to this one.
-      const elsewhere = h.repo ? `it runs from ${h.repo}; run that checkout's cli.mjs update` : "it predates checkout reporting — restart it yourself: cli.mjs stop && cli.mjs start";
+      const elsewhere = h.repo ? `it runs from ${h.repo}; run that checkout's cli.mjs update` : "it isn't this OS user's bridge server — run node cli.mjs start to see what holds the port";
       if (check) {
         print({ repo, target, via: isGit ? 'git' : 'download', steps, restart: serverHere ? 'when anything changed or the server runs older code' : `no — ${elsewhere}`, ...(plan.note ? { note: plan.note } : {}) });
         break;
@@ -915,15 +900,7 @@ async function runCommand(cmdName, args) {
 
     case 'extreload': {
       const r = await cmd({ type: 'extreload' }, true);
-      // The command's own bootstrap trap: an extension OLD enough to need it
-      // (pre-1.18.20) has no extreload handler — its handle() falls through to
-      // 'unknown type'. That case is exactly the one manual reload.
-      if (r?.error)
-        fail(
-          /unknown type/.test(r.error)
-            ? 'the loaded extension predates extreload — reload it once by hand at chrome://extensions'
-            : r.error
-        );
+      if (r?.error) fail(r.error);
       print(r);
       break;
     }

