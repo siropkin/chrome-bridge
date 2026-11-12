@@ -748,19 +748,29 @@ s_type() {
   local t0=$SECONDS
   "${CLI[@]}" type "x=type" '#steady' "$(printf 'h%.0s' {1..1000})" >"$OUT/type-heavy.log" 2>&1
   local took=$((SECONDS - t0))
-  assert_grep "heavy editor: long type survives past the old 70s cap" "$OUT/type-heavy.log" 'typed 1000 chars'
-  if [ "$took" -gt 70 ]; then ok "heavy editor: the type really outlasted 70s (${took}s)"; else bad "heavy editor: the type took ${took}s — under 70s it no longer tests the cap; raise the payload or the fixture cost"; fi
-  # A lost reply leaves the type running page-side (#32): its keystrokes then land
-  # in the fields the clear checks below empty, failing three of them for no fault
-  # of clear (full e2e, 2026-11-10). Wait it out so only the heavy check reports it.
-  if ! grep -q 'typed 1000 chars' "$OUT/type-heavy.log"; then
+  if grep -q 'typed 1000 chars' "$OUT/type-heavy.log"; then
+    ok "heavy editor: long type survives past the old 70s cap"
+  else
+    # A lost reply leaves the type running page-side (#32): its keystrokes then land
+    # in the fields the clear checks below empty, failing three of them for no fault
+    # of clear (full e2e, 2026-11-10). Wait it out so only the heavy check reports it,
+    # and time it: the whole type at ~81ms a key fits the 170s budget twice over, so a
+    # lost reply with the page typing far slower is a busy computer or a covered
+    # window, not the cap (2026-11-11: ~250-300ms a key, Spotlight indexing and the
+    # window behind VS Code; the parent commit failed alike).
     local i
-    for i in $(seq 1 60); do
+    for i in $(seq 1 90); do
       [ "$("${CLI[@]}" eval "x=type" "window.__bridgeTyping === true" --profile "$P1" 2>/dev/null)" = "true" ] || break
       sleep 2
     done
-    echo "  (heavy type's reply was lost; waited ~$((i * 2))s for its page-side keystrokes to finish)"
+    local per=$((SECONDS - t0)) # seconds for 1000 keys = ms a key
+    if [ "$per" -gt 120 ]; then
+      bad "heavy editor: the reply was lost after ${took}s because the page typed at ~${per}ms a key (the fixture's own cost is 80ms) — the computer was too busy, or Chrome slowed the page down because profile 1's window was covered or minimized (busiest now: $(ps -A -o %cpu=,comm= | sort -rn | head -1 | awk '{n=split($2,p,"/"); print p[n] " " $1 "%"}')); rerun with that window in front and the computer idle: test/stress/run.sh type cleanup"
+    else
+      bad "heavy editor: long type survives past the old 70s cap — the reply was lost after ${took}s although the page typed at ~${per}ms a key"
+    fi
   fi
+  if [ "$took" -gt 70 ]; then ok "heavy editor: the type really outlasted 70s (${took}s)"; else bad "heavy editor: the type took ${took}s — under 70s it no longer tests the cap; raise the payload or the fixture cost"; fi
   # #34: clear — the only programmatic emptying path. Plain CE and the
   # preventDefault-ing editor take the native Selection+execCommand delete;
   # the execCommand-blocking editor (the vc.ru symptom) forces the DOM-removal
